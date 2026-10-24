@@ -466,8 +466,16 @@ def run_claude_code(prompt, run_dir, model, timeout):
     workspace = run_dir / "workspace"
     workspace.mkdir()
     (run_dir / "prompt.md").write_text(prompt)
+    # Bare mode defaults to auto, which asks the session model to
+    # classify each Bash call. muse-wonder-1.0 cannot do that, so
+    # every Bash call is denied as "Classifier unavailable".
+    # --allowedTools alone does not skip the classifier. dontAsk
+    # never consults it: the three tools bare mode exposes run,
+    # anything else is denied.
     cmd = ["claude", "-p", "--bare", "--output-format", "stream-json",
-           "--verbose", "--model", model]
+           "--verbose", "--model", model,
+           "--permission-mode", "dontAsk",
+           "--allowedTools", "Bash,Edit,Read"]
     base, api_key = endpoint_for(model)
     if not api_key:
         return {"session_id": None, "wall_ms": 0, "exit_code": 1,
