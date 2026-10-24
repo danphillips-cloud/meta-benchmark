@@ -8,14 +8,14 @@ It runs prompts through Muse or Claude Code and records every model call. A loca
 
 ## Requirements
 
-Python 3 and macOS or Linux. No packages to install. Muse Code with a subscription login. Claude Code runs also need the `claude` CLI.
+Python 3 and macOS or Linux. No packages to install. Muse Code. Claude Code runs also need the `claude` CLI.
 
 ## Quick start
 
 ```sh
-muse login
 git clone https://github.com/danphillips-cloud/meta-benchmark.git
 cd meta-benchmark
+muse login    # first time only
 ./run-muse
 ```
 
