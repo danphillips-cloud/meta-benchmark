@@ -4,11 +4,13 @@ A local benchmark tool for Muse Code.
 
 When a Muse run feels slow, the cause could be the model, the size of the context, or local work between calls. I built this to measure each one from Muse's own logs instead of guessing.
 
-It runs prompts through Muse from a terminal prompt and records every model call. A local web page shows how long each call took, how much of the run was local overhead, and how many tokens went in and out.
+It runs prompts through Muse or Claude Code from a terminal prompt and records every model call. A local web page shows how long each call took, how much of the run was local overhead, and how many tokens went in and out.
 
 ## Requirements
 
 Muse Code on the `PATH` with a subscription login, Python 3, and macOS or Linux. No packages to install. Everything uses the Python standard library.
+
+Claude Code runs also need the `claude` CLI on the `PATH` and an API key for the model's endpoint. Raw API runs need that key too. See Providers below.
 
 ## Quick start
 
@@ -38,11 +40,25 @@ cd meta-benchmark
 ./run-muse "write a python script that counts lines in a file, then run it on itself"   # multi-step, several calls
 ./run-muse --minimal "what is 2+2"          # baseline: fixed cost with controlled context
 ./run-muse --timeout 300 "what is 2+2"      # default is 1800 seconds
+./run-muse --provider claude-code --model claude-sonnet-5-5 "what is 2+2"
+./run-muse --provider anthropic --model claude-sonnet-5-5 "what is 2+2"   # one raw API call, no agent
+./run-muse --compare "what is 2+2"          # same prompt across COMPARE_MODELS
+./run-muse --compare --repeat 3 "what is 2+2"   # 3 rounds, order alternates each round
 ```
+
+## Providers
+
+`--provider` picks the harness. `meta` runs Muse under the subscription login. It is the default. `claude-code` runs Claude Code headless with `--bare`, so hooks, plugins, CLAUDE.md, and memory stay out of the run. `anthropic` makes one raw Messages API call with no agent context.
+
+The model id picks the endpoint for `claude-code` and `anthropic` runs. A `muse-*` model goes to `META_BASE_URL` (default `https://api.meta.ai`) with `MODEL_API_KEY`. Any other model goes to `ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`) with `ANTHROPIC_API_KEY`. Claude Code can run either vendor's model this way. That gives three clean comparisons. Model against model in Claude Code. Harness against harness on one Meta model. Bare API call against bare API call.
+
+A bare API run and an agent run measure different things. The page labels provider and model on every run. I do not read them as like for like.
 
 ## Reading the numbers
 
-**Wire** is one model call, start to finish, from the `duration_ms` field on Muse's `model_completed` log record. **Total** is the wall time of the whole `muse exec` process. The gap is local overhead. If the two are close, the model took the time. If the gap is large, the local host did.
+**Wire** is one model call, start to finish, from the `duration_ms` field on Muse's `model_completed` log record. **Total** is the wall time of the whole harness process. The gap is local overhead. If the two are close, the model took the time. If the gap is large, the local host did.
+
+Claude Code does not report per-call time, so Wire and Slowest call show `–` on those runs. Model total uses its reported API time instead. Per-call output tokens are blank on Claude Code runs for the same reason. Run totals come from its final result event.
 
 Token cards show the last call only, not run totals. Overhead share is provisional while a run is live.
 
@@ -54,10 +70,15 @@ Each Muse run carries roughly 30k tokens of agent context before the prompt. Tha
 |---|---|---|
 | `PORT` | `8765` | Results page port |
 | `RUN_MUSE_NO_UI` | unset | `1` skips the web page |
+| `MODEL_API_KEY` | unset | Key for `muse-*` models on the Meta endpoint. Never logged |
+| `ANTHROPIC_API_KEY` | unset | Key for Claude models. Never logged |
+| `META_BASE_URL` | `https://api.meta.ai` | Endpoint for `muse-*` models |
+| `COMPARE_MODELS` | `meta:muse-wonder-full-1.0,claude-code:muse-wonder-full-1.0,claude-code:claude-sonnet-5-5` | `provider:model` pairs for `--compare` |
+| `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for raw `anthropic` runs |
 
 ## Data and privacy
 
-All run data lives in `muse-runs/`, which is gitignored. Each run gets its own folder and workspace, so files the model creates never land in the repo. The server binds to `127.0.0.1` and rejects foreign `Host` and `Origin` headers. API keys are stripped from the Muse child process, so a subscription run can't fall back to API billing.
+All run data lives in `muse-runs/`, which is gitignored. Each run gets its own folder and workspace, so files the model creates never land in the repo. The server binds to `127.0.0.1` and rejects foreign `Host` and `Origin` headers. API keys are stripped from the Muse child process, so a subscription run can't fall back to API billing. Claude Code runs get only the one key their model's endpoint needs, set by the launcher.
 
 ## Tests
 

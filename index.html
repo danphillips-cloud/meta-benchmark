@@ -105,10 +105,18 @@
 
   <h2>Sessions, grouped</h2>
   <table>
-    <thead><tr><th>At</th><th>Prompt</th><th>Calls</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th></tr></thead>
-    <tbody id="groups"><tr><td colspan="6" class="empty">No sessions yet.</td></tr></tbody>
+    <thead><tr><th>At</th><th>Prompt</th><th>Model</th><th>Calls</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th></tr></thead>
+    <tbody id="groups"><tr><td colspan="7" class="empty">No sessions yet.</td></tr></tbody>
   </table>
   <div id="error"></div>
+
+  <div id="compareSetWrap" style="display:none;">
+  <h2>Compare set (medians across rounds)</h2>
+  <table>
+    <thead><tr><th>Provider/Model</th><th>Runs</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th><th>TTFT ms</th><th>Calls</th><th>In</th><th>Out</th></tr></thead>
+    <tbody id="compareSet"><tr><td colspan="9" class="empty">No compare set.</td></tr></tbody>
+  </table>
+  </div>
 
   <h2>Compare sessions</h2>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
@@ -225,12 +233,12 @@
       } else {
         tl.innerHTML = '<tr><td colspan="5" class="empty">Nothing yet.</td></tr>';
       }
-      const wires = (d.events || []).map(e => e["wire_ms"] || 0);
-      const modelTotal = wires.reduce((a, b) => a + b, 0);
+      const wires = (d.events || []).map(e => e["wire_ms"]).filter(v => v != null);
+      const modelTotal = d.model_ms ?? wires.reduce((a, b) => a + b, 0);
       $("modelTotal").textContent = d.events.length ? modelTotal : "–";
       $("overhead").textContent = d.events.length ? Math.max(0, (d.wall_ms || 0) - modelTotal) : "–";
       $("callCount").textContent = d.events.length || "–";
-      $("slowest").textContent = d.events.length ? Math.max(...wires) : "–";
+      $("slowest").textContent = wires.length ? Math.max(...wires) : "–";
       $("overheadShare").textContent = d.events.length && d.wall_ms
         ? Math.round(Math.max(0, d.wall_ms - modelTotal) / d.wall_ms * 100) : "–";
       const inSum = (d.events || []).reduce((a, e) => a + (e["gen_ai.usage.input_tokens"] || 0), 0);
@@ -243,7 +251,7 @@
           const tr = document.createElement("tr");
           tr.style.cursor = "pointer";
           if (s.run_id === d.selected) tr.style.background = "var(--selected)";
-          [ (s.at || "").replace("T", " ").slice(0, 19), shortText(s.prompt || s.run_id, 42) + (s.comparison_id ? " ⇄ set " + s.comparison_id : "") + " · " + (s.provider || ""), s.calls, s.wall_ms, s.model_ms, s.overhead_ms ]
+          [ (s.at || "").replace("T", " ").slice(0, 19), shortText(s.prompt || s.run_id, 42) + (s.comparison_id ? " ⇄ set " + s.comparison_id : "") + " · " + (s.provider || ""), s.model, s.calls, s.wall_ms, s.model_ms, s.overhead_ms ]
             .forEach((v, i) => { const td = document.createElement("td"); td.textContent = v ?? "–"; if (i === 1) td.title = s.prompt || ""; tr.appendChild(td); });
           tr.addEventListener("click", () => { selectedRun = s.run_id; $("sessionSelect").value = s.run_id; refresh(); });
           groups.appendChild(tr);
@@ -255,6 +263,7 @@
       $("timelineWrap").classList.toggle("collapsed", tLong && !timelineExpanded);
       $("timelineToggle").textContent = timelineExpanded ? "Show less" : "Show full timeline";
       renderCompare(d);
+      renderCompareSet(d);
       renderSummary(d);
       if (!d.events.length) {
         $("wire").textContent = "–";
@@ -380,6 +389,38 @@
       table.appendChild(tr);
     });
     box.appendChild(table);
+  }
+  function median(values) {
+    const nums = values.filter(v => v != null).sort((a, b) => a - b);
+    if (!nums.length) return null;
+    const mid = Math.floor(nums.length / 2);
+    return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+  }
+  function renderCompareSet(d) {
+    const wrap = $("compareSetWrap");
+    const selected = (d.sessions || []).find(s => s.run_id === d.selected);
+    if (!selected || !selected.comparison_id) { wrap.style.display = "none"; return; }
+    const inSet = (d.sessions || []).filter(s => s.comparison_id === selected.comparison_id);
+    const groups = new Map();
+    inSet.forEach(s => {
+      const key = (s.provider || "?") + "/" + (s.model || "?");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    });
+    const body = $("compareSet");
+    body.innerHTML = "";
+    groups.forEach((all, key) => {
+      const tr = document.createElement("tr");
+      // Failed or interrupted runs record zeros. Keep them out of the
+      // medians, but show the count so failures stay visible.
+      const runs = all.filter(s => s.status === "completed");
+      const med = f => { const v = median(runs.map(f)); return v == null ? "–" : fmt(Math.round(v)); };
+      [key, runs.length + "/" + all.length + " ok", med(s => s.wall_ms), med(s => s.model_ms), med(s => s.overhead_ms),
+       med(s => s.ttft_ms), med(s => s.calls), med(s => s.input_tokens), med(s => s.output_tokens)]
+        .forEach(v => { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
+      body.appendChild(tr);
+    });
+    wrap.style.display = "";
   }
   function renderSummary(d) {
     const sessions = [...(d.sessions || [])].reverse();

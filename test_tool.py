@@ -5,8 +5,9 @@ Run: python3 test_tool.py
 Covers run-muse's session-log harvest and timeline, the UI server's
 run selection, timeline loading, error scoping, and overhead clamp,
 the local-host check, stale running runs, Ctrl+C handling, the
-per-provider default model, Anthropic response parsing, and the
-delete guard for running runs.
+per-provider default model, Anthropic response parsing, the
+delete guard for running runs, endpoint routing, the Claude Code
+stream parser, compare round order, and API-total model time.
 """
 import importlib.util
 import json
@@ -334,6 +335,91 @@ class OverheadClampTest(unittest.TestCase):
                 server.INDEX = old
             self.assertEqual(data["sessions"][0]["model_ms"], 80)
             self.assertEqual(data["sessions"][0]["overhead_ms"], 0)
+
+
+class EndpointTest(unittest.TestCase):
+    def test_muse_models_route_to_meta(self):
+        with mock.patch.dict(os.environ,
+                             {"MODEL_API_KEY": "meta-key",
+                              "ANTHROPIC_API_KEY": "claude-key",
+                              "META_BASE_URL": "https://meta.example/",
+                              "ANTHROPIC_BASE_URL": "https://claude.example/"}):
+            self.assertEqual(run_muse.endpoint_for("muse-wonder-full-1.0"),
+                             ("https://meta.example", "meta-key"))
+            self.assertEqual(run_muse.endpoint_for("claude-sonnet-5-5"),
+                             ("https://claude.example", "claude-key"))
+
+
+class ClaudeStreamTest(unittest.TestCase):
+    def test_fixture_maps_to_calls_and_totals(self):
+        lines = (HERE / "fixtures" / "claude-code-stream.jsonl") \
+            .read_text().splitlines()
+        stamped = [(i * 100, line) for i, line in enumerate(lines)]
+        parsed = run_muse.parse_claude_stream(stamped)
+        self.assertEqual(len(parsed["calls"]), 2)
+        self.assertEqual([c["input_tokens"] for c in parsed["calls"]],
+                         [1682, 1787])
+        self.assertEqual([c["cached_tokens"] for c in parsed["calls"]],
+                         [1495, 1678])
+        self.assertEqual([c["duration_ms"] for c in parsed["calls"]],
+                         [None, None])
+        self.assertEqual([c["output_tokens"] for c in parsed["calls"]],
+                         [None, None])
+        self.assertEqual(parsed["totals"],
+                         {"input_tokens": 3469, "output_tokens": 139,
+                          "cached_tokens": 3173})
+        self.assertEqual(parsed["api_ms"], 2736)
+        self.assertEqual(parsed["ttft_ms"], 1327)
+        self.assertEqual(parsed["num_turns"], 2)
+        self.assertFalse(parsed["is_error"])
+        self.assertTrue(parsed["reply"].startswith("I created `hello.py`"))
+        self.assertEqual(len(parsed["timeline"]), 6)
+        self.assertEqual([t["duration_ms"] for t in parsed["timeline"]],
+                         [100, 100, 100, 100, 100, 0])
+        self.assertTrue(all(t["wire_ms"] is None
+                            for t in parsed["timeline"]))
+
+
+class CompareScheduleTest(unittest.TestCase):
+    def test_repeat_alternates_order(self):
+        models = [("meta", "a"), ("claude-code", "b"), ("anthropic", "c")]
+        self.assertEqual(run_muse.compare_schedule(models, 3), [
+            (1, models),
+            (2, [("anthropic", "c"), ("claude-code", "b"), ("meta", "a")]),
+            (3, models),
+        ])
+
+
+class ApiMsTest(unittest.TestCase):
+    def test_server_uses_api_ms_and_totals(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-cc").mkdir(parents=True)
+            run = {"run_id": "run-cc", "at": "2026-01-01T00:00:00+00:00",
+                   "prompt": "hi", "model": "claude-sonnet-5-5",
+                   "provider": "claude-code", "exit_code": 0,
+                   "error": None, "reply": "ok", "wall_ms": 3329,
+                   "api_ms": 2736, "ttft_ms": 1327,
+                   "totals": {"input_tokens": 3469, "output_tokens": 139,
+                              "cached_tokens": 3173},
+                   "calls": [
+                       {"duration_ms": None, "input_tokens": 1682,
+                        "output_tokens": None, "cached_tokens": 1495},
+                       {"duration_ms": None, "input_tokens": 1787,
+                        "output_tokens": None, "cached_tokens": 1678}]}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs()
+            finally:
+                server.INDEX = old
+            self.assertEqual(data["model_ms"], 2736)
+            self.assertEqual(data["sessions"][0]["model_ms"], 2736)
+            self.assertEqual(data["sessions"][0]["overhead_ms"], 593)
+            self.assertEqual(data["sessions"][0]["input_tokens"], 3469)
+            self.assertEqual(data["sessions"][0]["output_tokens"], 139)
+            self.assertIsNone(data["events"][0]["wire_ms"])
 
 
 if __name__ == "__main__":
