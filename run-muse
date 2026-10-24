@@ -4,7 +4,7 @@
 Usage:
   ./run-muse                     interactive prompt loop
   ./run-muse "Say hi"            single prompt run
-  ./run-muse --compare "Say hi"  same prompt across configured models
+  ./run-muse --compare meta "Say hi"  same prompt across a mode's models
   ./run-muse --minimal "Say hi"  controlled context (repeatable tests)
 
 Starts the log UI in the background if needed, runs each prompt, and
@@ -773,8 +773,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=None,
                         help="per-run timeout in seconds (default 1800, "
                              "300 for claude-code and anthropic)")
-    parser.add_argument("--compare", nargs="?", const="custom",
-                        default=None, metavar="MODE",
+    parser.add_argument("--compare", default=None, choices=COMPARE_MODES,
                         help="compare mode: meta, claude, or custom "
                              "(COMPARE_MODELS)")
     parser.add_argument("--repeat", type=int, default=None,
@@ -782,20 +781,10 @@ def main():
     args = parser.parse_args()
     if args.repeat is not None and not args.compare:
         parser.error("--repeat needs --compare")
-    # Bare --compare takes the next word as its value. When that word
-    # is not a mode name it is the first prompt word, and the mode is
-    # custom. An explicit --compare=<mode> must name a real mode.
     mode = args.compare
-    prompt_words = list(args.prompt)
-    if mode is not None and mode not in COMPARE_MODES:
-        if any(a.startswith("--compare=") for a in sys.argv):
-            parser.error(f"unknown compare mode '{mode}' "
-                         f"(valid: {', '.join(COMPARE_MODES)})")
-        prompt_words = [mode] + prompt_words
-        mode = "custom"
     args.model = args.model or default_model(args.provider)
     ensure_ui()
-    prompt = " ".join(prompt_words).strip()
+    prompt = " ".join(args.prompt).strip()
     repeat = args.repeat if args.repeat is not None else 1
     if mode is not None and repeat < 1:
         parser.error("--repeat must be at least 1")

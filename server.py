@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 22
+VERSION = 23
 INDEX = HERE / "muse-runs" / "index.jsonl"
 _SESSION_LOG_CACHE = {}
 
@@ -154,6 +154,7 @@ def read_logs(run_id=None):
         "provider": r.get("provider"), "context_mode": r.get("context_mode"),
         "comparison_id": r.get("comparison_id"), "round": r.get("round"),
         "compare_mode": r.get("compare_mode"),
+        "cost_usd": r.get("cost_usd"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
         "model_ms": _run_model_ms(r),
         "overhead_ms": max(0, (r.get("wall_ms") or 0) - _run_model_ms(r)),

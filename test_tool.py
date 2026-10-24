@@ -509,6 +509,28 @@ class RepeatArgTest(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("--repeat needs --compare", err.getvalue())
 
+    def _main_error(self, argv):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", argv):
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as ctx:
+                    run_muse.main()
+        self.assertEqual(ctx.exception.code, 2)
+        return err.getvalue()
+
+    def test_compare_without_mode_is_an_error(self):
+        err = self._main_error(["run-muse", "--compare"])
+        self.assertIn("expected one argument", err)
+        self.assertIn("{meta,claude,custom}", err)
+
+    def test_compare_with_wrong_mode_is_an_error(self):
+        err = self._main_error(["run-muse", "--compare", "bogus", "hi"])
+        self.assertIn("invalid choice", err)
+        err = self._main_error(["run-muse", "--compare", "what is 2+2"])
+        self.assertIn("invalid choice", err)
+
 
 class CompareModelsForTest(unittest.TestCase):
     def test_preset_defaults(self):

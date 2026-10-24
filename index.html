@@ -106,8 +106,8 @@
   <div id="compareSetWrap" style="display:none;">
   <h2 id="compareSetTitle">Compare set (medians across rounds)</h2>
   <table>
-    <thead><tr><th>Provider/Model</th><th>Runs</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th><th>TTFT ms</th><th>Calls</th><th>In</th><th>Out</th></tr></thead>
-    <tbody id="compareSet"><tr><td colspan="9" class="empty">No compare set.</td></tr></tbody>
+    <thead><tr><th>Provider/Model</th><th>Runs</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th><th>TTFT ms</th><th>Calls</th><th>In</th><th>Out</th><th>Cost</th></tr></thead>
+    <tbody id="compareSet"><tr><td colspan="10" class="empty">No compare set.</td></tr></tbody>
   </table>
   </div>
 
@@ -430,8 +430,14 @@
       // medians, but show the count so failures stay visible.
       const runs = all.filter(s => s.status === "completed");
       const med = f => { const v = median(runs.map(f)); return v == null ? "–" : fmt(Math.round(v)); };
+      // Claude Code prices every model from Anthropic's list, so a
+      // Meta model's cost_usd is not a Meta price. Hide it there.
+      const groupModel = (all[0] && all[0].model) || "";
+      const costVal = groupModel.startsWith("muse-") ? null
+        : median(runs.map(s => s.cost_usd));
+      const cost = costVal == null ? "–" : "$" + costVal.toFixed(4);
       [key, runs.length + "/" + all.length + " ok", med(s => s.wall_ms), med(s => s.model_ms), med(s => s.overhead_ms),
-       med(s => s.ttft_ms), med(s => s.calls), med(s => s.input_tokens), med(s => s.output_tokens)]
+       med(s => s.ttft_ms), med(s => s.calls), med(s => s.input_tokens), med(s => s.output_tokens), cost]
         .forEach(v => { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); });
       body.appendChild(tr);
     });
