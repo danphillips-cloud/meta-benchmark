@@ -61,7 +61,7 @@ The page refreshes every two seconds, so calls show up while a run is live.
 | Single (default) | `./run-muse` |
 | Meta vs Meta | `./run-muse --compare meta` |
 | Meta vs Claude | `./run-muse --compare claude` |
-| Custom | `./run-muse --compare` |
+| Custom | `./run-muse --compare custom` |
 
 Meta vs Claude uses API keys and is billed per token. Single and Meta vs Meta use the Muse subscription.
 
@@ -83,7 +83,7 @@ Claude Code doesn't report per-call time, so its Wire column is blank and Model 
 
 For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anything else goes to Anthropic. Meta's API serves `muse-wonder-1.0`.
 
-`--compare --repeat N` runs N rounds, alternating the order each round.
+`--compare meta --repeat N` runs N rounds, alternating the order each round.
 
 | Variable | Default | What it does |
 |---|---|---|
@@ -91,7 +91,7 @@ For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anyth
 | `ANTHROPIC_API_KEY` | unset | Key for Claude models |
 | `COMPARE_META` | `meta:muse-wonder-full-1.0,meta:muse-wonder-1.0` | Pairs for `--compare meta` |
 | `COMPARE_CLAUDE` | `claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare claude` |
-| `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for bare `--compare` |
+| `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare custom` |
 | `BENCH_CLAUDE_MODEL` | `claude-sonnet-5-5` | Default model for `claude-code` and `anthropic` |
 | `META_BASE_URL` | `https://api.meta.ai` | Meta API endpoint |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for `anthropic` runs |
