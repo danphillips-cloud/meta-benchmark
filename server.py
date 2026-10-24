@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 18
+VERSION = 19
 INDEX = HERE / "muse-runs" / "index.jsonl"
 _SESSION_LOG_CACHE = {}
 
@@ -131,6 +131,24 @@ def discover_running(runs):
     return found
 
 
+def _run_model_ms(run):
+    """Sum of per-call durations, or the harness-reported API total
+    when calls carry none (Claude Code reports no per-call time)."""
+    durations = [c.get("duration_ms") for c in (run.get("calls") or [])
+                 if c.get("duration_ms") is not None]
+    if durations:
+        return sum(durations)
+    return run.get("api_ms") or 0
+
+
+def _run_tokens(run, key):
+    """Run token total from totals when present, else summed calls."""
+    totals = run.get("totals")
+    if totals:
+        return totals.get(key)
+    return sum(c.get(key) or 0 for c in (run.get("calls") or []))
+
+
 def read_logs(run_id=None):
     runs = []
     if INDEX.is_file():
@@ -172,12 +190,12 @@ def read_logs(run_id=None):
         "prompt": r.get("prompt"), "model": r.get("model"),
         "wall_ms": r.get("wall_ms"), "calls": len(r.get("calls") or []),
         "provider": r.get("provider"), "context_mode": r.get("context_mode"),
-        "comparison_id": r.get("comparison_id"), "status": r.get("status"),
-        "model_ms": sum(c.get("duration_ms") or 0 for c in (r.get("calls") or [])),
-        "overhead_ms": max(0, (r.get("wall_ms") or 0)
-                       - sum(c.get("duration_ms") or 0 for c in (r.get("calls") or []))),
-        "input_tokens": sum(c.get("input_tokens") or 0 for c in (r.get("calls") or [])),
-        "output_tokens": sum(c.get("output_tokens") or 0 for c in (r.get("calls") or [])),
+        "comparison_id": r.get("comparison_id"), "round": r.get("round"),
+        "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
+        "model_ms": _run_model_ms(r),
+        "overhead_ms": max(0, (r.get("wall_ms") or 0) - _run_model_ms(r)),
+        "input_tokens": _run_tokens(r, "input_tokens"),
+        "output_tokens": _run_tokens(r, "output_tokens"),
         "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
         "last_output_tokens": (r.get("calls") or [{}])[-1].get("output_tokens"),
     } for r in reversed(runs)]
@@ -246,6 +264,7 @@ def read_logs(run_id=None):
         "prompt": selected.get("prompt"),
         "reply": selected.get("reply"),
         "provider": selected.get("provider"),
+        "model_ms": _run_model_ms(selected),
         "wall_ms": selected.get("wall_ms") or elapsed_ms,
         "status": selected.get("status"),
         "elapsed_ms": elapsed_ms,
