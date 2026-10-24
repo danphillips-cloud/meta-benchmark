@@ -270,7 +270,9 @@
         $("total").textContent = "–";
         $("inTok").textContent = "–";
         $("outTok").textContent = "–";
-        $("rows").innerHTML = '<tr><td colspan="5" class="empty">No calls yet.</td></tr>';
+        const emptyText = d.provider === "claude-code" && d.status === "running"
+          ? "Claude Code runs appear when they finish" : "No calls yet.";
+        $("rows").innerHTML = '<tr><td colspan="5" class="empty">' + emptyText + "</td></tr>";
         return;
       }
       const latest = d.events[0];

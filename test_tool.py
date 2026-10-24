@@ -7,7 +7,8 @@ run selection, timeline loading, error scoping, and overhead clamp,
 the local-host check, stale running runs, Ctrl+C handling, the
 per-provider default model, Anthropic response parsing, the
 delete guard for running runs, endpoint routing, the Claude Code
-stream parser, compare round order, and API-total model time.
+stream parser, compare round order, API-total model time, dotenv
+loading, the BENCH_CLAUDE_MODEL default, and the --repeat check.
 """
 import importlib.util
 import json
@@ -197,15 +198,29 @@ class DefaultModelTest(unittest.TestCase):
     def test_default_model_is_per_provider(self):
         with mock.patch.dict(os.environ,
                              {"MUSE_MODEL": "meta-sentinel",
-                              "ANTHROPIC_MODEL": "claude-sentinel"}):
+                              "BENCH_CLAUDE_MODEL": "claude-sentinel",
+                              "ANTHROPIC_MODEL": "muse-wonder-1.0"}):
             self.assertEqual(run_muse.default_model("meta"), "meta-sentinel")
             self.assertEqual(run_muse.default_model("anthropic"),
+                             "claude-sentinel")
+            self.assertEqual(run_muse.default_model("claude-code"),
                              "claude-sentinel")
             self.assertEqual(
                 run_muse.parse_compare_models(
                     "meta, anthropic, meta:custom-meta, anthropic:custom-claude"),
                 [("meta", "meta-sentinel"), ("anthropic", "claude-sentinel"),
                  ("meta", "custom-meta"), ("anthropic", "custom-claude")])
+
+    def test_anthropic_model_env_does_not_change_default(self):
+        # Meta's Claude Code setup exports ANTHROPIC_MODEL for a Meta
+        # model. That name must not become this tool's Claude default.
+        with mock.patch.dict(os.environ,
+                             {"ANTHROPIC_MODEL": "muse-wonder-1.0"}):
+            os.environ.pop("BENCH_CLAUDE_MODEL", None)
+            self.assertNotEqual(run_muse.default_model("anthropic"),
+                                "muse-wonder-1.0")
+            self.assertNotEqual(run_muse.default_model("claude-code"),
+                                "muse-wonder-1.0")
 
 
 class AnthropicTest(unittest.TestCase):
@@ -379,6 +394,27 @@ class ClaudeStreamTest(unittest.TestCase):
         self.assertTrue(all(t["wire_ms"] is None
                             for t in parsed["timeline"]))
 
+    def test_synthetic_and_zero_usage_are_not_counted(self):
+        zero = {"input_tokens": 0, "output_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0}
+        events = [
+            {"type": "assistant", "message": {
+                "id": "msg_meta", "model": "muse-wonder-1.0", "usage": zero}},
+            {"type": "assistant", "message": {
+                "id": "msg_err", "model": "<synthetic>", "usage": zero}},
+            {"type": "result", "subtype": "success", "is_error": False,
+             "result": "4", "duration_api_ms": 4105,
+             "usage": {"input_tokens": 1370, "output_tokens": 15}},
+        ]
+        stamped = [(i * 100, json.dumps(e)) for i, e in enumerate(events)]
+        parsed = run_muse.parse_claude_stream(stamped)
+        self.assertEqual(len(parsed["calls"]), 1)
+        self.assertIsNone(parsed["calls"][0]["input_tokens"])
+        self.assertIsNone(parsed["calls"][0]["cached_tokens"])
+        self.assertEqual(parsed["usage_model"], "muse-wonder-1.0")
+        self.assertEqual(parsed["totals"]["input_tokens"], 1370)
+
 
 class CompareScheduleTest(unittest.TestCase):
     def test_repeat_alternates_order(self):
@@ -420,6 +456,57 @@ class ApiMsTest(unittest.TestCase):
             self.assertEqual(data["sessions"][0]["input_tokens"], 3469)
             self.assertEqual(data["sessions"][0]["output_tokens"], 139)
             self.assertIsNone(data["events"][0]["wire_ms"])
+
+
+class DotenvTest(unittest.TestCase):
+    def test_parsing_and_env_wins(self):
+        with tempfile.TemporaryDirectory() as td:
+            env_file = Path(td) / ".env"
+            env_file.write_text(
+                "# a comment\n"
+                "\n"
+                "BENCH_DOTENV_PLAIN=plain-value\n"
+                "BENCH_DOTENV_QUOTED=\"double quoted\"\n"
+                "BENCH_DOTENV_SINGLE='single quoted'\n"
+                "BENCH_DOTENV_SPACED = spaced value \n"
+                "BENCH_DOTENV_EQUALS=a=b\n"
+                "BENCH_DOTENV_WINS=from-file\n"
+                "a line without an equals sign\n")
+            with mock.patch.dict(os.environ,
+                                 {"BENCH_DOTENV_WINS": "from-env"}):
+                for key in ("BENCH_DOTENV_PLAIN", "BENCH_DOTENV_QUOTED",
+                            "BENCH_DOTENV_SINGLE", "BENCH_DOTENV_SPACED",
+                            "BENCH_DOTENV_EQUALS"):
+                    os.environ.pop(key, None)
+                run_muse.load_dotenv(env_file)
+                self.assertEqual(os.environ["BENCH_DOTENV_PLAIN"],
+                                 "plain-value")
+                self.assertEqual(os.environ["BENCH_DOTENV_QUOTED"],
+                                 "double quoted")
+                self.assertEqual(os.environ["BENCH_DOTENV_SINGLE"],
+                                 "single quoted")
+                self.assertEqual(os.environ["BENCH_DOTENV_SPACED"],
+                                 "spaced value")
+                self.assertEqual(os.environ["BENCH_DOTENV_EQUALS"], "a=b")
+                self.assertEqual(os.environ["BENCH_DOTENV_WINS"], "from-env")
+
+    def test_missing_file_is_a_noop(self):
+        with tempfile.TemporaryDirectory() as td:
+            run_muse.load_dotenv(Path(td) / ".env")
+
+
+class RepeatArgTest(unittest.TestCase):
+    def test_repeat_without_compare_is_an_error(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv",
+                               ["run-muse", "--repeat", "2", "hi"]):
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as ctx:
+                    run_muse.main()
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("--repeat needs --compare", err.getvalue())
 
 
 if __name__ == "__main__":
