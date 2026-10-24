@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 20
+VERSION = 22
 INDEX = HERE / "muse-runs" / "index.jsonl"
 _SESSION_LOG_CACHE = {}
 
@@ -153,6 +153,7 @@ def read_logs(run_id=None):
         "wall_ms": r.get("wall_ms"), "calls": len(r.get("calls") or []),
         "provider": r.get("provider"), "context_mode": r.get("context_mode"),
         "comparison_id": r.get("comparison_id"), "round": r.get("round"),
+        "compare_mode": r.get("compare_mode"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
         "model_ms": _run_model_ms(r),
         "overhead_ms": max(0, (r.get("wall_ms") or 0) - _run_model_ms(r)),
@@ -161,7 +162,11 @@ def read_logs(run_id=None):
         "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
         "last_output_tokens": (r.get("calls") or [{}])[-1].get("output_tokens"),
     } for r in reversed(runs)]
+    # With no explicit pick, open on the newest completed run so the
+    # page does not land on a running, failed, or interrupted run.
     selected = next((r for r in runs if r.get("run_id") == run_id), None) \
+        or next((r for r in reversed(runs) if r.get("status") == "completed"),
+                None) \
         or (runs[-1] if runs else {})
     live_timeline = []
     if selected.get("status") == "running" and selected.get("session_id"):

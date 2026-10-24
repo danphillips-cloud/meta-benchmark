@@ -8,7 +8,8 @@ the local-host check, stale running runs, Ctrl+C handling, the
 per-provider default model, Anthropic response parsing, the
 delete guard for running runs, endpoint routing, the Claude Code
 stream parser, compare round order, API-total model time, dotenv
-loading, the BENCH_CLAUDE_MODEL default, and the --repeat check.
+loading, the BENCH_CLAUDE_MODEL default, the --repeat check, the
+terminal compare modes, the paid-run notice, and timeout defaults.
 """
 import importlib.util
 import json
@@ -507,6 +508,226 @@ class RepeatArgTest(unittest.TestCase):
                     run_muse.main()
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("--repeat needs --compare", err.getvalue())
+
+
+class CompareModelsForTest(unittest.TestCase):
+    def test_preset_defaults(self):
+        with mock.patch.dict(os.environ, {}):
+            for key in ("COMPARE_META", "COMPARE_CLAUDE"):
+                os.environ.pop(key, None)
+            self.assertEqual(run_muse.compare_models_for("meta"), [
+                ("meta", "muse-wonder-full-1.0"),
+                ("meta", "muse-wonder-1.0")])
+            self.assertEqual(run_muse.compare_models_for("claude"), [
+                ("claude-code", "muse-wonder-1.0"),
+                ("claude-code", "claude-sonnet-5-5")])
+
+    def test_env_overrides_and_custom(self):
+        with mock.patch.dict(os.environ, {
+                "COMPARE_META": "meta:a,meta:b",
+                "COMPARE_CLAUDE": "claude-code:c",
+                "COMPARE_MODELS": "meta:d,anthropic:e"}):
+            self.assertEqual(run_muse.compare_models_for("meta"),
+                             [("meta", "a"), ("meta", "b")])
+            self.assertEqual(run_muse.compare_models_for("claude"),
+                             [("claude-code", "c")])
+            self.assertEqual(run_muse.compare_models_for("custom"),
+                             [("meta", "d"), ("anthropic", "e")])
+            self.assertEqual(run_muse.compare_models_for(None),
+                             [("meta", "d"), ("anthropic", "e")])
+
+    def test_unknown_mode_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            run_muse.compare_models_for("bogus")
+        self.assertIn("meta, claude, custom", str(ctx.exception))
+
+
+class HandleCommandTest(unittest.TestCase):
+    def test_mode_show_switch_and_invalid(self):
+        state = {"mode": "single"}
+        shown = run_muse.handle_command("/mode", state)
+        self.assertEqual(shown["action"], "message")
+        self.assertIn("single", shown["text"])
+        switched = run_muse.handle_command("/mode meta", state)
+        self.assertEqual(switched["mode"], "meta")
+        self.assertIn("meta vs meta", switched["text"])
+        self.assertIn("muse-wonder-full-1.0", switched["text"])
+        # Pure: the caller's state is not mutated.
+        self.assertEqual(state, {"mode": "single"})
+        bad = run_muse.handle_command("/mode bogus", {"mode": "claude"})
+        self.assertEqual(bad["mode"], "claude")
+        self.assertIn("Unknown mode", bad["text"])
+        back = run_muse.handle_command("/mode single", {"mode": "meta"})
+        self.assertEqual(back["mode"], "single")
+
+    def test_help_quit_prompt_and_empty(self):
+        help_result = run_muse.handle_command("/help", {"mode": "single"})
+        self.assertEqual(help_result["action"], "message")
+        self.assertIn("/mode single|meta|claude|custom", help_result["text"])
+        self.assertEqual(
+            run_muse.handle_command("/quit", {"mode": "meta"})["action"],
+            "quit")
+        prompt = run_muse.handle_command("what is 2+2", {"mode": "meta"})
+        self.assertEqual(prompt, {"action": "prompt", "mode": "meta",
+                                  "text": "what is 2+2"})
+        self.assertEqual(
+            run_muse.handle_command("  ", {"mode": "single"})["action"],
+            "none")
+
+
+class CompareModeRecordTest(unittest.TestCase):
+    def test_run_records_compare_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs, old_fn = run_muse.RUNS, run_muse.run_anthropic
+            run_muse.RUNS = runs
+            run_muse.run_anthropic = lambda *a, **k: \
+                (_ for _ in ()).throw(KeyboardInterrupt())
+            try:
+                report = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m",
+                    comparison_id="set1", compare_round=2,
+                    compare_mode="claude")
+                single = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m")
+            finally:
+                run_muse.RUNS, run_muse.run_anthropic = old_runs, old_fn
+            self.assertEqual(report["compare_mode"], "claude")
+            self.assertIsNone(single["compare_mode"])
+            entries = [json.loads(l) for l in
+                       (runs / "index.jsonl").read_text().splitlines()]
+            by_id = {e["run_id"]: e for e in entries}
+            self.assertEqual(by_id[report["run_id"]]["compare_mode"],
+                             "claude")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs(report["run_id"])
+            finally:
+                server.INDEX = old
+            picked = next(s for s in data["sessions"]
+                          if s["run_id"] == report["run_id"])
+            self.assertEqual(picked["compare_mode"], "claude")
+
+
+def _completed(**overrides):
+    result = {"session_id": None, "wall_ms": 1, "exit_code": 0,
+              "timed_out": False, "interrupted": False, "reply": "",
+              "calls": [], "timeline": [], "command": "fake",
+              "usage_model": None}
+    result.update(overrides)
+    return result
+
+
+class PaidNoticeTest(unittest.TestCase):
+    def _run_with_ki(self, provider, model, fake_name):
+        import contextlib
+        import io
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs = run_muse.RUNS
+            old_fn = getattr(run_muse, fake_name)
+            run_muse.RUNS = runs
+            setattr(run_muse, fake_name,
+                    lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+            out = io.StringIO()
+            try:
+                with mock.patch.dict(os.environ, {
+                        "ANTHROPIC_API_KEY": "secret-sentinel-a",
+                        "MODEL_API_KEY": "secret-sentinel-m"}):
+                    with contextlib.redirect_stdout(out):
+                        run_muse.run_prompt("hi", provider=provider,
+                                            model=model)
+            finally:
+                run_muse.RUNS = old_runs
+                setattr(run_muse, fake_name, old_fn)
+            return out.getvalue()
+
+    def test_notice_names_key_per_model_and_never_prints_value(self):
+        out = self._run_with_ki("anthropic", "claude-x", "run_anthropic")
+        self.assertIn("Paid run: uses ANTHROPIC_API_KEY", out)
+        self.assertNotIn("secret-sentinel", out)
+        out = self._run_with_ki("claude-code", "muse-wonder-1.0",
+                                "run_claude_code")
+        self.assertIn("Paid run: uses MODEL_API_KEY", out)
+        self.assertNotIn("secret-sentinel", out)
+        out = self._run_with_ki("claude-code", "claude-sonnet-5-5",
+                                "run_claude_code")
+        self.assertIn("Paid run: uses ANTHROPIC_API_KEY", out)
+
+    def test_no_notice_for_subscription_runs(self):
+        out = self._run_with_ki("meta", "muse-wonder-1.0", "run_muse_exec")
+        self.assertNotIn("Paid run", out)
+
+    def test_mode_claude_switch_prints_notice(self):
+        switched = run_muse.handle_command("/mode claude",
+                                           {"mode": "single"})
+        self.assertEqual(switched["mode"], "claude")
+        self.assertIn("Paid run: uses MODEL_API_KEY", switched["text"])
+        self.assertIn("Paid run: uses ANTHROPIC_API_KEY", switched["text"])
+        meta = run_muse.handle_command("/mode meta", {"mode": "single"})
+        self.assertNotIn("Paid run", meta["text"])
+
+
+class DefaultTimeoutTest(unittest.TestCase):
+    def test_default_timeout_per_provider(self):
+        self.assertEqual(run_muse.default_timeout("meta"), 1800)
+        self.assertEqual(run_muse.default_timeout("echo"), 1800)
+        self.assertEqual(run_muse.default_timeout("claude-code"), 300)
+        self.assertEqual(run_muse.default_timeout("anthropic"), 300)
+
+    def _captured_timeout(self, provider, model, fake_name, **kwargs):
+        import contextlib
+        import io
+        captured = {}
+
+        # Each fake records the timeout argument by position.
+        if fake_name in ("run_anthropic", "run_claude_code"):
+            def fake(prompt, run_dir, mdl, timeout):
+                captured["timeout"] = timeout
+                return _completed()
+        else:
+            def fake(prompt, run_dir, prov, mdl, minimal, timeout,
+                     session_id=None):
+                captured["timeout"] = timeout
+                return _completed(session_id=session_id)
+
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs = run_muse.RUNS
+            old_fn = getattr(run_muse, fake_name)
+            run_muse.RUNS = runs
+            setattr(run_muse, fake_name, fake)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    report = run_muse.run_prompt(
+                        "hi", provider=provider, model=model, **kwargs)
+            finally:
+                run_muse.RUNS = old_runs
+                setattr(run_muse, fake_name, old_fn)
+        return captured["timeout"], report["timeout_seconds"]
+
+    def test_run_prompt_resolves_timeout_per_provider(self):
+        self.assertEqual(
+            self._captured_timeout("anthropic", "claude-x",
+                                   "run_anthropic"), (300, 300))
+        self.assertEqual(
+            self._captured_timeout("claude-code", "claude-x",
+                                   "run_claude_code"), (300, 300))
+        self.assertEqual(
+            self._captured_timeout("meta", "muse-wonder-1.0",
+                                   "run_muse_exec"), (1800, 1800))
+
+    def test_explicit_timeout_wins_for_all_providers(self):
+        self.assertEqual(
+            self._captured_timeout("anthropic", "claude-x",
+                                   "run_anthropic", timeout=42), (42, 42))
+        self.assertEqual(
+            self._captured_timeout("claude-code", "claude-x",
+                                   "run_claude_code", timeout=42), (42, 42))
+        self.assertEqual(
+            self._captured_timeout("meta", "muse-wonder-1.0",
+                                   "run_muse_exec", timeout=42), (42, 42))
 
 
 if __name__ == "__main__":

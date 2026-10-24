@@ -25,7 +25,7 @@
   aside ul { margin:0; padding-left:18px; }
   aside a { color:var(--accent-dark); font-weight:600; text-decoration:none; }
   aside a:hover { text-decoration:underline; }
-  aside code { font-family:ui-monospace, monospace; font-size:12px; background:#eef2f7; border-radius:5px; padding:1px 5px; }
+  aside code { font-family:ui-monospace, monospace; font-size:12px; background:var(--chip); color:var(--ink); border-radius:5px; padding:1px 5px; }
   .timelineWrap.collapsed { max-height:430px; overflow:hidden; }
   h1 { font-family: Georgia, "Times New Roman", serif; font-size:30px; margin:0 0 4px; color:var(--accent-dark); }
   .sub { color:var(--muted); font-size:14px; margin-bottom:6px; }
@@ -55,7 +55,7 @@
     <button id="themeToggle" aria-label="Toggle night mode" title="Toggle night mode" style="flex:none;width:40px;height:40px;display:grid;place-items:center;color:var(--accent-dark);background:var(--chip);border:1px solid var(--line);border-radius:999px;cursor:pointer;"></button>
   </div>
   <div class="sub">Live log view. One terminal for everything: <code>cd meta-benchmark &amp;&amp; ./run-muse</code></div>
-  <p style="font-size:15px;line-height:1.6;max-width:720px;margin:0 0 18px;">A performance benchmark lab for Muse. I type prompts in the terminal, each one runs headless on <strong id="introModel">–</strong>, and this page shows where the time went: model call time, local overhead, and token counts for every call.</p>
+  <p style="font-size:15px;line-height:1.6;max-width:720px;margin:0 0 18px;">Prompts run in the terminal. This page shows where the time went.</p>
   <div id="source">Waiting for logs…</div>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
     <span style="font-size:13px;font-weight:700;">Detected model</span>
@@ -103,20 +103,20 @@
     <div class="stat"><small>Cache share, run</small><strong id="cacheShare">–</strong> <span>%</span></div>
   </div>
 
-  <h2>Sessions, grouped</h2>
-  <table>
-    <thead><tr><th>At</th><th>Prompt</th><th>Model</th><th>Calls</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th></tr></thead>
-    <tbody id="groups"><tr><td colspan="7" class="empty">No sessions yet.</td></tr></tbody>
-  </table>
-  <div id="error"></div>
-
   <div id="compareSetWrap" style="display:none;">
-  <h2>Compare set (medians across rounds)</h2>
+  <h2 id="compareSetTitle">Compare set (medians across rounds)</h2>
   <table>
     <thead><tr><th>Provider/Model</th><th>Runs</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th><th>TTFT ms</th><th>Calls</th><th>In</th><th>Out</th></tr></thead>
     <tbody id="compareSet"><tr><td colspan="9" class="empty">No compare set.</td></tr></tbody>
   </table>
   </div>
+
+  <h2>Sessions, grouped</h2>
+  <table>
+    <thead><tr><th>At</th><th>Prompt</th><th>Model</th><th>Status</th><th>Calls</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th></tr></thead>
+    <tbody id="groups"><tr><td colspan="8" class="empty">No sessions yet.</td></tr></tbody>
+  </table>
+  <div id="error"></div>
 
   <h2>Compare sessions</h2>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
@@ -182,6 +182,14 @@
 <script>
   const $ = id => document.getElementById(id);
   const shortText = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+  const localTime = iso => {
+    if (!iso) return "";
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return String(iso);
+    const p = n => String(n).padStart(2, "0");
+    return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate())
+      + " " + p(dt.getHours()) + ":" + p(dt.getMinutes()) + ":" + p(dt.getSeconds());
+  };
   let selectedRun = "";
   let sessionsSig = "";
   $("sessionSelect").addEventListener("change", () => { selectedRun = $("sessionSelect").value; refresh(); });
@@ -199,7 +207,7 @@
         (d.sessions || []).forEach(s => {
           const o = document.createElement("option");
           o.value = s.run_id;
-          const when = (s.at || "").replace("T", " ").slice(0, 19);
+          const when = localTime(s.at);
           o.textContent = when + " · " + shortText(s.prompt || s.run_id, 36) + " · " + s.calls + " call(s)";
           if (s.run_id === keep) o.selected = true;
           sel.appendChild(o);
@@ -207,7 +215,6 @@
         selectedRun = sel.value;
       }
       $("detectedModel").textContent = (d.provider ? d.provider + "/" : "") + (d.model || "–");
-      $("introModel").textContent = (d.provider ? d.provider + "/" : "") + (d.model || "–");
       $("wireLabel").textContent = "Wire, last call" + (d.provider ? " (" + d.provider + ")" : "");
       $("latestPrompt").textContent = d.prompt || "–";
       renderReply(d.reply || "");
@@ -226,7 +233,7 @@
         d.timeline.forEach(ev => {
           const tr = document.createElement("tr");
           const status = ev.ok === false ? "FAILED " + (ev.error_type || "") : (ev.ok === true ? "ok" : "–");
-          [ev.at, ev.operation, ev.duration_ms, ev["wire_ms"] ?? "–", status]
+          [localTime(ev.at) || "–", ev.operation, ev.duration_ms, ev["wire_ms"] ?? "–", status]
             .forEach((v, i) => { const td = document.createElement("td"); td.textContent = v ?? "–"; if (i === 1) td.style.fontFamily = "ui-monospace, monospace"; if (i === 4 && ev.ok === false) td.style.color = "var(--bad)"; tr.appendChild(td); });
           tl.appendChild(tr);
         });
@@ -251,7 +258,8 @@
           const tr = document.createElement("tr");
           tr.style.cursor = "pointer";
           if (s.run_id === d.selected) tr.style.background = "var(--selected)";
-          [ (s.at || "").replace("T", " ").slice(0, 19), shortText(s.prompt || s.run_id, 42) + (s.comparison_id ? " ⇄ set " + s.comparison_id : "") + " · " + (s.provider || ""), s.model, s.calls, s.wall_ms, s.model_ms, s.overhead_ms ]
+          if (s.status !== "completed") tr.style.opacity = "0.55";
+          [ localTime(s.at), shortText(s.prompt || s.run_id, 42) + (s.comparison_id ? " ⇄ set " + s.comparison_id : "") + " · " + (s.provider || ""), s.model, s.status, s.calls, s.wall_ms, s.model_ms, s.overhead_ms ]
             .forEach((v, i) => { const td = document.createElement("td"); td.textContent = v ?? "–"; if (i === 1) td.title = s.prompt || ""; tr.appendChild(td); });
           tr.addEventListener("click", () => { selectedRun = s.run_id; $("sessionSelect").value = s.run_id; refresh(); });
           groups.appendChild(tr);
@@ -363,7 +371,7 @@
       (d.sessions || []).forEach(s => {
         const o = document.createElement("option");
         o.value = s.run_id;
-        o.textContent = (s.at || "").replace("T", " ").slice(0, 19) + " · " + shortText(s.prompt || s.run_id, 36);
+        o.textContent = localTime(s.at) + " · " + shortText(s.prompt || s.run_id, 36);
         if (s.run_id === keep) o.selected = true;
         sel.appendChild(o);
       });
@@ -402,6 +410,11 @@
     const wrap = $("compareSetWrap");
     const selected = (d.sessions || []).find(s => s.run_id === d.selected);
     if (!selected || !selected.comparison_id) { wrap.style.display = "none"; return; }
+    const modeNames = { meta: "Meta vs Meta", claude: "Meta vs Claude", custom: "Custom" };
+    const modeName = modeNames[selected.compare_mode];
+    $("compareSetTitle").textContent = modeName
+      ? "Compare set: " + modeName + " (medians across rounds)"
+      : "Compare set (medians across rounds)";
     const inSet = (d.sessions || []).filter(s => s.comparison_id === selected.comparison_id);
     const groups = new Map();
     inSet.forEach(s => {
@@ -429,7 +442,7 @@
     if (!sessions.length) { $("summaryText").textContent = "No sessions yet."; return; }
     const lines = ["meta-benchmark summary (" + (d.provider ? d.provider + "/" : "") + (d.model || "unknown model") + ")", ""];
     sessions.forEach(s => {
-      lines.push((s.at || "").replace("T", " ").slice(0, 19) + "  " + (s.prompt || s.run_id));
+      lines.push(localTime(s.at) + "  " + (s.prompt || s.run_id));
       lines.push("  " + (s.provider || "?") + "/" + (s.model || "?") + " (" + (s.context_mode || "full") + " context)"
         + (s.comparison_id ? " · compare set " + s.comparison_id : "") + (s.status ? " · " + s.status : ""));
       lines.push("  " + s.calls + " call(s) · wall " + fmt(s.wall_ms) + " ms · model " + fmt(s.model_ms)

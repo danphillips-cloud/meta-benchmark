@@ -70,6 +70,12 @@ COMPARE_MODELS = os.environ.get(
     "COMPARE_MODELS",
     "meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,"
     "claude-code:claude-sonnet-5-5")
+COMPARE_META = os.environ.get(
+    "COMPARE_META", "meta:muse-wonder-full-1.0,meta:muse-wonder-1.0")
+COMPARE_CLAUDE = os.environ.get(
+    "COMPARE_CLAUDE",
+    "claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5")
+COMPARE_MODES = ("meta", "claude", "custom")
 
 
 def default_model(provider):
@@ -96,6 +102,17 @@ def endpoint_for(model):
 def endpoint_key_name(model):
     return "MODEL_API_KEY" if model and model.startswith("muse-") \
         else "ANTHROPIC_API_KEY"
+
+
+PAID_PROVIDERS = ("claude-code", "anthropic")
+
+
+def default_timeout(provider):
+    return 300 if provider in PAID_PROVIDERS else 1800
+
+
+def paid_notice(model):
+    return f"Paid run: uses {endpoint_key_name(model)}"
 
 
 def ui_version():
@@ -466,8 +483,16 @@ def run_claude_code(prompt, run_dir, model, timeout):
     workspace = run_dir / "workspace"
     workspace.mkdir()
     (run_dir / "prompt.md").write_text(prompt)
+    # Bare mode defaults to auto, which asks the session model to
+    # classify each Bash call. muse-wonder-1.0 cannot do that, so
+    # every Bash call is denied as "Classifier unavailable".
+    # --allowedTools alone does not skip the classifier. dontAsk
+    # never consults it: the three tools bare mode exposes run,
+    # anything else is denied.
     cmd = ["claude", "-p", "--bare", "--output-format", "stream-json",
-           "--verbose", "--model", model]
+           "--verbose", "--model", model,
+           "--permission-mode", "dontAsk",
+           "--allowedTools", "Bash,Edit,Read"]
     base, api_key = endpoint_for(model)
     if not api_key:
         return {"session_id": None, "wall_ms": 0, "exit_code": 1,
@@ -511,9 +536,13 @@ def run_claude_code(prompt, run_dir, model, timeout):
 
 
 def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
-               minimal=False, timeout=1800, comparison_id=None,
-               compare_round=None):
+               minimal=False, timeout=None, comparison_id=None,
+               compare_round=None, compare_mode=None):
     model = model or default_model(provider)
+    if timeout is None:
+        timeout = default_timeout(provider)
+    if provider in PAID_PROVIDERS:
+        print(paid_notice(model))
     RUNS.mkdir(exist_ok=True)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     run_dir = RUNS / run_id
@@ -532,6 +561,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "provider": provider, "session_id": live_session_id,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
+        "compare_mode": compare_mode,
         "status": "running",
         "timeout_seconds": timeout, "command": None,
         "wall_ms": None, "exit_code": None, "reply": "",
@@ -576,6 +606,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "provider": provider, "session_id": r["session_id"],
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
+        "compare_mode": compare_mode,
         "status": status, "timeout_seconds": timeout,
         "command": r["command"],
         "wall_ms": r["wall_ms"], "exit_code": r["exit_code"],
@@ -635,6 +666,96 @@ def parse_compare_models(text):
     return out
 
 
+def compare_models_for(mode):
+    """The (provider, model) list for a compare mode.
+
+    meta and claude are presets. custom (and None) reads
+    COMPARE_MODELS. Preset env vars are read at call time so a
+    shell or .env change takes effect without an edit here.
+    """
+    if mode == "meta":
+        return parse_compare_models(
+            os.environ.get("COMPARE_META", COMPARE_META))
+    if mode == "claude":
+        return parse_compare_models(
+            os.environ.get("COMPARE_CLAUDE", COMPARE_CLAUDE))
+    if mode in ("custom", None):
+        return parse_compare_models(
+            os.environ.get("COMPARE_MODELS", COMPARE_MODELS))
+    raise ValueError(
+        f"unknown compare mode '{mode}' "
+        f"(valid: {', '.join(COMPARE_MODES)})")
+
+
+def mode_label(mode):
+    return {"single": "single", "meta": "meta vs meta",
+            "claude": "meta vs claude", "custom": "custom"}.get(mode, mode)
+
+
+def describe_mode(mode):
+    if mode == "single":
+        return "Mode: single"
+    models = ", ".join(f"{provider}/{model}"
+                       for provider, model in compare_models_for(mode))
+    return f"Mode: {mode_label(mode)} ({models})"
+
+
+def run_compare(prompt, mode, minimal, timeout, repeat):
+    comparison_id = uuid.uuid4().hex[:8]
+    models = compare_models_for(mode)
+    print(f"Comparing {len(models)} model(s), {repeat} round(s), "
+          f"set {comparison_id}")
+    for round_no, order in compare_schedule(models, repeat):
+        for provider, model in order:
+            run_prompt(prompt, provider=provider, model=model,
+                       minimal=minimal, timeout=timeout,
+                       comparison_id=comparison_id,
+                       compare_round=round_no, compare_mode=mode)
+
+
+def handle_command(line, state):
+    """Classify one prompt-loop line. Pure: state is only read.
+
+    Returns {"action", "mode", "text"} where action is "prompt",
+    "message", "quit", or "none", and mode is the mode after the
+    line. The caller prints text and applies mode.
+    """
+    mode = state.get("mode", "single")
+    text = (line or "").strip()
+    if not text:
+        return {"action": "none", "mode": mode, "text": ""}
+    if text in ("/quit", "/exit", "quit", "exit"):
+        return {"action": "quit", "mode": mode, "text": ""}
+    if text == "/help":
+        return {"action": "message", "mode": mode, "text":
+                "Commands: /mode, /mode single|meta|claude|custom, "
+                "/help, /quit\n"
+                "Modes: single (one run), meta (Meta vs Meta), "
+                "claude (Meta vs Claude), custom (COMPARE_MODELS)"}
+    if text == "/mode":
+        return {"action": "message", "mode": mode,
+                "text": describe_mode(mode)}
+    if text.startswith("/mode "):
+        wanted = text[len("/mode "):].strip()
+        if wanted in ("single",) + COMPARE_MODES:
+            text_out = describe_mode(wanted)
+            if wanted == "claude":
+                keys = []
+                for m_provider, m_model in compare_models_for("claude"):
+                    if m_provider in PAID_PROVIDERS:
+                        key = endpoint_key_name(m_model)
+                        if key not in keys:
+                            keys.append(key)
+                for key in keys:
+                    text_out += f"\nPaid run: uses {key}"
+            return {"action": "message", "mode": wanted,
+                    "text": text_out}
+        return {"action": "message", "mode": mode,
+                "text": f"Unknown mode '{wanted}'. "
+                        "Valid modes: single, meta, claude, custom."}
+    return {"action": "prompt", "mode": mode, "text": text}
+
+
 def compare_schedule(models, repeat):
     """One (round, order) pair per round. Even rounds reverse the
     order so neither side always goes first."""
@@ -649,56 +770,77 @@ def main():
     parser.add_argument("--model", default=None)
     parser.add_argument("--minimal", action="store_true",
                         help="controlled context: no reminders, no foreign context")
-    parser.add_argument("--timeout", type=int, default=1800,
-                        help="per-run timeout in seconds (default 1800)")
-    parser.add_argument("--compare", action="store_true",
-                        help="run the prompt across COMPARE_MODELS")
+    parser.add_argument("--timeout", type=int, default=None,
+                        help="per-run timeout in seconds (default 1800, "
+                             "300 for claude-code and anthropic)")
+    parser.add_argument("--compare", nargs="?", const="custom",
+                        default=None, metavar="MODE",
+                        help="compare mode: meta, claude, or custom "
+                             "(COMPARE_MODELS)")
     parser.add_argument("--repeat", type=int, default=None,
                         help="compare rounds, alternating order (default 1)")
     args = parser.parse_args()
     if args.repeat is not None and not args.compare:
         parser.error("--repeat needs --compare")
+    # Bare --compare takes the next word as its value. When that word
+    # is not a mode name it is the first prompt word, and the mode is
+    # custom. An explicit --compare=<mode> must name a real mode.
+    mode = args.compare
+    prompt_words = list(args.prompt)
+    if mode is not None and mode not in COMPARE_MODES:
+        if any(a.startswith("--compare=") for a in sys.argv):
+            parser.error(f"unknown compare mode '{mode}' "
+                         f"(valid: {', '.join(COMPARE_MODES)})")
+        prompt_words = [mode] + prompt_words
+        mode = "custom"
     args.model = args.model or default_model(args.provider)
     ensure_ui()
-    prompt = " ".join(args.prompt).strip()
-    if args.compare:
-        if not prompt:
-            parser.error("--compare needs a prompt")
-        repeat = args.repeat if args.repeat is not None else 1
-        if repeat < 1:
-            parser.error("--repeat must be at least 1")
-        comparison_id = uuid.uuid4().hex[:8]
-        models = parse_compare_models(COMPARE_MODELS)
-        print(f"Comparing {len(models)} model(s), {repeat} round(s), "
-              f"set {comparison_id}")
-        for round_no, order in compare_schedule(models, repeat):
-            for provider, model in order:
-                run_prompt(prompt, provider=provider, model=model,
-                           minimal=args.minimal, timeout=args.timeout,
-                           comparison_id=comparison_id,
-                           compare_round=round_no)
+    prompt = " ".join(prompt_words).strip()
+    repeat = args.repeat if args.repeat is not None else 1
+    if mode is not None and repeat < 1:
+        parser.error("--repeat must be at least 1")
+    if prompt and mode is not None:
+        run_compare(prompt, mode, args.minimal, args.timeout, repeat)
         return
     if prompt:
         run_prompt(prompt, provider=args.provider, model=args.model,
                    minimal=args.minimal, timeout=args.timeout)
         return
-    mode = "minimal" if args.minimal else "full"
-    print(f"Model: {args.provider}/{args.model} ({mode} context). "
-          f"Type a prompt, /quit to exit. UI: {UI_URL}")
+    state = {"mode": mode or "single"}
+    if state["mode"] == "single":
+        context = "minimal" if args.minimal else "full"
+        print(f"Model: {args.provider}/{args.model} ({context} context). "
+              f"Type a prompt, /quit to exit. UI: {UI_URL}")
+    else:
+        print(f"{describe_mode(state['mode'])}. Type a prompt, "
+              f"/mode to switch, /quit to exit. UI: {UI_URL}")
     while True:
+        prompt_str = "muse> " if state["mode"] == "single" \
+            else f"muse[{state['mode']}]> "
         try:
-            line = input("muse> ").strip()
+            line = input(prompt_str)
         except (EOFError, KeyboardInterrupt):
             print()
             break
-        if line in ("/quit", "/exit", "quit", "exit"):
+        result = handle_command(line, state)
+        state["mode"] = result["mode"]
+        if result["action"] == "quit":
             break
-        if line:
-            try:
-                run_prompt(line, provider=args.provider, model=args.model,
-                           minimal=args.minimal, timeout=args.timeout)
-            except KeyboardInterrupt:
-                print("\nInterrupted.")
+        if result["action"] == "message":
+            print(result["text"])
+            continue
+        if result["action"] != "prompt":
+            continue
+        try:
+            if state["mode"] == "single":
+                run_prompt(result["text"], provider=args.provider,
+                           model=args.model, minimal=args.minimal,
+                           timeout=args.timeout)
+            else:
+                run_compare(result["text"], state["mode"],
+                            args.minimal, args.timeout, repeat)
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
 
 
 if __name__ == "__main__":
