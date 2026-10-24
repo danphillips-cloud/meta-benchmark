@@ -21,6 +21,17 @@ cd meta-benchmark
 ./run-muse
 ```
 
+## API keys
+
+Muse runs use the `muse login` subscription and need no key. Claude Code and raw API runs do. Put the keys in a `.env` file in the repo root:
+
+```sh
+MODEL_API_KEY=your-meta-key
+ANTHROPIC_API_KEY=your-anthropic-key
+```
+
+`.env` is gitignored. Lock it to your user with `chmod 600 .env`. A variable already set in the shell wins over the file. Each Claude Code run gets only the one key its endpoint needs.
+
 ## How to use
 
 1. Start the tool with `./run-muse`. Wait for the `muse>` prompt in the terminal. The results page opens in the browser on its own. If it does not, open http://127.0.0.1:8765 by hand.
@@ -52,6 +63,8 @@ cd meta-benchmark
 
 The model id picks the endpoint for `claude-code` and `anthropic` runs. A `muse-*` model goes to `META_BASE_URL` (default `https://api.meta.ai`) with `MODEL_API_KEY`. Any other model goes to `ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`) with `ANTHROPIC_API_KEY`. Claude Code can run either vendor's model this way. That gives three clean comparisons. Model against model in Claude Code. Harness against harness on one Meta model. Bare API call against bare API call.
 
+Meta's API serves `muse-wonder-1.0`. `muse-wonder-full-1.0` only works through the Muse subscription, so the default compare set uses `muse-wonder-1.0` on both harnesses.
+
 A bare API run and an agent run measure different things. The page labels provider and model on every run. I do not read them as like for like.
 
 ## Reading the numbers
@@ -73,8 +86,9 @@ Each Muse run carries roughly 30k tokens of agent context before the prompt. Tha
 | `MODEL_API_KEY` | unset | Key for `muse-*` models on the Meta endpoint. Never logged |
 | `ANTHROPIC_API_KEY` | unset | Key for Claude models. Never logged |
 | `META_BASE_URL` | `https://api.meta.ai` | Endpoint for `muse-*` models |
-| `COMPARE_MODELS` | `meta:muse-wonder-full-1.0,claude-code:muse-wonder-full-1.0,claude-code:claude-sonnet-5-5` | `provider:model` pairs for `--compare` |
+| `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | `provider:model` pairs for `--compare` |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for raw `anthropic` runs |
+| `BENCH_CLAUDE_MODEL` | `claude-sonnet-5-5` | Default model for `anthropic` and `claude-code` runs |
 
 ## Data and privacy
 

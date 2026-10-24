@@ -27,24 +27,53 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+
+
+def load_dotenv(path=None):
+    """Load KEY=VALUE lines from the repo-root .env into os.environ.
+
+    Blank lines and # comments are skipped, surrounding quotes are
+    stripped, and a variable already set in the environment wins.
+    Values are never printed or logged.
+    """
+    path = path if path is not None else ROOT / ".env"
+    if not Path(path).is_file():
+        return
+    for line in Path(path).read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
+
+
+load_dotenv()
 RUNS = ROOT / "muse-runs"
 UI_DIR = ROOT
 PORT = int(os.environ.get("PORT", "8765"))
 UI_URL = f"http://127.0.0.1:{PORT}/"
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
-DEFAULT_ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-5-5")
+DEFAULT_CLAUDE_MODEL = os.environ.get("BENCH_CLAUDE_MODEL", "claude-sonnet-5-5")
 DEFAULT_PROVIDER = os.environ.get("MUSE_PROVIDER", "meta")
 STRIP_ENV = ("META_API_KEY", "MUSE_API_TOKEN", "MODEL_API_KEY", "ANTHROPIC_API_KEY")
 # provider:model entries used by --compare
 COMPARE_MODELS = os.environ.get(
     "COMPARE_MODELS",
-    "meta:muse-wonder-full-1.0,claude-code:muse-wonder-full-1.0,"
+    "meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,"
     "claude-code:claude-sonnet-5-5")
 
 
 def default_model(provider):
+    # Not ANTHROPIC_MODEL: Meta's Claude Code setup tells users to
+    # export that name for a Meta model, which must not silently
+    # change this tool's Claude default.
     if provider in ("anthropic", "claude-code"):
-        return os.environ.get("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL)
+        return os.environ.get("BENCH_CLAUDE_MODEL", DEFAULT_CLAUDE_MODEL)
     return os.environ.get("MUSE_MODEL", DEFAULT_MODEL)
 
 
@@ -476,17 +505,23 @@ def parse_claude_stream(stamped):
         if etype == "assistant":
             msg = e.get("message") or {}
             mid = msg.get("id")
-            if mid and mid in seen:
+            # Claude Code emits a "<synthetic>" message to carry an error.
+            # It is not a model call.
+            if msg.get("model") == "<synthetic>" or (mid and mid in seen):
                 continue
             if mid:
                 seen.add(mid)
             usage = msg.get("usage") or {}
             usage_model = msg.get("model") or usage_model
+            # Meta's endpoint sends all-zero per-call usage. A real call
+            # always has input, so 0 means not reported.
+            input_tokens = _input_with_cache(usage) or None
             calls.append({
                 "model": msg.get("model"), "duration_ms": None,
-                "input_tokens": _input_with_cache(usage),
+                "input_tokens": input_tokens,
                 "output_tokens": None,
-                "cached_tokens": usage.get("cache_read_input_tokens"),
+                "cached_tokens": usage.get("cache_read_input_tokens")
+                                 if input_tokens else None,
                 "reasoning_tokens": None,
             })
         elif etype == "result":
@@ -711,22 +746,25 @@ def main():
                         help="per-run timeout in seconds (default 1800)")
     parser.add_argument("--compare", action="store_true",
                         help="run the prompt across COMPARE_MODELS")
-    parser.add_argument("--repeat", type=int, default=1,
+    parser.add_argument("--repeat", type=int, default=None,
                         help="compare rounds, alternating order (default 1)")
     args = parser.parse_args()
+    if args.repeat is not None and not args.compare:
+        parser.error("--repeat needs --compare")
     args.model = args.model or default_model(args.provider)
     ensure_ui()
     prompt = " ".join(args.prompt).strip()
     if args.compare:
         if not prompt:
             parser.error("--compare needs a prompt")
-        if args.repeat < 1:
+        repeat = args.repeat if args.repeat is not None else 1
+        if repeat < 1:
             parser.error("--repeat must be at least 1")
         comparison_id = uuid.uuid4().hex[:8]
         models = parse_compare_models(COMPARE_MODELS)
-        print(f"Comparing {len(models)} model(s), {args.repeat} round(s), "
+        print(f"Comparing {len(models)} model(s), {repeat} round(s), "
               f"set {comparison_id}")
-        for round_no, order in compare_schedule(models, args.repeat):
+        for round_no, order in compare_schedule(models, repeat):
             for provider, model in order:
                 run_prompt(prompt, provider=provider, model=model,
                            minimal=args.minimal, timeout=args.timeout,
