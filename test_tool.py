@@ -8,7 +8,8 @@ the local-host check, stale running runs, Ctrl+C handling, the
 per-provider default model, Anthropic response parsing, the
 delete guard for running runs, endpoint routing, the Claude Code
 stream parser, compare round order, API-total model time, dotenv
-loading, the BENCH_CLAUDE_MODEL default, and the --repeat check.
+loading, the BENCH_CLAUDE_MODEL default, the --repeat check, and
+the terminal compare modes.
 """
 import importlib.util
 import json
@@ -507,6 +508,106 @@ class RepeatArgTest(unittest.TestCase):
                     run_muse.main()
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("--repeat needs --compare", err.getvalue())
+
+
+class CompareModelsForTest(unittest.TestCase):
+    def test_preset_defaults(self):
+        with mock.patch.dict(os.environ, {}):
+            for key in ("COMPARE_META", "COMPARE_CLAUDE"):
+                os.environ.pop(key, None)
+            self.assertEqual(run_muse.compare_models_for("meta"), [
+                ("meta", "muse-wonder-full-1.0"),
+                ("meta", "muse-wonder-1.0")])
+            self.assertEqual(run_muse.compare_models_for("claude"), [
+                ("claude-code", "muse-wonder-1.0"),
+                ("claude-code", "claude-sonnet-5-5")])
+
+    def test_env_overrides_and_custom(self):
+        with mock.patch.dict(os.environ, {
+                "COMPARE_META": "meta:a,meta:b",
+                "COMPARE_CLAUDE": "claude-code:c",
+                "COMPARE_MODELS": "meta:d,anthropic:e"}):
+            self.assertEqual(run_muse.compare_models_for("meta"),
+                             [("meta", "a"), ("meta", "b")])
+            self.assertEqual(run_muse.compare_models_for("claude"),
+                             [("claude-code", "c")])
+            self.assertEqual(run_muse.compare_models_for("custom"),
+                             [("meta", "d"), ("anthropic", "e")])
+            self.assertEqual(run_muse.compare_models_for(None),
+                             [("meta", "d"), ("anthropic", "e")])
+
+    def test_unknown_mode_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            run_muse.compare_models_for("bogus")
+        self.assertIn("meta, claude, custom", str(ctx.exception))
+
+
+class HandleCommandTest(unittest.TestCase):
+    def test_mode_show_switch_and_invalid(self):
+        state = {"mode": "single"}
+        shown = run_muse.handle_command("/mode", state)
+        self.assertEqual(shown["action"], "message")
+        self.assertIn("single", shown["text"])
+        switched = run_muse.handle_command("/mode meta", state)
+        self.assertEqual(switched["mode"], "meta")
+        self.assertIn("meta vs meta", switched["text"])
+        self.assertIn("muse-wonder-full-1.0", switched["text"])
+        # Pure: the caller's state is not mutated.
+        self.assertEqual(state, {"mode": "single"})
+        bad = run_muse.handle_command("/mode bogus", {"mode": "claude"})
+        self.assertEqual(bad["mode"], "claude")
+        self.assertIn("Unknown mode", bad["text"])
+        back = run_muse.handle_command("/mode single", {"mode": "meta"})
+        self.assertEqual(back["mode"], "single")
+
+    def test_help_quit_prompt_and_empty(self):
+        help_result = run_muse.handle_command("/help", {"mode": "single"})
+        self.assertEqual(help_result["action"], "message")
+        self.assertIn("/mode single|meta|claude|custom", help_result["text"])
+        self.assertEqual(
+            run_muse.handle_command("/quit", {"mode": "meta"})["action"],
+            "quit")
+        prompt = run_muse.handle_command("what is 2+2", {"mode": "meta"})
+        self.assertEqual(prompt, {"action": "prompt", "mode": "meta",
+                                  "text": "what is 2+2"})
+        self.assertEqual(
+            run_muse.handle_command("  ", {"mode": "single"})["action"],
+            "none")
+
+
+class CompareModeRecordTest(unittest.TestCase):
+    def test_run_records_compare_mode(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs, old_fn = run_muse.RUNS, run_muse.run_anthropic
+            run_muse.RUNS = runs
+            run_muse.run_anthropic = lambda *a, **k: \
+                (_ for _ in ()).throw(KeyboardInterrupt())
+            try:
+                report = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m",
+                    comparison_id="set1", compare_round=2,
+                    compare_mode="claude")
+                single = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m")
+            finally:
+                run_muse.RUNS, run_muse.run_anthropic = old_runs, old_fn
+            self.assertEqual(report["compare_mode"], "claude")
+            self.assertIsNone(single["compare_mode"])
+            entries = [json.loads(l) for l in
+                       (runs / "index.jsonl").read_text().splitlines()]
+            by_id = {e["run_id"]: e for e in entries}
+            self.assertEqual(by_id[report["run_id"]]["compare_mode"],
+                             "claude")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs(report["run_id"])
+            finally:
+                server.INDEX = old
+            picked = next(s for s in data["sessions"]
+                          if s["run_id"] == report["run_id"])
+            self.assertEqual(picked["compare_mode"], "claude")
 
 
 if __name__ == "__main__":

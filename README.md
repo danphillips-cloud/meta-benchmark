@@ -54,12 +54,24 @@ The page refreshes every two seconds, so calls show up while a run is live.
 ```sh
 ./run-muse "write a python script that counts lines in a file, then run it on itself"
 ./run-muse --minimal "what is 2+2"                # controlled context
-./run-muse --provider claude-code "what is 2+2"
-./run-muse --provider anthropic "what is 2+2"     # one raw API call, no agent
-./run-muse --compare --repeat 3 "what is 2+2"     # COMPARE_MODELS, 3 rounds
 ```
 
-## Providers
+| Mode | Command |
+|---|---|
+| Single (default) | `./run-muse` |
+| Meta vs Meta | `./run-muse --compare meta` |
+| Meta vs Claude | `./run-muse --compare claude` |
+| Custom | `./run-muse --compare` |
+
+In the loop, `/mode meta`, `/mode claude`, and `/mode single` switch mode. `/help` lists commands. The prompt shows the mode, for example `muse[meta]>`.
+
+## Reading the numbers
+
+**Wire** is one model call. **Total** is the whole run. The gap is local overhead.
+
+Claude Code doesn't report per-call time, so its Wire column is blank and Model total uses its API time.
+
+## Advanced
 
 | `--provider` | Runs |
 |---|---|
@@ -69,19 +81,15 @@ The page refreshes every two seconds, so calls show up while a run is live.
 
 For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anything else goes to Anthropic. Meta's API serves `muse-wonder-1.0`.
 
-## Reading the numbers
-
-**Wire** is one model call. **Total** is the whole run. The gap is local overhead.
-
-Claude Code doesn't report per-call time, so its Wire column is blank and Model total uses its API time.
-
-## Configuration
+`--compare --repeat N` runs N rounds, alternating the order each round.
 
 | Variable | Default | What it does |
 |---|---|---|
 | `MODEL_API_KEY` | unset | Key for `muse-*` models on Meta's API |
 | `ANTHROPIC_API_KEY` | unset | Key for Claude models |
-| `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | `provider:model` pairs for `--compare` |
+| `COMPARE_META` | `meta:muse-wonder-full-1.0,meta:muse-wonder-1.0` | Pairs for `--compare meta` |
+| `COMPARE_CLAUDE` | `claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare claude` |
+| `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for bare `--compare` |
 | `BENCH_CLAUDE_MODEL` | `claude-sonnet-5-5` | Default model for `claude-code` and `anthropic` |
 | `META_BASE_URL` | `https://api.meta.ai` | Meta API endpoint |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for `anthropic` runs |

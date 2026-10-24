@@ -104,7 +104,7 @@
   </div>
 
   <div id="compareSetWrap" style="display:none;">
-  <h2>Compare set (medians across rounds)</h2>
+  <h2 id="compareSetTitle">Compare set (medians across rounds)</h2>
   <table>
     <thead><tr><th>Provider/Model</th><th>Runs</th><th>Wall ms</th><th>Model ms</th><th>Overhead ms</th><th>TTFT ms</th><th>Calls</th><th>In</th><th>Out</th></tr></thead>
     <tbody id="compareSet"><tr><td colspan="9" class="empty">No compare set.</td></tr></tbody>
@@ -410,6 +410,11 @@
     const wrap = $("compareSetWrap");
     const selected = (d.sessions || []).find(s => s.run_id === d.selected);
     if (!selected || !selected.comparison_id) { wrap.style.display = "none"; return; }
+    const modeNames = { meta: "Meta vs Meta", claude: "Meta vs Claude", custom: "Custom" };
+    const modeName = modeNames[selected.compare_mode];
+    $("compareSetTitle").textContent = modeName
+      ? "Compare set: " + modeName + " (medians across rounds)"
+      : "Compare set (medians across rounds)";
     const inSet = (d.sessions || []).filter(s => s.comparison_id === selected.comparison_id);
     const groups = new Map();
     inSet.forEach(s => {
