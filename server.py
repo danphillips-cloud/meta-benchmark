@@ -15,17 +15,23 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 17
+VERSION = 18
 INDEX = HERE / "muse-runs" / "index.jsonl"
+_SESSION_LOG_CACHE = {}
 
 
 def live_session_log(session_id):
     if not session_id:
         return None
+    if session_id in _SESSION_LOG_CACHE:
+        return _SESSION_LOG_CACHE[session_id]
     base = Path(os.environ.get("MUSE_SESSIONS_DIR")
                 or Path.home() / ".local/share/muse/sessions")
     files = list(base.glob(f"**/{session_id}/session.jsonl"))
-    return files[0] if files else None
+    if not files:
+        return None
+    _SESSION_LOG_CACHE[session_id] = files[0]
+    return files[0]
 
 
 def live_calls(session_id):
@@ -168,8 +174,8 @@ def read_logs(run_id=None):
         "provider": r.get("provider"), "context_mode": r.get("context_mode"),
         "comparison_id": r.get("comparison_id"), "status": r.get("status"),
         "model_ms": sum(c.get("duration_ms") or 0 for c in (r.get("calls") or [])),
-        "overhead_ms": (r.get("wall_ms") or 0)
-                       - sum(c.get("duration_ms") or 0 for c in (r.get("calls") or [])),
+        "overhead_ms": max(0, (r.get("wall_ms") or 0)
+                       - sum(c.get("duration_ms") or 0 for c in (r.get("calls") or []))),
         "input_tokens": sum(c.get("input_tokens") or 0 for c in (r.get("calls") or [])),
         "output_tokens": sum(c.get("output_tokens") or 0 for c in (r.get("calls") or [])),
         "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
@@ -194,12 +200,10 @@ def read_logs(run_id=None):
     events, errors = [], []
     for call in selected.get("calls") or []:
         events.append({
-            "at": selected.get("at"),
             "prompt": selected.get("prompt"),
             "reply": selected.get("reply"),
             "model": call.get("model") or selected.get("model"),
             "wire_ms": call.get("duration_ms"),
-            "duration_ms": selected.get("wall_ms") or elapsed_ms,
             "gen_ai.usage.input_tokens": call.get("input_tokens"),
             "gen_ai.usage.output_tokens": call.get("output_tokens"),
             "gen_ai.usage.cached_tokens": call.get("cached_tokens"),
@@ -208,10 +212,9 @@ def read_logs(run_id=None):
             "ok": selected.get("exit_code") == 0,
         })
     events.reverse()
-    for run in runs:
-        if run.get("error") or run.get("exit_code") not in (0, None):
-            errors.append({"at": run.get("at"), "operation": run.get("run_id"),
-                           "error_type": run.get("error") or f"exit {run.get('exit_code')}"})
+    if selected.get("error") or selected.get("exit_code") not in (0, None):
+        errors.append({"at": selected.get("at"), "operation": selected.get("run_id"),
+                       "error_type": selected.get("error") or f"exit {selected.get('exit_code')}"})
     # The index holds summaries only. The full timeline lives in the
     # selected run's own report.json and is loaded on demand.
     full = {}
@@ -252,23 +255,33 @@ def read_logs(run_id=None):
 
 def delete_run(run_id):
     if not run_id or not re.fullmatch(r"[0-9A-Za-z-]+", run_id):
-        return False
+        return False, "invalid run id"
     root = INDEX.parent.resolve()
     target = (root / run_id)
     if target.parent != root:
-        return False
+        return False, "invalid run id"
+    latest = None
     kept = []
     if INDEX.is_file():
         for line in INDEX.read_text(errors="replace").splitlines():
             try:
-                if json.loads(line).get("run_id") != run_id:
-                    kept.append(line)
+                entry = json.loads(line)
             except Exception:
                 kept.append(line)
+                continue
+            if entry.get("run_id") == run_id:
+                latest = entry
+            else:
+                kept.append(line)
+    if latest and latest.get("status") == "running" \
+            and not (target / "report.json").is_file() \
+            and not _is_stale_running(latest):
+        return False, f"run {run_id} is still running"
+    if INDEX.is_file():
         INDEX.write_text("".join(l + "\n" for l in kept))
     if target.is_dir():
         shutil.rmtree(target)
-    return True
+    return True, None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -319,8 +332,8 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             data = {}
-        ok = delete_run(str(data.get("run_id") or ""))
-        body = json.dumps({"ok": ok}).encode()
+        ok, reason = delete_run(str(data.get("run_id") or ""))
+        body = json.dumps({"ok": ok, "reason": reason}).encode()
         self._send(200 if ok else 400, body, "application/json")
 
 

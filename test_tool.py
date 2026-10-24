@@ -2,8 +2,11 @@
 """Fixture tests for the meta-benchmark tool. Stdlib only.
 
 Run: python3 test_tool.py
-Covers the two parsers that already broke once in real use:
-run-muse's session-log harvest and the UI server's run selection.
+Covers run-muse's session-log harvest and timeline, the UI server's
+run selection, timeline loading, error scoping, and overhead clamp,
+the local-host check, stale running runs, Ctrl+C handling, the
+per-provider default model, Anthropic response parsing, and the
+delete guard for running runs.
 """
 import importlib.util
 import json
@@ -13,6 +16,7 @@ import tempfile
 import unittest
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).parent
 
@@ -186,6 +190,150 @@ class InterruptTest(unittest.TestCase):
             entries = [json.loads(l) for l in (runs / "index.jsonl").read_text().splitlines()]
             self.assertEqual(entries[-1]["status"], "interrupted")
             self.assertTrue((runs / report["run_id"] / "report.json").is_file())
+
+
+class DefaultModelTest(unittest.TestCase):
+    def test_default_model_is_per_provider(self):
+        with mock.patch.dict(os.environ,
+                             {"MUSE_MODEL": "meta-sentinel",
+                              "ANTHROPIC_MODEL": "claude-sentinel"}):
+            self.assertEqual(run_muse.default_model("meta"), "meta-sentinel")
+            self.assertEqual(run_muse.default_model("anthropic"),
+                             "claude-sentinel")
+            self.assertEqual(
+                run_muse.parse_compare_models(
+                    "meta, anthropic, meta:custom-meta, anthropic:custom-claude"),
+                [("meta", "meta-sentinel"), ("anthropic", "claude-sentinel"),
+                 ("meta", "custom-meta"), ("anthropic", "custom-claude")])
+
+
+class AnthropicTest(unittest.TestCase):
+    def test_cache_tokens_stop_reason_and_max_tokens(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "model": "claude-test", "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": "4"}],
+                    "usage": {"input_tokens": 13, "output_tokens": 14,
+                              "cache_read_input_tokens": 25},
+                }).encode()
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data.decode())
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ,
+                                 {"ANTHROPIC_API_KEY": "test-key",
+                                  "ANTHROPIC_MAX_TOKENS": "1234"}):
+                with mock.patch.object(run_muse.urllib.request,
+                                       "urlopen", fake_urlopen):
+                    result = run_muse.run_anthropic("hi", Path(td),
+                                                    "claude-test", 30)
+        self.assertEqual(captured["body"]["max_tokens"], 1234)
+        self.assertEqual(result["calls"][0]["cached_tokens"], 25)
+        self.assertEqual(result["calls"][0]["stop_reason"], "end_turn")
+        self.assertEqual(result["reply"], "4")
+
+
+class ErrorScopeTest(unittest.TestCase):
+    def test_errors_scoped_to_selected_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-a").mkdir(parents=True)
+            (runs / "run-b").mkdir(parents=True)
+            base = {"model": "m", "provider": "meta", "reply": "",
+                    "wall_ms": 100, "calls": []}
+            run_a = dict(base, run_id="run-a", at="2026-01-01T00:00:00+00:00",
+                         prompt="first", exit_code=1, error="boom-a")
+            run_b = dict(base, run_id="run-b", at="2026-01-02T00:00:00+00:00",
+                         prompt="second", exit_code=1, error="boom-b")
+            (runs / "index.jsonl").write_text(
+                json.dumps(run_a) + "\n" + json.dumps(run_b) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                picked = server.read_logs("run-a")
+            finally:
+                server.INDEX = old
+            self.assertEqual([e["error_type"] for e in picked["errors"]],
+                             ["boom-a"])
+            self.assertEqual(picked["errors"][0]["operation"], "run-a")
+
+
+class DeleteRunTest(unittest.TestCase):
+    def test_delete_refuses_running_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-live").mkdir(parents=True)
+            (runs / "run-done").mkdir(parents=True)
+            live = {"run_id": "run-live", "status": "running"}
+            done = {"run_id": "run-done", "status": "completed"}
+            (runs / "index.jsonl").write_text(
+                json.dumps(live) + "\n" + json.dumps(done) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                ok, reason = server.delete_run("run-live")
+                self.assertFalse(ok)
+                self.assertIn("running", reason)
+                self.assertTrue((runs / "run-live").is_dir())
+                self.assertIn("run-live",
+                              (runs / "index.jsonl").read_text())
+                ok, reason = server.delete_run("run-done")
+                self.assertTrue(ok)
+                self.assertFalse((runs / "run-done").exists())
+            finally:
+                server.INDEX = old
+
+    def test_delete_allows_stale_running_run(self):
+        # A crashed run stays "running" in the index forever. The page
+        # shows it as interrupted, so it must be deletable.
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-crashed").mkdir(parents=True)
+            crashed = {"run_id": "run-crashed", "status": "running",
+                       "at": "2020-01-01T00:00:00+00:00",
+                       "timeout_seconds": 60}
+            (runs / "index.jsonl").write_text(json.dumps(crashed) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                ok, reason = server.delete_run("run-crashed")
+                self.assertTrue(ok, reason)
+                self.assertFalse((runs / "run-crashed").exists())
+            finally:
+                server.INDEX = old
+
+
+class OverheadClampTest(unittest.TestCase):
+    def test_overhead_clamped_at_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-a").mkdir(parents=True)
+            run = {"run_id": "run-a", "at": "2026-01-01T00:00:00+00:00",
+                   "prompt": "first", "model": "m", "provider": "meta",
+                   "exit_code": 0, "error": None, "reply": "1",
+                   "wall_ms": 50,
+                   "calls": [{"duration_ms": 80, "input_tokens": 10,
+                              "output_tokens": 2}]}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs()
+            finally:
+                server.INDEX = old
+            self.assertEqual(data["sessions"][0]["model_ms"], 80)
+            self.assertEqual(data["sessions"][0]["overhead_ms"], 0)
 
 
 if __name__ == "__main__":
