@@ -1,0 +1,524 @@
+#!/usr/bin/env python3
+"""One-command meta-benchmark launcher.
+
+Usage:
+  ./run-muse                     interactive prompt loop
+  ./run-muse "Say hi"            single prompt run
+  ./run-muse --compare "Say hi"  same prompt across configured models
+  ./run-muse --minimal "Say hi"  controlled context (repeatable tests)
+
+Starts the log UI in the background if needed, runs each prompt, and
+appends the result to muse-runs/ for the UI to display. Meta runs use
+the Muse subscription login. Direct API providers use their own key.
+"""
+import argparse
+import json
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).parent
+RUNS = ROOT / "muse-runs"
+UI_DIR = ROOT
+PORT = int(os.environ.get("PORT", "8765"))
+UI_URL = f"http://127.0.0.1:{PORT}/"
+DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
+DEFAULT_PROVIDER = os.environ.get("MUSE_PROVIDER", "meta")
+STRIP_ENV = ("META_API_KEY", "MUSE_API_TOKEN", "MODEL_API_KEY", "ANTHROPIC_API_KEY")
+# provider:model entries used by --compare
+COMPARE_MODELS = os.environ.get(
+    "COMPARE_MODELS", "meta:muse-wonder-full-1.0,anthropic:claude-sonnet-5-5")
+
+
+def ui_version():
+    try:
+        import re
+        m = re.search(r"(?m)^VERSION\s*=\s*(\d+)",
+                      (UI_DIR / "server.py").read_text())
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
+def fetch_ui_logs():
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(UI_URL + "api/logs", timeout=2) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def ui_up():
+    return fetch_ui_logs() is not None
+
+
+def start_ui():
+    log = open("/tmp/muse-latency-ui.log", "ab")
+    subprocess.Popen([sys.executable, str(UI_DIR / "server.py")],
+                     cwd=UI_DIR, stdout=log, stderr=log,
+                     env={**os.environ, "PORT": str(PORT)},
+                     start_new_session=True)
+    for _ in range(20):
+        if ui_up():
+            break
+        time.sleep(0.25)
+
+
+def _pids_on_port(port):
+    if shutil.which("lsof"):
+        return subprocess.run(["lsof", "-ti", f"tcp:{port}"],
+                              capture_output=True, text=True).stdout.split()
+    if shutil.which("ss"):
+        out = subprocess.run(["ss", "-tlnp", f"sport = :{port}"],
+                             capture_output=True, text=True).stdout
+        import re
+        return sorted(set(re.findall(r"pid=(\d+)", out)))
+    if shutil.which("fuser"):
+        out = subprocess.run(["fuser", f"{port}/tcp"],
+                             capture_output=True, text=True).stdout
+        return [p for p in out.replace(",", " ").split() if p.isdigit()]
+    return []
+
+
+def _pid_cmdline(pid):
+    proc = Path(f"/proc/{pid}/cmdline")
+    if proc.is_file():
+        return proc.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    return subprocess.run(["ps", "-p", pid, "-o", "command="],
+                          capture_output=True, text=True).stdout
+
+
+def _pid_cwd(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    if shutil.which("lsof"):
+        cwd_out = subprocess.run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                                 capture_output=True, text=True).stdout
+        return next((l[1:] for l in cwd_out.splitlines() if l.startswith("n")), "")
+    return ""
+
+
+def restart_ui():
+    for pid in _pids_on_port(PORT):
+        cmdline = _pid_cmdline(pid)
+        cwd = _pid_cwd(pid)
+        is_ours = "server.py" in cmdline and (
+            str(UI_DIR) in cmdline or cwd == str(UI_DIR))
+        if is_ours:
+            subprocess.run(["kill", pid], capture_output=True)
+        else:
+            print(f"Port {PORT} is held by another process (pid {pid}), "
+                  "not the Muse UI. Leaving it alone.", file=sys.stderr)
+            return
+    for _ in range(20):
+        if not ui_up():
+            break
+        time.sleep(0.25)
+    start_ui()
+
+
+def ensure_ui():
+    if os.environ.get("RUN_MUSE_NO_UI"):
+        return
+    logs = fetch_ui_logs()
+    opened = False
+    if logs is None:
+        start_ui()
+        opened = True
+    elif logs.get("version") != ui_version():
+        print("Updating the log UI to the current version…")
+        restart_ui()
+        opened = True
+    # Only open a tab when we actually started or updated the server.
+    # If the page is already up, the user already has it in a tab.
+    if opened and sys.platform == "darwin":
+        subprocess.run(["open", UI_URL], capture_output=True)
+    elif opened and sys.platform.startswith("linux") and shutil.which("xdg-open"):
+        subprocess.run(["xdg-open", UI_URL], capture_output=True)
+
+
+def session_log_path(session_id):
+    if not session_id:
+        return None
+    base = Path(os.environ.get("MUSE_SESSIONS_DIR")
+                or Path.home() / ".local/share/muse/sessions")
+    files = list(base.glob(f"**/{session_id}/session.jsonl"))
+    return files[0] if files else None
+
+
+def find_model_completed(node):
+    if isinstance(node, dict):
+        if node.get("kind") == "model_completed" and isinstance(node.get("usage"), dict):
+            yield node
+        for v in node.values():
+            yield from find_model_completed(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from find_model_completed(v)
+
+
+def find_value(node, key):
+    if isinstance(node, dict):
+        if node.get(key):
+            return node[key]
+        for v in node.values():
+            found = find_value(v, key)
+            if found:
+                return found
+    elif isinstance(node, list):
+        for v in node:
+            found = find_value(v, key)
+            if found:
+                return found
+    return None
+
+
+def harvest_calls(session_id):
+    path = session_log_path(session_id)
+    if not path:
+        return []
+    calls = []
+    for line in path.read_text(errors="replace").splitlines():
+        if "model_completed" not in line:
+            continue
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        for node in find_model_completed(e):
+            usage = node["usage"]
+            calls.append({
+                "model": find_value(e, "model_id"),
+                "duration_ms": node.get("duration_ms"),
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "cached_tokens": usage.get("cached_tokens"),
+                "reasoning_tokens": usage.get("reasoning_tokens"),
+            })
+    return calls
+
+
+def build_timeline(session_id, wall_ms):
+    path = session_log_path(session_id)
+    if not path:
+        return []
+    rows = []
+    for line in path.read_text(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        ts = e.get("recorded_at")
+        ptype = e.get("payload_type")
+        if not ts or not ptype:
+            continue
+        payload = e.get("payload") or {}
+        event = payload.get("event") or {}
+        label = ptype
+        kind = event.get("kind") or payload.get("kind")
+        if kind:
+            label += f" {kind}"
+        node = next(find_model_completed(e), None)
+        rows.append({
+            "at": datetime.fromtimestamp(ts / 1_000_000, timezone.utc).isoformat(),
+            "operation": label,
+            "recorded_at": ts,
+            "wire_ms": node.get("duration_ms") if node else None,
+        })
+    for i, row in enumerate(rows):
+        nxt = rows[i + 1]["recorded_at"] if i + 1 < len(rows) else None
+        row["duration_ms"] = round((nxt - row["recorded_at"]) / 1000) if nxt else 0
+        del row["recorded_at"]
+    return rows
+
+
+def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
+                  session_id=None):
+    """Run one prompt through Muse. Returns report fields."""
+    session_id = session_id or str(uuid.uuid4())
+    workspace = run_dir / "workspace"
+    workspace.mkdir()
+    (run_dir / "prompt.md").write_text(prompt)
+    env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+    cmd = ["muse", "exec", "--json", "--provider", provider,
+           "--prompt-file", str(run_dir / "prompt.md"),
+           "--workspace", str(workspace),
+           "--session-id", session_id]
+    if provider != "echo":
+        cmd += ["--model", model]
+    if minimal:
+        cmd += ["--disable-reminders", "--no-foreign-personal-context"]
+    started = time.monotonic()
+    timed_out = False
+    with open(run_dir / "events.jsonl", "w") as ev, \
+            open(run_dir / "stderr.log", "w") as err:
+        proc = subprocess.Popen(cmd, stdout=ev, stderr=err, env=env,
+                                cwd=workspace, start_new_session=True)
+        interrupted = False
+        try:
+            exit_code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                exit_code = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                exit_code = proc.wait()
+        except KeyboardInterrupt:
+            interrupted = True
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                exit_code = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                exit_code = proc.wait()
+    wall_ms = round((time.monotonic() - started) * 1000)
+    reply, usage_model = "", None
+    for line in (run_dir / "events.jsonl").read_text(errors="replace").splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        payload = e.get("payload") or {}
+        if payload.get("kind") == "run_terminal":
+            reply = payload.get("text") or reply
+        if payload.get("kind") == "run_usage":
+            models = payload.get("models") or []
+            if models and models[0].get("model"):
+                usage_model = models[0]["model"]
+    calls = []
+    for _ in range(10):
+        calls = harvest_calls(session_id)
+        if calls:
+            break
+        time.sleep(0.5)
+    return {
+        "session_id": session_id, "wall_ms": wall_ms,
+        "exit_code": exit_code, "timed_out": timed_out,
+        "interrupted": interrupted, "reply": reply,
+        "calls": calls, "timeline": build_timeline(session_id, wall_ms),
+        "command": " ".join(cmd), "usage_model": usage_model,
+    }
+
+
+def run_anthropic(prompt, run_dir, model, timeout):
+    """One direct Anthropic Messages API call. No agent context."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return {"session_id": None, "wall_ms": 0, "exit_code": 1,
+                "timed_out": False, "interrupted": False, "reply": "", "calls": [], "timeline": [],
+                "command": "POST https://api.anthropic.com/v1/messages",
+                "usage_model": None,
+                "error_override": "ANTHROPIC_API_KEY is not set"}
+    base = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
+    body = json.dumps({"model": model, "max_tokens": 1024,
+                       "messages": [{"role": "user", "content": prompt}]}).encode()
+    req = urllib.request.Request(base + "/v1/messages", data=body, method="POST",
+        headers={"Content-Type": "application/json", "x-api-key": api_key,
+                 "anthropic-version": "2023-06-01"})
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+        exit_code, error = 0, None
+    except urllib.error.HTTPError as e:
+        data, exit_code = {}, e.code
+        try:
+            error = (json.loads(e.read().decode()).get("error") or {}).get("message")
+        except Exception:
+            error = f"HTTP {e.code}"
+    except Exception as e:
+        data, exit_code, error = {}, 1, str(e)
+    wall_ms = round((time.monotonic() - started) * 1000)
+    usage = data.get("usage") or {}
+    reply = "".join(b.get("text", "") for b in (data.get("content") or [])
+                    if b.get("type") == "text")
+    calls = [{"model": data.get("model") or model, "duration_ms": wall_ms,
+              "input_tokens": usage.get("input_tokens"),
+              "output_tokens": usage.get("output_tokens"),
+              "cached_tokens": None, "reasoning_tokens": None}] if data else []
+    timeline = [{"at": datetime.now(timezone.utc).isoformat(),
+                 "operation": "model_completed", "duration_ms": 0,
+                 "wire_ms": wall_ms}] if data else []
+    (run_dir / "events.jsonl").write_text("")
+    (run_dir / "stderr.log").write_text(error or "")
+    return {"session_id": None, "wall_ms": wall_ms, "exit_code": exit_code,
+            "timed_out": False, "interrupted": False, "reply": reply, "calls": calls,
+            "timeline": timeline, "command": f"POST {base}/v1/messages",
+            "usage_model": data.get("model"), "error_override": error}
+
+
+def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=DEFAULT_MODEL,
+               minimal=False, timeout=1800, comparison_id=None):
+    RUNS.mkdir(exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+    run_dir = RUNS / run_id
+    run_dir.mkdir()
+    # Register the run immediately so the UI shows it while it runs.
+    # The final summary is appended again at the end; the UI keeps the
+    # last entry per run_id.
+    live_session_id = str(uuid.uuid4()) if provider != "anthropic" else None
+    running = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id, "prompt": prompt,
+        "model": model if provider != "echo" else "echo",
+        "provider": provider, "session_id": live_session_id,
+        "context_mode": "minimal" if minimal else "full",
+        "comparison_id": comparison_id, "status": "running",
+        "timeout_seconds": timeout, "command": None,
+        "wall_ms": None, "exit_code": None, "reply": "",
+        "calls": [], "metrics_unavailable": False, "error": None,
+    }
+    with open(RUNS / "index.jsonl", "a") as f:
+        f.write(json.dumps(running) + "\n")
+    started = time.monotonic()
+    try:
+        if provider == "anthropic":
+            r = run_anthropic(prompt, run_dir, model, timeout)
+        else:
+            r = run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
+                              session_id=live_session_id)
+    except KeyboardInterrupt:
+        # Ctrl+C during a direct API call, or outside proc.wait() in
+        # run_muse_exec, must still write a final status below.
+        r = {"session_id": live_session_id,
+             "wall_ms": round((time.monotonic() - started) * 1000),
+             "exit_code": 130, "timed_out": False, "interrupted": True,
+             "reply": "", "calls": [], "timeline": [], "command": None,
+             "usage_model": None}
+    if r["timed_out"]:
+        status = "timeout"
+    elif r.get("interrupted"):
+        status = "interrupted"
+    elif r["exit_code"] != 0:
+        status = "failed"
+    else:
+        status = "completed"
+    stderr_tail = ""
+    err_file = run_dir / "stderr.log"
+    if err_file.is_file():
+        lines = err_file.read_text(errors="replace").strip().splitlines()
+        stderr_tail = lines[-1] if lines else ""
+    report = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "run_id": run_id, "prompt": prompt,
+        "model": r.get("usage_model") or (model if provider != "echo" else "echo"),
+        "provider": provider, "session_id": r["session_id"],
+        "context_mode": "minimal" if minimal else "full",
+        "comparison_id": comparison_id,
+        "status": status, "timeout_seconds": timeout,
+        "command": r["command"],
+        "wall_ms": r["wall_ms"], "exit_code": r["exit_code"],
+        "reply": r["reply"], "calls": r["calls"], "timeline": r["timeline"],
+        "metrics_unavailable": status == "completed" and not r["calls"],
+        "error": r.get("error_override")
+                 or (stderr_tail if status != "completed" else None),
+    }
+    (run_dir / "report.json").write_text(json.dumps(report, indent=2))
+    summary = {k: v for k, v in report.items() if k != "timeline"}
+    with open(RUNS / "index.jsonl", "a") as f:
+        f.write(json.dumps(summary) + "\n")
+    label = f"{provider}/{report['model']}"
+    if report["metrics_unavailable"]:
+        print(f"[{label}] wall {r['wall_ms']} ms · "
+              "model metrics unavailable (no model records in session log)")
+    else:
+        model_ms = sum(c["duration_ms"] or 0 for c in r["calls"])
+        in_tok = sum(c["input_tokens"] or 0 for c in r["calls"])
+        out_tok = sum(c["output_tokens"] or 0 for c in r["calls"])
+        print(f"[{label}] wall {r['wall_ms']} ms · model {model_ms} ms · "
+              f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s) · {status}")
+    if r["reply"]:
+        print(r["reply"][:500])
+    if status == "timeout":
+        print(f"Timed out after {timeout} seconds. That is the run cap, "
+              "not a crash. Partial files are in "
+              f"{run_dir / 'workspace'}")
+    elif status == "interrupted":
+        print(f"Interrupted. The run was stopped and recorded. "
+              f"Partial files are in {run_dir / 'workspace'}")
+    elif report["error"]:
+        print("error:", report["error"], file=sys.stderr)
+    print(f"UI: {UI_URL}  (run {run_id})")
+    return report
+
+
+def parse_compare_models(text):
+    out = []
+    for entry in text.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" in entry:
+            provider, model = entry.split(":", 1)
+        else:
+            provider, model = entry, DEFAULT_MODEL
+        out.append((provider.strip(), model.strip()))
+    return out
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="run-muse")
+    parser.add_argument("prompt", nargs="*", help="prompt text")
+    parser.add_argument("--provider", default=DEFAULT_PROVIDER)
+    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--minimal", action="store_true",
+                        help="controlled context: no reminders, no foreign context")
+    parser.add_argument("--timeout", type=int, default=1800,
+                        help="per-run timeout in seconds (default 1800)")
+    parser.add_argument("--compare", action="store_true",
+                        help="run the prompt across COMPARE_MODELS")
+    args = parser.parse_args()
+    ensure_ui()
+    prompt = " ".join(args.prompt).strip()
+    if args.compare:
+        if not prompt:
+            parser.error("--compare needs a prompt")
+        comparison_id = uuid.uuid4().hex[:8]
+        print(f"Comparing {len(parse_compare_models(COMPARE_MODELS))} model(s), "
+              f"set {comparison_id}")
+        for provider, model in parse_compare_models(COMPARE_MODELS):
+            run_prompt(prompt, provider=provider, model=model,
+                       minimal=args.minimal, timeout=args.timeout,
+                       comparison_id=comparison_id)
+        return
+    if prompt:
+        run_prompt(prompt, provider=args.provider, model=args.model,
+                   minimal=args.minimal, timeout=args.timeout)
+        return
+    mode = "minimal" if args.minimal else "full"
+    print(f"Model: {args.provider}/{args.model} ({mode} context). "
+          f"Type a prompt, /quit to exit. UI: {UI_URL}")
+    while True:
+        try:
+            line = input("muse> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+        if line in ("/quit", "/exit", "quit", "exit"):
+            break
+        if line:
+            try:
+                run_prompt(line, provider=args.provider, model=args.model,
+                           minimal=args.minimal, timeout=args.timeout)
+            except KeyboardInterrupt:
+                print("\nInterrupted.")
+
+
+if __name__ == "__main__":
+    main()

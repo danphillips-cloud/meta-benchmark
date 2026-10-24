@@ -1,0 +1,8 @@
+# Run data: prompts, replies, and session timelines stay local.
+muse-runs/
+# Local notes: research, resume notes, and draft reports stay local.
+.docs/
+__pycache__/
+.env
+*.pyc
+.DS_Store
