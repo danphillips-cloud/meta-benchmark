@@ -35,8 +35,8 @@ cd meta-benchmark
 ## Usage
 
 ```sh
-./run-muse "what is 2+2"                    # one prompt, no loop
-./run-muse --minimal "what is 2+2"          # controlled context for repeatable tests
+./run-muse "write a python script that counts lines in a file, then run it on itself"   # multi-step, several calls
+./run-muse --minimal "what is 2+2"          # baseline: fixed cost with controlled context
 ./run-muse --timeout 300 "what is 2+2"      # default is 1800 seconds
 ```
 
