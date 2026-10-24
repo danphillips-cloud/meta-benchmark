@@ -9,13 +9,18 @@ import json
 import os
 import re
 import shutil
+import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+sys.path.insert(0, str(Path(__file__).parent))
+import muse_log  # noqa: E402
+
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 19
+VERSION = 20
 INDEX = HERE / "muse-runs" / "index.jsonl"
 _SESSION_LOG_CACHE = {}
 
@@ -25,64 +30,22 @@ def live_session_log(session_id):
         return None
     if session_id in _SESSION_LOG_CACHE:
         return _SESSION_LOG_CACHE[session_id]
-    base = Path(os.environ.get("MUSE_SESSIONS_DIR")
-                or Path.home() / ".local/share/muse/sessions")
-    files = list(base.glob(f"**/{session_id}/session.jsonl"))
-    if not files:
+    path = muse_log.session_log_path(session_id)
+    if not path:
         return None
-    _SESSION_LOG_CACHE[session_id] = files[0]
-    return files[0]
+    _SESSION_LOG_CACHE[session_id] = path
+    return path
 
 
 def live_calls(session_id):
     path = live_session_log(session_id)
     if not path:
         return [], []
-    calls, timeline = [], []
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
-        ts = e.get("recorded_at")
-        ptype = e.get("payload_type")
-        node = None
-        stack = [e]
-        while stack:
-            n = stack.pop()
-            if isinstance(n, dict):
-                if n.get("kind") == "model_completed" and isinstance(n.get("usage"), dict):
-                    node = n
-                stack.extend(n.values())
-            elif isinstance(n, list):
-                stack.extend(n)
-        if node:
-            u = node["usage"]
-            calls.append({"model": None, "duration_ms": node.get("duration_ms"),
-                          "input_tokens": u.get("input_tokens"),
-                          "output_tokens": u.get("output_tokens"),
-                          "cached_tokens": u.get("cached_tokens"),
-                          "reasoning_tokens": u.get("reasoning_tokens")})
-        if ts and ptype:
-            payload = e.get("payload") or {}
-            event = payload.get("event") or {}
-            kind = event.get("kind") or payload.get("kind")
-            from datetime import datetime, timezone
-            timeline.append({
-                "at": datetime.fromtimestamp(ts / 1_000_000, timezone.utc).isoformat(),
-                "operation": ptype + (f" {kind}" if kind else ""),
-                "recorded_at": ts,
-                "wire_ms": node.get("duration_ms") if node else None})
-    for i, row in enumerate(timeline):
-        nxt = timeline[i + 1]["recorded_at"] if i + 1 < len(timeline) else None
-        row["duration_ms"] = round((nxt - row["recorded_at"]) / 1000) if nxt else 0
-        del row["recorded_at"]
-    return calls, timeline
+    return muse_log.live_calls_from_log(path)
 
 
 def _is_stale_running(run):
     """A 'running' run with no final report, past its timeout + grace."""
-    from datetime import datetime, timezone
     try:
         started = datetime.fromisoformat(run.get("at"))
         if started.tzinfo is None:
@@ -116,7 +79,6 @@ def discover_running(runs):
             if stream.get("kind") == "session":
                 session_id = stream.get("id")
                 break
-        from datetime import datetime, timezone
         at = datetime.fromtimestamp(d.stat().st_mtime, timezone.utc).isoformat()
         found.append({
             "run_id": d.name,
@@ -207,7 +169,6 @@ def read_logs(run_id=None):
         if live:
             selected = dict(selected)
             selected["calls"] = live
-    from datetime import datetime, timezone
     elapsed_ms = None
     if selected.get("status") == "running" and selected.get("at"):
         try:
