@@ -104,6 +104,17 @@ def endpoint_key_name(model):
         else "ANTHROPIC_API_KEY"
 
 
+PAID_PROVIDERS = ("claude-code", "anthropic")
+
+
+def default_timeout(provider):
+    return 300 if provider in PAID_PROVIDERS else 1800
+
+
+def paid_notice(model):
+    return f"Paid run: uses {endpoint_key_name(model)}"
+
+
 def ui_version():
     try:
         m = re.search(r"(?m)^VERSION\s*=\s*(\d+)",
@@ -525,9 +536,13 @@ def run_claude_code(prompt, run_dir, model, timeout):
 
 
 def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
-               minimal=False, timeout=1800, comparison_id=None,
+               minimal=False, timeout=None, comparison_id=None,
                compare_round=None, compare_mode=None):
     model = model or default_model(provider)
+    if timeout is None:
+        timeout = default_timeout(provider)
+    if provider in PAID_PROVIDERS:
+        print(paid_notice(model))
     RUNS.mkdir(exist_ok=True)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
     run_dir = RUNS / run_id
@@ -723,8 +738,18 @@ def handle_command(line, state):
     if text.startswith("/mode "):
         wanted = text[len("/mode "):].strip()
         if wanted in ("single",) + COMPARE_MODES:
+            text_out = describe_mode(wanted)
+            if wanted == "claude":
+                keys = []
+                for m_provider, m_model in compare_models_for("claude"):
+                    if m_provider in PAID_PROVIDERS:
+                        key = endpoint_key_name(m_model)
+                        if key not in keys:
+                            keys.append(key)
+                for key in keys:
+                    text_out += f"\nPaid run: uses {key}"
             return {"action": "message", "mode": wanted,
-                    "text": describe_mode(wanted)}
+                    "text": text_out}
         return {"action": "message", "mode": mode,
                 "text": f"Unknown mode '{wanted}'. "
                         "Valid modes: single, meta, claude, custom."}
@@ -745,8 +770,9 @@ def main():
     parser.add_argument("--model", default=None)
     parser.add_argument("--minimal", action="store_true",
                         help="controlled context: no reminders, no foreign context")
-    parser.add_argument("--timeout", type=int, default=1800,
-                        help="per-run timeout in seconds (default 1800)")
+    parser.add_argument("--timeout", type=int, default=None,
+                        help="per-run timeout in seconds (default 1800, "
+                             "300 for claude-code and anthropic)")
     parser.add_argument("--compare", nargs="?", const="custom",
                         default=None, metavar="MODE",
                         help="compare mode: meta, claude, or custom "

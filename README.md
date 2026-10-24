@@ -63,6 +63,8 @@ The page refreshes every two seconds, so calls show up while a run is live.
 | Meta vs Claude | `./run-muse --compare claude` |
 | Custom | `./run-muse --compare` |
 
+Meta vs Claude uses API keys and is billed per token. Single and Meta vs Meta use the Muse subscription.
+
 In the loop, `/mode meta`, `/mode claude`, and `/mode single` switch mode. `/help` lists commands. The prompt shows the mode, for example `muse[meta]>`.
 
 ## Reading the numbers
