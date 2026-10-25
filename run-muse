@@ -59,7 +59,6 @@ def load_dotenv(path=None):
 
 load_dotenv()
 RUNS = ROOT / "muse-runs"
-UI_DIR = ROOT
 PORT = int(os.environ.get("PORT", "8765"))
 UI_URL = f"http://127.0.0.1:{PORT}/"
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
@@ -135,6 +134,28 @@ def harness_version(provider):
     return version
 
 
+def is_muse(provider):
+    return provider not in ("anthropic", "claude-code")
+
+
+def recorded_model(provider, model):
+    return "echo" if provider == "echo" else model
+
+
+def _clean_env():
+    return {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+
+
+def _empty_result(command, error=None, **overrides):
+    """The 'nothing ran' result, shared by every early-exit path."""
+    result = {"session_id": None, "wall_ms": 0, "exit_code": 1,
+              "timed_out": False, "interrupted": False, "reply": "",
+              "calls": [], "timeline": [], "command": command,
+              "usage_model": None, "error_override": error}
+    result.update(overrides)
+    return result
+
+
 PAID_PROVIDERS = ("claude-code", "anthropic")
 
 
@@ -149,7 +170,7 @@ def paid_notice(model):
 def ui_version():
     try:
         m = re.search(r"(?m)^VERSION\s*=\s*(\d+)",
-                      (UI_DIR / "server.py").read_text())
+                      (ROOT / "server.py").read_text())
         return int(m.group(1)) if m else None
     except Exception:
         return None
@@ -172,8 +193,8 @@ def start_ui():
     RUNS.mkdir(exist_ok=True)
     log = open(RUNS / "server.log", "ab")
     try:
-        subprocess.Popen([sys.executable, str(UI_DIR / "server.py")],
-                         cwd=UI_DIR, stdout=log, stderr=log,
+        subprocess.Popen([sys.executable, str(ROOT / "server.py")],
+                         cwd=ROOT, stdout=log, stderr=log,
                          env={**os.environ, "PORT": str(PORT)},
                          start_new_session=True)
     finally:
@@ -224,7 +245,7 @@ def restart_ui():
         cmdline = _pid_cmdline(pid)
         cwd = _pid_cwd(pid)
         is_ours = "server.py" in cmdline and (
-            str(UI_DIR) in cmdline or cwd == str(UI_DIR))
+            str(ROOT) in cmdline or cwd == str(ROOT))
         if is_ours:
             subprocess.run(["kill", pid], capture_output=True)
         else:
@@ -375,9 +396,15 @@ def format_live_line(state):
 def _live_watch(session_id, seen):
     """Poll closure for run_process: print finished calls and the
     live state, and stop the run if an approval prompt appears."""
-    path = muse_log.session_log_path(session_id)
-    if not path:
-        return None
+    # The log path is resolved once, on the first poll that finds it,
+    # and reused from `seen` after that instead of globbing the whole
+    # sessions tree on every poll.
+    path = seen.get("path")
+    if path is None:
+        path = muse_log.session_log_path(session_id)
+        if not path:
+            return None
+        seen["path"] = path
     records = muse_log.read_records(path)
     calls = muse_log.calls_from_records(records)
     while seen["calls"] < len(calls):
@@ -404,7 +431,7 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
     workspace = run_dir / "workspace"
     workspace.mkdir()
     (run_dir / "prompt.md").write_text(prompt)
-    env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+    env = _clean_env()
     cmd = ["muse", "exec", "--json", "--provider", provider,
            "--prompt-file", str(run_dir / "prompt.md"),
            "--workspace", str(workspace),
@@ -461,11 +488,9 @@ def run_anthropic(prompt, run_dir, model, timeout):
     """One direct Anthropic Messages API call. No agent context."""
     base, api_key = endpoint_for(model)
     if not api_key:
-        return {"session_id": None, "wall_ms": 0, "exit_code": 1,
-                "timed_out": False, "interrupted": False, "reply": "", "calls": [], "timeline": [],
-                "command": f"POST {base}/v1/messages",
-                "usage_model": None,
-                "error_override": f"{endpoint_key_name(model)} is not set"}
+        return _empty_result(
+            f"POST {base}/v1/messages",
+            error=f"{endpoint_key_name(model)} is not set")
     max_tokens = int(os.environ.get("ANTHROPIC_MAX_TOKENS", "8192"))
     body = json.dumps({"model": model, "max_tokens": max_tokens,
                        "messages": [{"role": "user", "content": prompt}]}).encode()
@@ -612,12 +637,10 @@ def run_claude_code(prompt, run_dir, model, timeout):
            "--allowedTools", "Bash,Edit,Read"]
     base, api_key = endpoint_for(model)
     if not api_key:
-        return {"session_id": None, "wall_ms": 0, "exit_code": 1,
-                "timed_out": False, "interrupted": False, "reply": "",
-                "calls": [], "timeline": [], "command": " ".join(cmd),
-                "usage_model": None,
-                "error_override": f"{endpoint_key_name(model)} is not set"}
-    env = {k: v for k, v in os.environ.items() if k not in STRIP_ENV}
+        return _empty_result(
+            " ".join(cmd),
+            error=f"{endpoint_key_name(model)} is not set")
+    env = _clean_env()
     env["ANTHROPIC_API_KEY"] = api_key
     env["ANTHROPIC_BASE_URL"] = base
     env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
@@ -627,10 +650,7 @@ def run_claude_code(prompt, run_dir, model, timeout):
         proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
                            timeout, input_text=prompt)
     except OSError as e:
-        return {"session_id": None, "wall_ms": 0, "exit_code": 1,
-                "timed_out": False, "interrupted": False, "reply": "",
-                "calls": [], "timeline": [], "command": " ".join(cmd),
-                "usage_model": None, "error_override": str(e)}
+        return _empty_result(" ".join(cmd), error=str(e))
     parsed = parse_claude_stream(proc["lines"])
     exit_code = proc["exit_code"]
     error = None
@@ -652,6 +672,84 @@ def run_claude_code(prompt, run_dir, model, timeout):
     }
 
 
+BASE_REPORT = {
+    "at": None, "run_id": None, "prompt": "", "model": None,
+    "provider": None, "session_id": None, "context_mode": None,
+    "comparison_id": None, "round": None, "compare_mode": None,
+    "harness_version": None, "tool_ms": None, "approval_ms": None,
+    "muse_ms": None, "needs_approval_tool": None, "status": None,
+    "timeout_seconds": None, "command": None, "wall_ms": None,
+    "exit_code": None, "reply": "", "calls": [], "timeline": [],
+    "api_ms": None, "ttft_ms": None, "num_turns": None,
+    "cost_usd": None, "totals": None, "metrics_unavailable": False,
+    "error": None, "turn_index": None,
+}
+
+
+def new_run_dir():
+    RUNS.mkdir(exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" \
+        + uuid.uuid4().hex[:6]
+    run_dir = RUNS / run_id
+    run_dir.mkdir()
+    return run_id, run_dir
+
+
+def write_run(run_dir, report):
+    (run_dir / "report.json").write_text(json.dumps(report, indent=2))
+    summary = {k: v for k, v in report.items() if k != "timeline"}
+    with open(RUNS / "index.jsonl", "a") as f:
+        f.write(json.dumps(summary) + "\n")
+
+
+def run_status(r):
+    if r.get("needs_approval"):
+        return "needs_approval"
+    if r["timed_out"]:
+        return "timeout"
+    if r.get("interrupted"):
+        return "interrupted"
+    if r["exit_code"] != 0:
+        return "failed"
+    return "completed"
+
+
+def print_summary(report, r, run_dir):
+    status = report["status"]
+    label = f"{report['provider']}/{report['model']}"
+    if report["metrics_unavailable"]:
+        print(f"[{label}] wall {r['wall_ms']} ms · "
+              "model metrics unavailable (no model records in session log)")
+    else:
+        durations = [c["duration_ms"] for c in r["calls"]
+                     if c.get("duration_ms") is not None]
+        model_ms = sum(durations) if durations else (r.get("api_ms") or 0)
+        totals = r.get("totals") or {}
+        in_tok = totals.get("input_tokens") if totals else \
+            sum(c["input_tokens"] or 0 for c in r["calls"])
+        out_tok = totals.get("output_tokens") if totals else \
+            sum(c["output_tokens"] or 0 for c in r["calls"])
+        print(f"[{label}] wall {r['wall_ms']} ms · model {model_ms} ms · "
+              f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s) · {status}")
+    if r["reply"]:
+        print(r["reply"][:500])
+    if status == "needs_approval":
+        print(f"WARNING: stopped — waiting for approval: "
+              f"{r.get('needs_approval')}. The run was stopped at once "
+              f"instead of waiting. Partial files are in "
+              f"{run_dir / 'workspace'}")
+    elif status == "timeout":
+        print(f"Timed out after {report['timeout_seconds']} seconds. "
+              "That is the run cap, not a crash. Partial files are in "
+              f"{run_dir / 'workspace'}")
+    elif status == "interrupted":
+        print(f"Interrupted. The run was stopped and recorded. "
+              f"Partial files are in {run_dir / 'workspace'}")
+    elif report["error"]:
+        print("error:", report["error"], file=sys.stderr)
+    print(f"UI: {UI_URL}  (run {report['run_id']})")
+
+
 def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                minimal=False, timeout=None, comparison_id=None,
                compare_round=None, compare_mode=None):
@@ -660,22 +758,18 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         timeout = default_timeout(provider)
     if provider in PAID_PROVIDERS:
         print(paid_notice(model))
-    RUNS.mkdir(exist_ok=True)
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
-    run_dir = RUNS / run_id
-    run_dir.mkdir()
+    run_id, run_dir = new_run_dir()
     # Register the run immediately so the UI shows it while it runs.
     # The final summary is appended again at the end; the UI keeps the
     # last entry per run_id.
-    live_session_id = str(uuid.uuid4()) \
-        if provider not in ("anthropic", "claude-code") else None
+    live_session_id = str(uuid.uuid4()) if is_muse(provider) else None
     context_mode = "bare" if provider == "claude-code" \
         else ("minimal" if minimal else "full")
     version = harness_version(provider)
     running = {
         "at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id, "prompt": prompt,
-        "model": model if provider != "echo" else "echo",
+        "model": recorded_model(provider, model),
         "provider": provider, "session_id": live_session_id,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
@@ -700,21 +794,11 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     except KeyboardInterrupt:
         # Ctrl+C during a direct API call, or outside proc.wait() in
         # run_muse_exec, must still write a final status below.
-        r = {"session_id": live_session_id,
-             "wall_ms": round((time.monotonic() - started) * 1000),
-             "exit_code": 130, "timed_out": False, "interrupted": True,
-             "reply": "", "calls": [], "timeline": [], "command": None,
-             "usage_model": None}
-    if r.get("needs_approval"):
-        status = "needs_approval"
-    elif r["timed_out"]:
-        status = "timeout"
-    elif r.get("interrupted"):
-        status = "interrupted"
-    elif r["exit_code"] != 0:
-        status = "failed"
-    else:
-        status = "completed"
+        r = _empty_result(
+            None, session_id=live_session_id,
+            wall_ms=round((time.monotonic() - started) * 1000),
+            exit_code=130, interrupted=True)
+    status = run_status(r)
     stderr_tail = ""
     err_file = run_dir / "stderr.log"
     if err_file.is_file():
@@ -722,7 +806,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         stderr_tail = lines[-1] if lines else ""
     split = {"model_ms": None, "tool_ms": None,
              "approval_ms": None, "muse_ms": None}
-    if r.get("session_id") and provider not in ("anthropic", "claude-code"):
+    if r.get("session_id") and is_muse(provider):
         log_path = muse_log.session_log_path(r["session_id"])
         if log_path:
             dur = [c["duration_ms"] for c in r["calls"]
@@ -730,10 +814,11 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
             split = muse_log.time_split(
                 muse_log.read_records(log_path), r["wall_ms"],
                 sum(dur) if dur else None)
-    report = {
+    report = dict(BASE_REPORT)
+    report.update({
         "at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id, "prompt": prompt,
-        "model": r.get("usage_model") or (model if provider != "echo" else "echo"),
+        "model": r.get("usage_model") or recorded_model(provider, model),
         "provider": provider, "session_id": r["session_id"],
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
@@ -754,43 +839,9 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                   if r.get("needs_approval") else None)
                  or r.get("error_override")
                  or (stderr_tail if status != "completed" else None),
-    }
-    (run_dir / "report.json").write_text(json.dumps(report, indent=2))
-    summary = {k: v for k, v in report.items() if k != "timeline"}
-    with open(RUNS / "index.jsonl", "a") as f:
-        f.write(json.dumps(summary) + "\n")
-    label = f"{provider}/{report['model']}"
-    if report["metrics_unavailable"]:
-        print(f"[{label}] wall {r['wall_ms']} ms · "
-              "model metrics unavailable (no model records in session log)")
-    else:
-        durations = [c["duration_ms"] for c in r["calls"]
-                     if c.get("duration_ms") is not None]
-        model_ms = sum(durations) if durations else (r.get("api_ms") or 0)
-        totals = r.get("totals") or {}
-        in_tok = totals.get("input_tokens") if totals else \
-            sum(c["input_tokens"] or 0 for c in r["calls"])
-        out_tok = totals.get("output_tokens") if totals else \
-            sum(c["output_tokens"] or 0 for c in r["calls"])
-        print(f"[{label}] wall {r['wall_ms']} ms · model {model_ms} ms · "
-              f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s) · {status}")
-    if r["reply"]:
-        print(r["reply"][:500])
-    if status == "needs_approval":
-        print(f"WARNING: stopped — waiting for approval: "
-              f"{r.get('needs_approval')}. The run was stopped at once "
-              f"instead of waiting. Partial files are in "
-              f"{run_dir / 'workspace'}")
-    elif status == "timeout":
-        print(f"Timed out after {timeout} seconds. That is the run cap, "
-              "not a crash. Partial files are in "
-              f"{run_dir / 'workspace'}")
-    elif status == "interrupted":
-        print(f"Interrupted. The run was stopped and recorded. "
-              f"Partial files are in {run_dir / 'workspace'}")
-    elif report["error"]:
-        print("error:", report["error"], file=sys.stderr)
-    print(f"UI: {UI_URL}  (run {run_id})")
+    })
+    write_run(run_dir, report)
+    print_summary(report, r, run_dir)
     return report
 
 
@@ -800,36 +851,25 @@ def _fmt_bucket(ms):
 
 def record_watch_turn(turn, session_id):
     """Append one finished watched turn as a muse-watch run."""
-    RUNS.mkdir(exist_ok=True)
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" \
-        + uuid.uuid4().hex[:6]
-    run_dir = RUNS / run_id
-    run_dir.mkdir()
+    run_id, run_dir = new_run_dir()
     (run_dir / "prompt.md").write_text(turn["prompt"])
     split = turn["split"]
-    report = {
+    report = dict(BASE_REPORT)
+    report.update({
         "at": turn["at"], "run_id": run_id, "prompt": turn["prompt"],
         "model": turn["model"], "provider": "muse-watch",
         "session_id": session_id, "context_mode": "interactive",
-        "comparison_id": None, "round": None, "compare_mode": None,
         "harness_version": turn["version"],
         "tool_ms": split["tool_ms"],
         "approval_ms": split["approval_ms"],
         "muse_ms": split["muse_ms"],
-        "needs_approval_tool": None,
-        "status": "completed", "timeout_seconds": None,
+        "status": "completed",
         "command": "./run-muse --watch",
         "wall_ms": turn["wall_ms"], "exit_code": 0,
-        "reply": "", "calls": turn["calls"], "timeline": [],
-        "api_ms": None, "ttft_ms": None, "num_turns": None,
-        "cost_usd": None, "totals": None,
-        "metrics_unavailable": False, "error": None,
+        "calls": turn["calls"],
         "turn_index": turn["index"],
-    }
-    (run_dir / "report.json").write_text(json.dumps(report, indent=2))
-    summary = {k: v for k, v in report.items() if k != "timeline"}
-    with open(RUNS / "index.jsonl", "a") as f:
-        f.write(json.dumps(summary) + "\n")
+    })
+    write_run(run_dir, report)
     print(f"turn {turn['index']} · wall {_fmt_bucket(turn['wall_ms'])}"
           f" · model {_fmt_bucket(split['model_ms'])}"
           f" · tools {_fmt_bucket(split['tool_ms'])}"
@@ -871,11 +911,11 @@ def run_watch(session_arg=None):
                 return
             time.sleep(1)
     except KeyboardInterrupt:
-        # Record a trailing turn whose activity is already finished.
+        # split_turns only returns the trailing turn once the session
+        # has ended, so this only catches turns that closed in the
+        # last poll second.
         records = muse_log.read_records(path)
         turns = muse_log.split_turns(records)
-        # split_turns holds back the live trailing turn; close it here
-        # only when the session actually ended in the log.
         for turn in turns:
             if turn["index"] not in recorded:
                 recorded.add(turn["index"])
@@ -971,14 +1011,14 @@ def handle_command(line, state):
         if wanted in ("single",) + COMPARE_MODES:
             text_out = describe_mode(wanted)
             if wanted == "claude":
-                keys = []
+                notices = []
                 for m_provider, m_model in compare_models_for("claude"):
                     if m_provider in PAID_PROVIDERS:
-                        key = endpoint_key_name(m_model)
-                        if key not in keys:
-                            keys.append(key)
-                for key in keys:
-                    text_out += f"\nPaid run: uses {key}"
+                        notice = paid_notice(m_model)
+                        if notice not in notices:
+                            notices.append(notice)
+                for notice in notices:
+                    text_out += "\n" + notice
             return {"action": "message", "mode": wanted,
                     "text": text_out}
         return {"action": "message", "mode": mode,
@@ -1021,14 +1061,14 @@ def main():
         parser.error("--watch takes no prompt or --compare")
     mode = args.compare
     args.model = args.model or default_model(args.provider)
+    repeat = args.repeat if args.repeat is not None else 1
+    if mode is not None and repeat < 1:
+        parser.error("--repeat must be at least 1")
     ensure_ui()
     if args.watch is not None:
         run_watch(args.watch or None)
         return
     prompt = " ".join(args.prompt).strip()
-    repeat = args.repeat if args.repeat is not None else 1
-    if mode is not None and repeat < 1:
-        parser.error("--repeat must be at least 1")
     if prompt and mode is not None:
         run_compare(prompt, mode, args.minimal, args.timeout, repeat)
         return

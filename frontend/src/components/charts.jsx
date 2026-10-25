@@ -2,7 +2,7 @@ import React from "react";
 import {
   Bar, BarChart, Brush, CartesianGrid, Cell, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { chartData, fmt, fmtDur, fmtDurExact, fmtSec, localTime, overviewScope, perCallSeries, shortText, showBrush } from "../format.js";
+import { chartData, fmt, fmtSec, localTime, overviewScope, perCallSeries, shortText, showBrush } from "../format.js";
 
 function ChartTip({ active, payload }) {
   if (!active || !payload || !payload.length) return null;
@@ -110,35 +110,4 @@ export function PerCallChart({ events, provider }) {
   );
 }
 
-export function CallChart({ events }) {
-  const chrono = [...(events || [])].reverse();
-  const vals = chrono.map((e) => e["wire_ms"]);
-  const W = 560, H = 150, padT = 18, padB = 18;
-  const nums = vals.filter((v) => v != null);
-  const max = nums.length ? Math.max(...nums) : 0;
-  const slot = W / Math.max(1, chrono.length);
-  const bw = Math.max(2, Math.min(42, slot * 0.68));
-  return (
-    <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Bar chart of wire time per model call">
-      <text x={0} y={11} className="chartText">{max ? "max " + fmtDur(max) : ""}</text>
-      <line x1={0} x2={W} y1={H - padB} y2={H - padB} className="axis" />
-      {chrono.map((e, i) => {
-        const v = vals[i];
-        const hgt = (v != null && max > 0) ? Math.max(2, (H - padT - padB) * Math.min(v, max) / max) : 2;
-        const x = slot * i + (slot - bw) / 2;
-        const title = "Call " + (i + 1) + " · wire " + (v == null ? "not reported" : fmtDurExact(v))
-          + " · in " + fmt(e["gen_ai.usage.input_tokens"]) + " · out " + fmt(e["gen_ai.usage.output_tokens"]);
-        return (
-          <React.Fragment key={i}>
-            <rect x={x.toFixed(1)} y={(H - padB - hgt).toFixed(1)} width={bw.toFixed(1)} height={hgt.toFixed(1)} rx={2}
-              className={v == null ? "barBad" : (v === max ? "bar barMax" : "bar")}>
-              <title>{title}</title>
-            </rect>
-          </React.Fragment>
-        );
-      })}
-      <text x={0} y={H - 5} className="chartText">call 1</text>
-      <text x={W} y={H - 5} textAnchor="end" className="chartText">{"call " + chrono.length}</text>
-    </svg>
-  );
-}
+

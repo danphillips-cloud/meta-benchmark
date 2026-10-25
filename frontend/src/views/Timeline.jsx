@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { fmt, fmtDur, fmtDurParts, localTime, shortText } from "../format.js";
-import { CallChart } from "../components/charts.jsx";
+import { PerCallChart } from "../components/charts.jsx";
 
 function DurValue({ value }) {
   const p = fmtDurParts(value);
@@ -22,11 +22,11 @@ export default function Timeline({ data }) {
     <section data-view-panel="timeline">
       <div className="viewHead"><span className="hint">{data.selected ? shortText(data.prompt || data.selected, 60) + " · " + ((data.provider || "?") + "/" + (data.model || "?")) : ""}</span></div>
       <section className="panel">
-        <div className="panelHead"><div><div className="pt">Per-call wire time</div><div className="ps">oldest → newest · highlighted = slowest</div></div></div>
-        {showChart ? <CallChart events={events} /> : null}
+        <div className="panelHead"><div><div className="pt">Per-call model time</div><div className="ps">oldest → newest · stalled time shown on retried calls</div></div></div>
+        {showChart ? <PerCallChart events={events} provider={data.provider} /> : null}
         {!showChart ? <p className="note">{data.provider === "claude-code" ? "Claude Code does not report per-call time, so there is no per-call chart for this run. Its model total (reported API time) is on Overview." : "No model calls yet."}</p> : null}
         <div className="statlets">
-          <div className="statlet"><span>{"Wire, last call" + (data.provider ? " (" + data.provider + ")" : "")}</span><DurValue value={latest ? latest["wire_ms"] : null} /></div>
+          <div className="statlet"><span>{"Model time, last call" + (data.provider ? " (" + data.provider + ")" : "")}</span><DurValue value={latest ? latest["wire_ms"] : null} /></div>
           <div className="statlet"><span>Slowest call</span><DurValue value={wires.length ? Math.max(...wires) : null} /></div>
           <div className="statlet"><span>TTFT</span><DurValue value={sel.ttft_ms} /></div>
           <div className="statlet"><span>Input, last call</span><strong>{latest ? fmt(latest["gen_ai.usage.input_tokens"]) : "–"}</strong></div>
@@ -37,7 +37,7 @@ export default function Timeline({ data }) {
         <summary>Model calls (table, newest first)</summary>
         <div className="tableWrap">
           <table>
-            <thead><tr><th className="num">#</th><th>Model</th><th className="num">Wire</th><th className="num">In</th><th className="num">Cached</th><th className="num">Out</th></tr></thead>
+            <thead><tr><th className="num">#</th><th>Model</th><th className="num">Model time</th><th className="num">In</th><th className="num">Cached</th><th className="num">Out</th></tr></thead>
             <tbody>
               {!events.length
                 ? <tr><td colSpan={6} className="empty">{data.provider === "claude-code" && data.status === "running" ? "Claude Code runs appear when they finish" : "No calls yet."}</td></tr>
@@ -56,10 +56,10 @@ export default function Timeline({ data }) {
         </div>
       </details>
       <section className="panel" style={{ marginTop: 12 }}>
-        <div className="panelHead"><div><div className="pt">Full timeline</div><div className="ps">Every step, oldest first. The middle column is time until the next recorded step, not that step's own work. Real model time is the Wire column on model_completed rows (bold).</div></div></div>
+        <div className="panelHead"><div><div className="pt">Full timeline</div><div className="ps">Every step, oldest first. The middle column is time until the next recorded step, not that step's own work. Real model time is the Model time column on model_completed rows (bold).</div></div></div>
         <div className={"tableWrap timelineWrap" + (tLong && !expanded ? " collapsed" : "")}>
           <table>
-            <thead><tr><th>At</th><th>Operation (full)</th><th className="num">To next step</th><th className="num">Wire</th><th>Status</th></tr></thead>
+            <thead><tr><th>At</th><th>Operation (full)</th><th className="num">To next step</th><th className="num">Model time</th><th>Status</th></tr></thead>
             <tbody>
               {!tl.length
                 ? <tr><td colSpan={5} className="empty">Nothing yet.</td></tr>

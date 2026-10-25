@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
   liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, runMode, showBrush, usualBaseline,
 } from "./format.js";
 
@@ -130,7 +130,7 @@ test("chartData: stacked seconds, no model time is overhead only, never estimate
   assert.equal(showBrush(12), false); assert.equal(showBrush(13), true);
 });
 
-// --- Part E: diagnose a slow run ------------------------------------
+// --- Diagnose a slow run -------------------------------------------
 // Events use the server shape (newest first). E() builds one event.
 const E = (wire, input, cached, output) => ({
   "wire_ms": wire,
@@ -293,6 +293,40 @@ test("liveStateText: banner wording for every live state", () => {
   assert.equal(liveStateText({ state: "model call running", tool: null }), "Model call running");
   assert.equal(liveStateText({ state: "idle", tool: null }), "Idle");
   assert.equal(liveStateText({ state: "ended", tool: null }), "Ended");
+});
+
+test("fastestOf: tied fastest keys and ratio, nothing when it cannot say", () => {
+  const rows = [
+    { key: "a", wall: 100 }, { key: "b", wall: 300 }, { key: "c", wall: null },
+  ];
+  const one = fastestOf(rows);
+  assert.deepEqual([...one.fastestKeys], ["a"]);
+  assert.equal(one.fastRatio, 3);
+  const tied = fastestOf([{ key: "a", wall: 100 }, { key: "b", wall: 100 }, { key: "c", wall: 200 }]);
+  assert.deepEqual([...tied.fastestKeys].sort(), ["a", "b"]);
+  assert.equal(tied.fastRatio, 2);
+  // Fewer than two groups with a wall time, or all equal: no badge.
+  assert.deepEqual(fastestOf([{ key: "a", wall: 100 }]), { fastestKeys: new Set(), fastRatio: null });
+  assert.deepEqual(fastestOf([{ key: "a", wall: 100 }, { key: "b", wall: 100 }]), { fastestKeys: new Set(), fastRatio: null });
+  assert.deepEqual(fastestOf([]), { fastestKeys: new Set(), fastRatio: null });
+  assert.deepEqual(fastestOf([{ key: "a", wall: 0 }, { key: "b", wall: 100 }]), { fastestKeys: new Set(), fastRatio: null });
+});
+
+test("status constants: DID_NOT_COMPLETE is every known status that did not finish", () => {
+  assert.deepEqual(DID_NOT_COMPLETE, ["failed", "interrupted", "timeout", "needs_approval"]);
+  assert.ok(STATUSES.includes("completed") && STATUSES.includes("running"));
+  assert.ok(!DID_NOT_COMPLETE.includes("completed") && !DID_NOT_COMPLETE.includes("running"));
+});
+
+test("filterOptions: sorted unique providers and models, blanks dropped", () => {
+  const rows = [
+    S({ provider: "meta", model: "m2" }),
+    S({ provider: "claude-code", model: "m1" }),
+    S({ provider: "meta", model: "m2" }),
+    S({ provider: null, model: null }),
+  ];
+  assert.deepEqual(filterOptions(rows), { providers: ["claude-code", "meta"], models: ["m1", "m2"] });
+  assert.deepEqual(filterOptions([]), { providers: [], models: [] });
 });
 
 test("usualBaseline: never compares across context modes", () => {

@@ -827,7 +827,7 @@ class RunProcessTest(unittest.TestCase):
 
 
 class VisibilityTest(unittest.TestCase):
-    """Part F: split, live state, turns, approval stop (sanitised)."""
+    """Visibility: split, live state, turns, approval stop (sanitised)."""
 
     def _records(self, name):
         return run_muse.muse_log.read_records(HERE / "fixtures" / name)
@@ -955,6 +955,59 @@ class VisibilityTest(unittest.TestCase):
         self.assertEqual(
             run_muse.format_live_line(log.live_state(recs[:4])),
             "retrying connection (attempt 2/10)")
+
+    def test_two_nodes_in_one_record_align_retries_by_record(self):
+        log = run_muse.muse_log
+
+        def status(at, message):
+            return {"recorded_at": at * 1000,
+                    "payload": {"event": {"kind": "status",
+                                          "message": message}}}
+
+        def node(duration, input_tokens):
+            return {"kind": "model_completed", "duration_ms": duration,
+                    "usage": {"input_tokens": input_tokens,
+                              "output_tokens": 1, "cached_tokens": 0,
+                              "reasoning_tokens": 0}}
+
+        records = [
+            {"payload": {"event": {"kind": "model_request_configured"}}},
+            status(2000, "opening meta model stream attempt 1/10"),
+            status(3000, "retrying meta model stream in 1000ms "
+                         "(attempt 2/10)"),
+            status(8000, "opening meta model stream attempt 2/10"),
+            {"payload": {"event": {"kind": "model_completed"},
+                         "nodes": [node(100, 10), node(200, 20)]}},
+            {"payload": {"event": {"kind": "model_request_configured"}}},
+            {"payload": {"event": {"kind": "model_completed"},
+                         "nodes": [node(300, 30)]}},
+        ]
+        calls = log.calls_from_records(records)
+        self.assertEqual(len(calls), 3)
+        # The retry belongs to the record that carried it: the first
+        # node gets it, the second node in the same record does not,
+        # and the next call is not shifted onto it.
+        self.assertEqual(calls[0]["retries"], 1)
+        self.assertEqual(calls[0]["stalled_ms"], 5000)
+        self.assertEqual(calls[1]["retries"], 0)
+        self.assertIsNone(calls[1]["stalled_ms"])
+        self.assertEqual(calls[2]["retries"], 0)
+        self.assertIsNone(calls[2]["stalled_ms"])
+        self.assertEqual(log.retry_infos(records),
+                         [{"retries": 1, "stalled_ms": 5000},
+                          {"retries": 0, "stalled_ms": None},
+                          {"retries": 0, "stalled_ms": None}])
+
+    def test_live_calls_carry_retry_fields(self):
+        log = run_muse.muse_log
+        calls, timeline = log.live_calls_from_records(
+            self._records("session-retry.jsonl"))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["retries"], 1)
+        self.assertEqual(calls[0]["stalled_ms"], 5000)
+        self.assertEqual(calls[1]["retries"], 0)
+        self.assertIsNone(calls[1]["stalled_ms"])
+        self.assertTrue(timeline)
 
     def test_live_lines_format(self):
         self.assertEqual(
@@ -1146,14 +1199,17 @@ class IndexHtmlTest(unittest.TestCase):
         # Dashboard shell: URL routes own the selected run, sidebar links
         # follow the URL, the TanStack runs table, recent-runs chart,
         # medians panel.
-        for marker in ("compareSelect2", "CompareSet", "CallChart",
+        for marker in ("compareSelect2", "CompareSet", "PerCallChart",
                        "RecentRunsChart", "Medians by provider/model",
                        "data-view-panel", "BrowserRouter", "/runs/:id",
                        "Run not found", "runsTable",
-                       "useTable", "createSortedRowModel", "RUNS_PAGE_SIZE"):
+                       "RUNS_PAGE_SIZE", "filterSessions", "compareSessions"):
             self.assertIn(marker, self.src)
         self.assertNotIn("useLegacyTable", self.src)
-        self.assertNotIn("@tanstack/react-table/legacy", self.src)
+        self.assertNotIn("@tanstack/react-table", self.src)
+        self.assertNotIn("<CallChart", self.src)
+        self.assertNotIn("function CallChart", self.src)
+        self.assertNotIn("useTable", self.src)
 
     def test_part_e_diagnose_hooks_present(self):
         # Selected-run chip removed from the top bar; filter chips stay.

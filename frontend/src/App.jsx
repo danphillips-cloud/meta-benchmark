@@ -64,7 +64,6 @@ function AppShell() {
   const [exportOpen, setExportOpen] = useState(false);
   const sigRef = useRef("");
   const dataRef = useRef(EMPTY);
-  const sessionSelectRef = useRef(null);
 
   const runDetail = matchPath("/runs/:id", location.pathname);
   const timelineDetail = matchPath("/timeline/:id", location.pathname);
@@ -214,7 +213,7 @@ function AppShell() {
         <div className="content">
           <Routes>
             <Route path="/" element={<Overview data={data} onSelect={selectRun} onGoto={goto} />} />
-            <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} sessionSelectRef={sessionSelectRef} />} />
+            <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} />} />
             <Route path="/runs/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Overview data={data} onSelect={selectRun} onGoto={goto} />} />
             <Route path="/compare/:setId" element={compareNotFound ? <NotFound what="Compare set not found" /> : <Compare data={compareData} onSelect={selectRun} />} />
             <Route path="/compare" element={<Compare data={data} onSelect={selectRun} />} />
@@ -226,13 +225,13 @@ function AppShell() {
             <summary>How to read this · commands · SDK docs</summary>
             <div className="panel">
               <ul>
-                <li><strong>Wire</strong> is one model call, start to finish. <strong>Wall</strong> is the whole run; Wall minus Model time is local overhead.</li>
-                <li>Labels say their scope: <em>run</em> totals cover every call; <em>last call</em> figures describe only the final call.</li>
-                <li><strong>–</strong> means the harness did not report it. It is never estimated, and no chart is drawn for it.</li>
+                <li><strong>Wall</strong> is the whole run. It splits into <strong>Model</strong> (the model thinking), <strong>Tools</strong> (commands Muse ran), <strong>Approval wait</strong>, and <strong>Muse</strong> (everything else Muse did). All four come from timestamps in Muse's own log.</li>
+                <li><strong>Model time</strong> is one model call, start to finish. Labels say their scope: <em>run</em> totals cover every call; <em>last call</em> figures describe only the final call.</li>
+                <li><strong>–</strong> means the harness did not report it. It is never estimated, and no chart is drawn for it. Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.</li>
                 <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only; every round stays visible in the matrix.</li>
                 <li>Timeline middle column is time to the next step, not step cost.</li>
               </ul>
-              <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare custom "hi"</code> one prompt, 3 ways · <code>python3 test_tool.py</code> tests</p>
+              <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 test_tool.py</code> tests</p>
               <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>
             </div>
           </details>

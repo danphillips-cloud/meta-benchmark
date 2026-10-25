@@ -1,6 +1,6 @@
 import React from "react";
 
-// Shared filter controls (Part D step 7). One URL-backed state is read
+// Shared filter controls. One URL-backed state is read
 // by Overview and Runs; `extra` renders Runs-only status/mode selects.
 export function FilterBar({ state, providers, models, onChange, extra }) {
   return (
