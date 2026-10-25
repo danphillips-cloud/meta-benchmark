@@ -1,14 +1,16 @@
 import React, { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { flexRender } from "@tanstack/react-table";
 import {
-  getCoreRowModel, getPaginationRowModel, getSortedRowModel, useLegacyTable,
-} from "@tanstack/react-table/legacy";
+  columnFilteringFeature, createFilteredRowModel, createPaginatedRowModel,
+  createSortedRowModel, flexRender, rowPaginationFeature, rowSortingFeature,
+  tableFeatures, useTable,
+} from "@tanstack/react-table";
 import {
-  RUNS_PAGE_SIZE, buildRunsQuery, compareSessions, filterSessions,
-  fmt, fmtDur, localTime, nextRunsSort, parseRunsQuery, runMode, shortText,
+  RUNS_PAGE_SIZE, buildRunsQuery, compareSessions,
+  fmt, fmtDur, inDateRange, legKey, localTime, nextRunsSort, parseRunsQuery, runMode, shortText,
 } from "../format.js";
 import { StatusPill } from "../components/widgets.jsx";
+import { FilterBar } from "../components/filters.jsx";
 import { copyText } from "../api.js";
 
 export function summaryText(data) {
@@ -39,6 +41,27 @@ const HEADERS = [
   ["overhead_ms", "Overhead", true],
 ];
 
+const features = tableFeatures({
+  rowSortingFeature,
+  columnFilteringFeature,
+  rowPaginationFeature,
+  sortedRowModel: createSortedRowModel(),
+  filteredRowModel: createFilteredRowModel(),
+  paginatedRowModel: createPaginatedRowModel(),
+});
+
+const SORT_ACCESSOR = {
+  at: (s) => s.at || undefined,
+  prompt: (s) => s.prompt || undefined,
+  provider_model: (s) => legKey(s),
+  mode: (s) => runMode(s),
+  status: (s) => s.status || undefined,
+  calls: (s) => (s.calls == null ? undefined : s.calls),
+  wall_ms: (s) => (s.wall_ms == null ? undefined : s.wall_ms),
+  model_ms: (s) => (s.model_ms == null ? undefined : s.model_ms),
+  overhead_ms: (s) => (s.overhead_ms == null ? undefined : s.overhead_ms),
+};
+
 export default function Runs({ data, sessionValue, onSessionChange, onSelect, onDelete, sessionSelectRef }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = parseRunsQuery(searchParams);
@@ -55,18 +78,30 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
   };
   const cycleSort = (sortId) => update(nextRunsSort(state, sortId));
 
-  // Filter and sort are pure and unit-tested; TanStack owns rendering
-  // and paging over the result. Missing values sort last, never as 0.
-  const rows = useMemo(() => {
-    const filtered = filterSessions(all, state);
-    return [...filtered].sort((a, b) => compareSessions(a, b, state.sort, state.dir));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [all, state.q, state.provider, state.model, state.status, state.mode, state.sort, state.dir]);
-
   const columns = useMemo(() => HEADERS.map(([id, label, num]) => ({
     id,
     header: label,
-    accessorFn: (s) => s[id],
+    accessorFn: SORT_ACCESSOR[id],
+    sortUndefined: "last",
+    sortingFn: (rowA, rowB, columnId) => compareSessions(rowA.original, rowB.original, columnId, "asc"),
+    filterFn: (row, columnId, value) => {
+      const s = row.original;
+      if (columnId === "prompt") {
+        const q = String(value || "").trim().toLowerCase();
+        return !q || (s.prompt || s.run_id || "").toLowerCase().includes(q);
+      }
+      if (columnId === "provider_model") {
+        const v = value || {};
+        return (!v.provider || s.provider === v.provider) && (!v.model || s.model === v.model);
+      }
+      if (columnId === "status") return s.status === value;
+      if (columnId === "mode") return runMode(s) === value;
+      if (columnId === "at") {
+        const v = value || {};
+        return inDateRange(s.at, v.from || "", v.to || "");
+      }
+      return true;
+    },
     cell: ({ row }) => {
       const s = row.original;
       if (id === "at") return localTime(s.at) || "–";
@@ -80,23 +115,57 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
     meta: { num },
   })), []);
 
-  const table = useLegacyTable({
-    data: rows,
+  const columnFilters = useMemo(() => {
+    const f = [];
+    if (state.q) f.push({ id: "prompt", value: state.q });
+    if (state.provider || state.model) f.push({ id: "provider_model", value: { provider: state.provider, model: state.model } });
+    if (state.status) f.push({ id: "status", value: state.status });
+    if (state.mode) f.push({ id: "mode", value: state.mode });
+    if (state.from || state.to) f.push({ id: "at", value: { from: state.from, to: state.to } });
+    return f;
+  }, [state.q, state.provider, state.model, state.status, state.mode, state.from, state.to]);
+
+  const sorting = useMemo(() => [{ id: state.sort, desc: state.dir === "desc" }], [state.sort, state.dir]);
+
+  const table = useTable({
+    features,
+    data: all,
     columns,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    state: { pagination: { pageIndex, pageSize: RUNS_PAGE_SIZE } },
+    getRowId: (s) => s.run_id,
+    state: {
+      sorting,
+      columnFilters,
+      pagination: { pageIndex, pageSize: RUNS_PAGE_SIZE },
+    },
+    onSortingChange: (up) => {
+      const next = typeof up === "function" ? up(sorting) : up;
+      const first = next && next[0];
+      if (!first) update({ ...{ sort: "at", dir: "desc" } });
+      else update({ sort: first.id, dir: first.desc ? "desc" : "asc" });
+    },
+    onColumnFiltersChange: (up) => {
+      const next = typeof up === "function" ? up(columnFilters) : up;
+      const patch = { q: "", provider: "", model: "", status: "", mode: "", from: "", to: "" };
+      (next || []).forEach((f) => {
+        if (f.id === "prompt") patch.q = String(f.value || "");
+        else if (f.id === "provider_model") { patch.provider = (f.value && f.value.provider) || ""; patch.model = (f.value && f.value.model) || ""; }
+        else if (f.id === "status") patch.status = String(f.value || "");
+        else if (f.id === "mode") patch.mode = String(f.value || "");
+        else if (f.id === "at") { patch.from = (f.value && f.value.from) || ""; patch.to = (f.value && f.value.to) || ""; }
+      });
+      update(patch);
+    },
     onPaginationChange: (up) => {
       const next = typeof up === "function" ? up({ pageIndex, pageSize: RUNS_PAGE_SIZE }) : up;
       setPageIndex(next.pageIndex);
     },
   });
+  const filteredCount = table.getFilteredRowModel().rows.length;
   const pageCount = table.getPageCount();
   const text = summaryText(data);
   return (
     <section data-view-panel="runs">
-      <div className="viewHead"><span className="hint">{"showing " + rows.length + " of " + all.length}</span></div>
+      <div className="viewHead"><span className="hint">{"showing " + filteredCount + " of " + all.length}</span></div>
       <div className="toolbar">
         <label htmlFor="sessionSelect">Session</label>
         <select id="sessionSelect" ref={sessionSelectRef} value={sessionValue} onChange={(e) => onSessionChange(e.target.value)}>
@@ -108,29 +177,19 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         <span className="spacer"></span>
         <button className="btn danger" type="button" onClick={onDelete}>Delete session</button>
       </div>
-      <div className="filterRow">
-        <label htmlFor="sessionFilter">Filter</label>
-        <input type="search" id="sessionFilter" placeholder="Prompt text…" size="18" value={state.q} onChange={(e) => update({ q: e.target.value })} />
-        <label htmlFor="providerFilter">Provider</label>
-        <select id="providerFilter" value={state.provider} onChange={(e) => update({ provider: e.target.value })}>
-          <option value="">All</option>
-          {providers.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <label htmlFor="modelFilter">Model</label>
-        <select id="modelFilter" value={state.model} onChange={(e) => update({ model: e.target.value })}>
-          <option value="">All</option>
-          {models.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
-        <label htmlFor="statusFilter">Status</label>
-        <select id="statusFilter" value={state.status} onChange={(e) => update({ status: e.target.value })}>
-          <option value="">All</option><option value="completed">completed</option><option value="running">running</option><option value="failed">failed</option><option value="interrupted">interrupted</option><option value="timeout">timeout</option>
-        </select>
-        <label htmlFor="modeFilter">Mode</label>
-        <select id="modeFilter" value={state.mode} onChange={(e) => update({ mode: e.target.value })}>
-          <option value="">All</option>
-          {modes.map((m) => <option key={m} value={m}>{m}</option>)}
-        </select>
-      </div>
+      <FilterBar state={state} providers={providers} models={models} onChange={update} extra={(
+        <>
+          <label htmlFor="statusFilter">Status</label>
+          <select id="statusFilter" value={state.status} onChange={(e) => update({ status: e.target.value })}>
+            <option value="">All</option><option value="completed">completed</option><option value="running">running</option><option value="failed">failed</option><option value="interrupted">interrupted</option><option value="timeout">timeout</option>
+          </select>
+          <label htmlFor="modeFilter">Mode</label>
+          <select id="modeFilter" value={state.mode} onChange={(e) => update({ mode: e.target.value })}>
+            <option value="">All</option>
+            {modes.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </>
+      )} />
       <div className="tableWrap">
         <table className="runsTable">
           <thead>
@@ -147,7 +206,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
             </tr>
           </thead>
           <tbody>
-            {!rows.length
+            {!filteredCount
               ? <tr><td colSpan={HEADERS.length} className="empty">{all.length ? "No sessions match the filter." : "No sessions yet."}</td></tr>
               : table.getRowModel().rows.map((row) => {
                 const s = row.original;
@@ -158,7 +217,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
                     aria-label={"Open run " + (s.prompt || s.run_id)} title={s.prompt || ""}
                     onClick={() => onSelect(s.run_id)}
                     onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(s.run_id); } }}>
-                    {row.getVisibleCells().map((cell) => (
+                    {row.getAllCells().map((cell) => (
                       <td key={cell.id} className={cell.column.columnDef.meta && cell.column.columnDef.meta.num ? "num" : undefined}>
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
@@ -171,7 +230,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
       </div>
       <div className="pagerRow">
         <button className="btn" type="button" disabled={pageIndex <= 0} onClick={() => setPageIndex(pageIndex - 1)}>← Prev</button>
-        <span className="empty">{"Page " + Math.min(pageIndex + 1, Math.max(pageCount, 1)) + " of " + Math.max(pageCount, 1) + " · " + rows.length + " run(s)"}</span>
+        <span className="empty">{"Page " + Math.min(pageIndex + 1, Math.max(pageCount, 1)) + " of " + Math.max(pageCount, 1) + " · " + filteredCount + " run(s)"}</span>
         <button className="btn" type="button" disabled={pageIndex + 1 >= pageCount} onClick={() => setPageIndex(pageIndex + 1)}>Next →</button>
       </div>
       <details>

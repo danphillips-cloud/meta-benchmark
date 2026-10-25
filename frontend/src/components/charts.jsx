@@ -1,71 +1,66 @@
 import React from "react";
-import { fmt, fmtDur, fmtDurExact, localTime, scopedRuns, shortText, timeHM } from "../format.js";
+import {
+  Bar, BarChart, Brush, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
+import { chartData, fmt, fmtDur, fmtDurExact, fmtSec, localTime, overviewScope, shortText, showBrush } from "../format.js";
 
-// Plain SVG charts (Recharts arrives in a later step). Heights are
-// strictly proportional to reported values; null draws a flat tick.
-
-export function RecentRunsChart({ data, onSelect }) {
-  const scope = scopedRuns(data);
-  const chrono = [...scope.runs].reverse();
-  const W = 720, H = 196, padT = 18, padB = 36;
-  if (!chrono.length) {
-    return <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Stacked bar chart of recent runs, split into model time and overhead" />;
-  }
-  const completedWalls = chrono.filter((s) => s.status === "completed" && s.wall_ms != null).map((s) => s.wall_ms);
-  const allWalls = chrono.map((s) => s.wall_ms).filter((v) => v != null);
-  const trueMax = allWalls.length ? Math.max(...allWalls) : 0;
-  const max = completedWalls.length ? Math.max(...completedWalls) : trueMax;
-  const slot = W / chrono.length;
-  const bw = Math.max(3, Math.min(26, slot * 0.66));
-  const plotH = H - padT - padB;
-  const rotate = chrono.length > 8;
+function ChartTip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
   return (
-    <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Stacked bar chart of recent runs, split into model time and overhead">
-      <text x={0} y={11} className="chartText">{max ? (max < trueMax ? "scale max " : "max ") + fmtDur(max) : ""}</text>
-      <line x1={0} x2={W} y1={H - padB} y2={H - padB} className="axis" />
-      {chrono.map((s, i) => {
-        const cappedEarly = s.wall_ms != null && max && s.wall_ms > max;
-        const greyed = s.status !== "completed" && s.status !== "running";
-        const title = localTime(s.at) + " · " + (s.provider || "?") + "/" + (s.model || "?")
-          + " · wall " + (s.wall_ms == null ? "not reported" : fmtDurExact(s.wall_ms))
-          + " · model " + fmtDurExact(s.model_ms) + " · overhead " + fmtDurExact(s.overhead_ms)
-          + " · " + (s.status || "unknown") + " · " + shortText(s.prompt || "", 60)
-          + (greyed ? " · greyed: did not complete" : "")
-          + (cappedEarly ? " · cut off: longer than the slowest completed run in scope (scale max " + fmtDurExact(max) + "); exact wall " + fmtDurExact(s.wall_ms) : "");
-        const x = slot * i + (slot - bw) / 2;
-        const base = H - padB;
-        let bars;
-        if (s.wall_ms == null || s.wall_ms <= 0 || !max) {
-          bars = <rect x={x.toFixed(1)} y={H - padB - 2} width={bw.toFixed(1)} height={2} className="barBad" />;
-        } else {
-          const capped = s.wall_ms > max;
-          const totalH = Math.max(3, plotH * Math.min(s.wall_ms, max) / max);
-          const modelFrac = s.model_ms != null ? Math.min(1, Math.max(0, s.model_ms / s.wall_ms)) : 0;
-          const modelH = totalH * modelFrac;
-          const overH = totalH - modelH;
-          bars = (<>
-            {overH > 0 ? <rect x={x.toFixed(1)} y={(base - totalH).toFixed(1)} width={bw.toFixed(1)} height={overH.toFixed(1)} rx={2} className={"segOverRect" + (s.run_id === data.selected ? " barSel" : "")} /> : null}
-            {modelH > 0 ? <rect x={x.toFixed(1)} y={(base - modelH).toFixed(1)} width={bw.toFixed(1)} height={modelH.toFixed(1)} rx={2} className={(s.status === "running" ? "bar barRun" : "bar") + (s.run_id === data.selected ? " barSel" : "")} /> : null}
-            {capped ? <rect x={x.toFixed(1)} y={(base - totalH).toFixed(1)} width={bw.toFixed(1)} height={3} className="capMark" /> : null}
-          </>);
-        }
-        const cx = slot * i + slot / 2;
-        return (
-          <React.Fragment key={s.run_id + "-" + i}>
-            <g className={"pickable" + (greyed ? " runBad" : "")} tabIndex={0} role="button" aria-label={title}
-              onClick={() => onSelect(s.run_id)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(s.run_id); } }}>
-              <title>{title}</title>
-              {bars}
-            </g>
-            {rotate
-              ? <text x={cx.toFixed(1)} y={H - padB + 12} textAnchor="end" className="chartText" transform={`rotate(-40 ${cx.toFixed(1)} ${H - padB + 12})`}>{timeHM(s.at)}</text>
-              : <text x={cx.toFixed(1)} y={H - 6} textAnchor="middle" className="chartText">{timeHM(s.at)}</text>}
-          </React.Fragment>
-        );
-      })}
-    </svg>
+    <div className="chartTip">
+      <div className="chartTipTitle">{localTime(d.at) + " · " + d.provider + "/" + d.model}</div>
+      <div>{"Wall: " + (d.wall_ms == null ? "not reported" : fmtSec(d.wall_ms))}</div>
+      <div>{"Model: " + fmtSec(d.model_ms)}</div>
+      <div>{"Overhead: " + fmtSec(d.overhead_ms)}</div>
+      <div>{"Status: " + d.status}</div>
+      {d.prompt ? <div className="chartTipPrompt">{shortText(d.prompt, 72)}</div> : null}
+      {d.greyed ? <div>Did not complete</div> : null}
+    </div>
   );
+}
+
+export function RunsBarChart({ runs, selected, onSelect }) {
+  const data = chartData(runs, selected);
+  if (!data.length) return <div className="empty" style={{ minHeight: 120 }}>No runs in scope.</div>;
+  const pick = (entry) => {
+    const id = (entry && entry.payload && entry.payload.run_id) || (entry && entry.run_id);
+    if (id && onSelect) onSelect(id);
+  };
+  const cellProps = (entry) => ({
+    fillOpacity: entry.greyed ? 0.45 : 1,
+    stroke: entry.isSelected ? "var(--ink)" : "transparent",
+    strokeWidth: entry.isSelected ? 2 : 0,
+    cursor: "pointer",
+    onClick: () => { if (entry.run_id && onSelect) onSelect(entry.run_id); },
+  });
+  return (
+    <div style={{ width: "100%", height: showBrush(data.length) ? 264 : 232 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={data} margin={{ top: 8, right: 8, bottom: 4, left: 0 }} onClick={(e) => { if (e && e.activePayload) pick(e.activePayload[0]); }}>
+          <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="time" tick={{ fontSize: 11, fill: "var(--muted)" }} tickLine={false} axisLine={{ stroke: "var(--line)" }} interval="preserveStartEnd" />
+          <YAxis tick={{ fontSize: 11, fill: "var(--muted)" }} tickLine={false} axisLine={false} width={52}
+            tickFormatter={(v) => Number(v).toFixed(v >= 10 ? 0 : 1) + "s"} />
+          <Tooltip content={<ChartTip />} cursor={{ fill: "var(--chip)", opacity: 0.5 }} />
+          <Bar dataKey="model_s" name="Model" stackId="t" fill="var(--barmodel)" isAnimationActive={false}>
+            {data.map((d) => <Cell key={d.run_id + "-m"} {...cellProps(d)} />)}
+          </Bar>
+          <Bar dataKey="overhead_s" name="Overhead" stackId="t" fill="var(--barover)" radius={[3, 3, 0, 0]} isAnimationActive={false}>
+            {data.map((d) => <Cell key={d.run_id + "-o"} {...cellProps(d)} />)}
+          </Bar>
+          {showBrush(data.length)
+            ? <Brush dataKey="time" height={24} travellerWidth={10} stroke="var(--accent)" fill="var(--pre)" />
+            : null}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+export function RecentRunsChart({ data, onSelect, scope }) {
+  const sc = scope || overviewScope(data, null);
+  return <RunsBarChart runs={sc.runs} selected={data.selected} onSelect={onSelect} />;
 }
 
 export function CallChart({ events }) {
@@ -92,7 +87,6 @@ export function CallChart({ events }) {
               className={v == null ? "barBad" : (v === max ? "bar barMax" : "bar")}>
               <title>{title}</title>
             </rect>
-            {v != null && v > max ? <rect x={x.toFixed(1)} y={(H - padB - hgt).toFixed(1)} width={bw.toFixed(1)} height={3} className="capMark" /> : null}
           </React.Fragment>
         );
       })}

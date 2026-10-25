@@ -184,5 +184,13 @@
   .panel a { color:var(--accent-dark); }
   .sortBtn { font:inherit; font-size:inherit; font-weight:inherit; letter-spacing:inherit; text-transform:inherit; color:inherit; background:none; border:none; padding:0; cursor:pointer; white-space:nowrap; }
   .sortBtn:hover { color:var(--ink); }
+  .chartTip { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:12px; line-height:1.55; color:var(--ink); box-shadow:0 8px 22px rgba(0,0,0,.14); font-variant-numeric:tabular-nums; max-width:300px; }
+  .chartTipTitle { font-weight:650; margin-bottom:2px; overflow-wrap:anywhere; }
+  .chartTipPrompt { color:var(--muted); overflow-wrap:anywhere; }
+  .filterChips { display:inline-flex; align-items:center; gap:6px; flex-wrap:wrap; min-width:0; }
+  .filterChipsLabel { font-size:11px; font-weight:650; color:var(--faint); text-transform:uppercase; letter-spacing:.05em; }
+  .chipRemove { font:inherit; font-size:14px; line-height:1; color:var(--muted); background:none; border:none; border-radius:50%; width:18px; height:18px; padding:0; cursor:pointer; }
+  .chipRemove:hover { color:var(--ink); background:var(--chip); }
+  input[type="date"] { padding:7px 9px; font:inherit; font-size:13px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
   .runsTable tr.dim td { color:var(--faint); }
   .pagerRow { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap; }

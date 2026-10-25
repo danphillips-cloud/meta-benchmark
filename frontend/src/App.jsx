@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate,
+  BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useSearchParams,
 } from "react-router";
-import { dataSignature, localTime, shortText } from "./format.js";
+import { FILTER_KEYS, activeFilterChips, dataSignature, localTime, parseRunsQuery, shortText } from "./format.js";
 import { deleteRun, download, fetchLogs } from "./api.js";
 import { MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
 import Overview from "./views/Overview.jsx";
@@ -42,6 +42,20 @@ function activeView(pathname) {
 function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filterChips = activeFilterChips(parseRunsQuery(searchParams));
+  const removeChip = (key) => {
+    const next = new URLSearchParams(searchParams);
+    if (key === "date") { next.delete("from"); next.delete("to"); }
+    else next.delete(key);
+    setSearchParams(next, { replace: true });
+  };
+  const clearFilters = () => {
+    const next = new URLSearchParams(searchParams);
+    FILTER_KEYS.forEach((k) => next.delete(k));
+    setSearchParams(next, { replace: true });
+  };
+  const qs = location.search || "";
   const [theme, setTheme] = useState(initialTheme);
   const [data, setData] = useState(EMPTY);
   const [loaded, setLoaded] = useState(false);
@@ -97,7 +111,7 @@ function AppShell() {
   // its Overview URL; browser back/forward then move between runs.
   const selectRun = useCallback((runId) => {
     if (!runId) return;
-    navigate("/runs/" + encodeURIComponent(runId));
+    navigate("/runs/" + encodeURIComponent(runId) + (window.location.search || ""));
   }, [navigate]);
 
   useEffect(() => {
@@ -133,9 +147,9 @@ function AppShell() {
     ? (selSession.at ? localTime(selSession.at).slice(11) + " · " : "") + shortText(data.prompt || "Selected run", 34)
     : "";
   const goto = (name) => {
-    if (name === "runs") navigate("/runs");
-    else if (name === "compare") navigate(selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare");
-    else navigate("/");
+    if (name === "runs") navigate("/runs" + qs);
+    else if (name === "compare") navigate((selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare") + qs);
+    else navigate("/" + qs);
   };
 
   const exportCsv = () => {
@@ -167,8 +181,19 @@ function AppShell() {
           <span className="runChip">
             <span className={"dot " + (data.status || selSession.status || "")}></span>
             <button className="chipText" type="button" title={(data.prompt || "Selected run") + " · " + ((data.provider || "?") + "/" + (data.model || "?"))}
-              onClick={() => navigate("/runs/" + encodeURIComponent(data.selected))}>{chipText}</button>
-            <button className="chipX" type="button" aria-label="Clear selected run" title="Clear selected run" onClick={() => navigate("/")}>×</button>
+              onClick={() => navigate("/runs/" + encodeURIComponent(data.selected) + qs)}>{chipText}</button>
+            <button className="chipX" type="button" aria-label="Clear selected run" title="Clear selected run" onClick={() => navigate("/" + qs)}>×</button>
+          </span>
+        ) : null}
+        {filterChips.length ? (
+          <span className="filterChips" aria-label="Active filters">
+            <span className="filterChipsLabel">Filters</span>
+            {filterChips.map((c) => (
+              <span key={c.key} className="pill model">{c.label}
+                <button type="button" className="chipRemove" aria-label={"Remove filter " + c.label} onClick={() => removeChip(c.key)}>×</button>
+              </span>
+            ))}
+            <button type="button" className="btn" style={{ padding: "3px 9px" }} onClick={clearFilters}>Clear all</button>
           </span>
         ) : null}
         <div className="topbarRight">
@@ -187,7 +212,7 @@ function AppShell() {
       <main className="shell">
         <nav className="sidebar" aria-label="Views">
           {NAV.map(([key, label, to]) => (
-            <Link key={key} to={to} className={"navItem" + (view === key ? " active" : "")}
+            <Link key={key} to={to + qs} className={"navItem" + (view === key ? " active" : "")}
               aria-current={view === key ? "page" : undefined}>
               <NavIcon view={key} />{label}
             </Link>

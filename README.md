@@ -104,6 +104,17 @@ Run data stays in `muse-runs/`, which is gitignored. The page is served on `127.
 python3 test_tool.py
 ```
 
+## Developing the UI
+
+The page is React, built into `web/app.js`, which is committed. Users don't need Node. To change the UI, edit `frontend/src`, then rebuild and commit `web/` with your change:
+
+```sh
+cd frontend
+npm ci
+npm test
+npm run build
+```
+
 ## Licence
 
 [MIT](LICENSE). Unofficial tool, not affiliated with Meta.
