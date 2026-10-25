@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 26
+VERSION = 27
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -106,6 +106,30 @@ def _run_model_ms(run):
     return run.get("api_ms") or 0
 
 
+def _run_split(run):
+    """Stored time split, or one computed from the session log.
+
+    Buckets with a missing event pair stay None (shown as –), never
+    estimated. Only Muse sessions have the underlying events.
+    """
+    if run.get("tool_ms") is not None or run.get("approval_ms") is not None \
+            or run.get("muse_ms") is not None:
+        return {"model_ms": _run_model_ms(run),
+                "tool_ms": run.get("tool_ms"),
+                "approval_ms": run.get("approval_ms"),
+                "muse_ms": run.get("muse_ms")}
+    if not run.get("session_id"):
+        return {"model_ms": _run_model_ms(run), "tool_ms": None,
+                "approval_ms": None, "muse_ms": None}
+    path = live_session_log(run["session_id"])
+    if not path:
+        return {"model_ms": _run_model_ms(run), "tool_ms": None,
+                "approval_ms": None, "muse_ms": None}
+    records = muse_log.read_records(path)
+    wall = run.get("wall_ms")
+    return muse_log.time_split(records, wall, _run_model_ms(run))
+
+
 def _run_tokens(run, key):
     """Run token total from totals when present, else summed calls."""
     totals = run.get("totals")
@@ -164,6 +188,8 @@ def read_logs(run_id=None):
         "overhead_ms": max(0, (r.get("wall_ms") or 0) - _run_model_ms(r)),
         "input_tokens": _run_tokens(r, "input_tokens"),
         "output_tokens": _run_tokens(r, "output_tokens"),
+        "tool_ms": r.get("tool_ms"), "approval_ms": r.get("approval_ms"),
+        "muse_ms": r.get("muse_ms"),
         "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
         "last_output_tokens": (r.get("calls") or [{}])[-1].get("output_tokens"),
     } for r in reversed(runs)]
@@ -229,6 +255,11 @@ def read_logs(run_id=None):
         errors.append({"at": selected.get("at"),
                        "operation": selected.get("run_id"),
                        "error_type": "model metrics unavailable for this run"})
+    live_state = None
+    if selected.get("status") == "running" and selected.get("session_id"):
+        log_path = live_session_log(selected["session_id"])
+        if log_path:
+            live_state = muse_log.live_state_from_log(log_path)
     return {
         "version": VERSION,
         "sessions": sessions,
@@ -244,6 +275,9 @@ def read_logs(run_id=None):
         "wall_ms": selected.get("wall_ms") or elapsed_ms,
         "status": selected.get("status"),
         "elapsed_ms": elapsed_ms,
+        "live_state": live_state,
+        "time_split": _run_split(
+            dict(selected, wall_ms=selected.get("wall_ms") or elapsed_ms)),
         "events": events, "timeline": timeline, "errors": errors[-3:],
     }
 

@@ -188,7 +188,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         <>
           <label htmlFor="statusFilter">Status</label>
           <select id="statusFilter" value={state.status} onChange={(e) => update({ status: e.target.value })}>
-            <option value="">All</option><option value="completed">completed</option><option value="running">running</option><option value="failed">failed</option><option value="interrupted">interrupted</option><option value="timeout">timeout</option>
+            <option value="">All</option><option value="completed">completed</option><option value="running">running</option><option value="failed">failed</option><option value="interrupted">interrupted</option><option value="timeout">timeout</option><option value="needs_approval">needs_approval</option>
           </select>
           <label htmlFor="modeFilter">Mode</label>
           <select id="modeFilter" value={state.mode} onChange={(e) => update({ mode: e.target.value })}>
@@ -222,7 +222,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
               ? <tr><td colSpan={HEADERS.length} className="empty">{all.length ? "No sessions match the filter." : "No sessions yet."}</td></tr>
               : table.getRowModel().rows.map((row) => {
                 const s = row.original;
-                const dim = ["failed", "interrupted", "timeout"].includes(s.status);
+                const dim = ["failed", "interrupted", "timeout", "needs_approval"].includes(s.status);
                 return (
                   <tr key={s.run_id} tabIndex={0}
                     className={"pickable" + (s.run_id === data.selected ? " is-selected" : "") + (dim ? " dim" : "")}

@@ -121,6 +121,250 @@ def build_timeline(session_id, wall_ms):
     return _finish_timeline(rows)
 
 
+def read_records(path):
+    """All parseable records of a session log, in log order."""
+    if not path:
+        return []
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except Exception:
+            continue
+    out.sort(key=lambda e: e.get("sequence") or 0)
+    return out
+
+
+def session_metadata(records):
+    """Model, provider and harness version from the metadata record.
+
+    The version is the log's own `build` field (step 2). Falls back to
+    the start-of-session intake record for the model when the metadata
+    record lacks one. Values only — never workspace paths.
+    """
+    model = provider = version = None
+    for e in records:
+        payload = e.get("payload") or {}
+        record = payload.get("record") or {}
+        if e.get("payload_type") == "runtime.session.metadata":
+            model = model or record.get("model_id")
+            provider = provider or record.get("provider_id")
+            build = record.get("build") or {}
+            version = version or build.get("semver")
+        elif e.get("payload_type") == "runtime.command_intake.received":
+            meta = ((record.get("command") or {}).get("session_metadata")
+                    or {})
+            model = model or meta.get("model_id")
+            provider = provider or meta.get("provider_id")
+            build = meta.get("build") or {}
+            version = version or build.get("semver")
+    return {"model": model, "provider": provider, "version": version}
+
+
+def calls_from_records(records):
+    """Model calls (harvest shape) from already-parsed records."""
+    calls = []
+    for e in records:
+        for node in find_model_completed(e):
+            usage = node["usage"]
+            calls.append({
+                "model": find_value(e, "model_id"),
+                "duration_ms": node.get("duration_ms"),
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "cached_tokens": usage.get("cached_tokens"),
+                "reasoning_tokens": usage.get("reasoning_tokens"),
+            })
+    return calls
+
+
+def _paired_intervals(records, started_type, terminal_type, id_key):
+    """(closed intervals, unclosed names) for one effect type.
+
+    Intervals are (start_ms, end_ms, name) from `recorded_at`
+    (microseconds). Pairing is by the record's id field; a started
+    record with no terminal is reported unclosed, never estimated.
+    """
+    open_map = {}
+    intervals = []
+    for e in records:
+        ptype = e.get("payload_type")
+        if ptype not in (started_type, terminal_type):
+            continue
+        record = (e.get("payload") or {}).get("record") or {}
+        ts = e.get("recorded_at")
+        if ts is None:
+            continue
+        ms = round(ts / 1000)
+        if ptype == started_type:
+            open_map[record.get(id_key)] = (ms, record.get("tool_name"))
+        elif record.get(id_key) in open_map:
+            start_ms, name = open_map.pop(record.get(id_key))
+            intervals.append((start_ms, ms, name))
+    unclosed = [name for _, name in open_map.values()]
+    return intervals, unclosed
+
+
+def _overlap_ms(a, b):
+    total = 0
+    for s1, e1, _ in a:
+        for s2, e2, _ in b:
+            total += max(0, min(e1, e2) - max(s1, s2))
+    return total
+
+
+def time_split(records, wall_ms, model_ms):
+    """Model/tool/approval/Muse split from event timestamps.
+
+    No estimates: a started effect with no terminal makes its bucket
+    None, and Muse time (wall minus the other three) is then None
+    too. A bucket with no events at all is a recorded 0. Approval
+    overlap is subtracted from tool time so nested approvals are
+    never counted twice.
+    """
+    tool_iv, tool_open = _paired_intervals(
+        records, "tool_batch.effect.started",
+        "tool_batch.effect.terminal", "effect_id")
+    appr_iv, appr_open = _paired_intervals(
+        records, "approval_wait.effect.started",
+        "approval_wait.effect.terminal", "pending_action_id")
+    approval_ms = None if appr_open else sum(e - s for s, e, _ in appr_iv)
+    if tool_open:
+        tool_ms = None
+    else:
+        tool_ms = sum(e - s for s, e, _ in tool_iv)
+        if approval_ms:
+            tool_ms = max(0, tool_ms - _overlap_ms(tool_iv, appr_iv))
+    if wall_ms is None or model_ms is None \
+            or tool_ms is None or approval_ms is None:
+        muse_ms = None
+    else:
+        muse_ms = max(0, wall_ms - model_ms - tool_ms - approval_ms)
+    return {"model_ms": model_ms, "tool_ms": tool_ms,
+            "approval_ms": approval_ms, "muse_ms": muse_ms}
+
+
+def live_state(records):
+    """Current state of a live session, from its log records only.
+
+    Pure. Returns {"state", "tool"} with state one of: ended,
+    waiting for approval, tool running, model call running, idle.
+    """
+    if any(e.get("payload_type") == "session.end" for e in records):
+        return {"state": "ended", "tool": None}
+    _, appr_open = _paired_intervals(
+        records, "approval_wait.effect.started",
+        "approval_wait.effect.terminal", "pending_action_id")
+    if appr_open:
+        return {"state": "waiting for approval", "tool": appr_open[-1]}
+    _, tool_open = _paired_intervals(
+        records, "tool_batch.effect.started",
+        "tool_batch.effect.terminal", "effect_id")
+    if tool_open:
+        return {"state": "tool running", "tool": tool_open[-1]}
+    configured = completed = 0
+    for e in records:
+        kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
+        if kind == "model_request_configured":
+            configured += 1
+        elif kind == "model_completed":
+            completed += 1
+    if configured > completed:
+        return {"state": "model call running", "tool": None}
+    return {"state": "idle", "tool": None}
+
+
+def live_state_from_log(path):
+    return live_state(read_records(path))
+
+
+_ACTIVITY_KINDS = ("model_completed",)
+_ACTIVITY_TYPES = ("tool_batch.effect.terminal",
+                   "approval_wait.effect.terminal")
+
+
+def _is_activity(e):
+    kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
+    if kind in _ACTIVITY_KINDS:
+        return True
+    if e.get("payload_type") in _ACTIVITY_TYPES:
+        return True
+    return kind == "assistant_message_committed"
+
+
+def _prompt_of(accepted):
+    payload = accepted.get("payload") or {}
+    for msg in payload.get("model_messages") or []:
+        for block in msg.get("content") or []:
+            if isinstance(block, dict) and block.get("text"):
+                return block["text"]
+    return ""
+
+
+def split_turns(records):
+    """Finished interactive turns, segmented on user_intent.accepted.
+
+    A turn closes when the next accepted record (or session.end)
+    arrives; the trailing turn is returned only when the session has
+    ended. Turn wall ends at the segment's last activity record, so
+    user think time between turns never counts. Turns with no model
+    call are skipped — there is nothing measured to record.
+    """
+    meta = session_metadata(records)
+    starts = [i for i, e in enumerate(records)
+              if e.get("payload_type") == "runtime.user_intent.accepted"]
+    ended = any(e.get("payload_type") == "session.end" for e in records)
+    turns = []
+    for n, start in enumerate(starts):
+        is_last = n + 1 == len(starts)
+        if is_last and not ended:
+            break
+        stop = starts[n + 1] if not is_last else len(records)
+        seg = records[start:stop]
+        calls = calls_from_records(seg)
+        if not calls:
+            continue
+        activity = [e.get("recorded_at") for e in seg if _is_activity(e)]
+        start_us = records[start].get("recorded_at")
+        if start_us is None or not activity:
+            continue
+        wall_ms = round((max(activity) - start_us) / 1000)
+        model_ms = sum(c["duration_ms"] or 0 for c in calls)
+        turns.append({
+            "index": n + 1,
+            "prompt": _prompt_of(records[start]),
+            "at": datetime.fromtimestamp(
+                start_us / 1_000_000, timezone.utc).isoformat(),
+            "wall_ms": wall_ms, "calls": calls,
+            "split": time_split(seg, wall_ms, model_ms),
+            "model": meta["model"], "version": meta["version"],
+        })
+    return turns
+
+
+def timeline_from_records(records):
+    rows = []
+    for e in records:
+        node = next(find_model_completed(e), None)
+        row = _timeline_row(e, node)
+        if row:
+            rows.append(row)
+    return _finish_timeline(rows)
+
+
+def newest_session_path():
+    base = Path(os.environ.get("MUSE_SESSIONS_DIR")
+                or Path.home() / ".local/share/muse/sessions")
+    files = list(base.glob("**/session.jsonl"))
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
 def live_calls_from_log(path):
     """Calls and timeline from a log that may still be growing.
 

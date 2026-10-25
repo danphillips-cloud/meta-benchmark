@@ -1,0 +1,5 @@
+{"sequence": 1, "recorded_at": 1700000000000000, "payload_type": "runtime.session.metadata", "payload": {"kind": "metadata", "record": {"model_id": "fake-model-1", "provider_id": "fake-provider", "build": {"semver": "0.0.0-test", "sha": "fake"}}}}
+{"sequence": 2, "recorded_at": 1700000000100000, "payload_type": "runtime.user_intent.accepted", "payload": {"intent_id": "fake-intent-1", "surface": "main", "semantic_kind": {"kind": "chat"}, "model_messages": [{"content": [{"type": "text", "text": "fake prompt"}]}]}}
+{"sequence": 3, "recorded_at": 1700000000200000, "payload_type": "runtime.session", "payload": {"event": {"kind": "model_request_configured"}}}
+{"sequence": 4, "recorded_at": 1700000001000000, "payload_type": "tool_batch.effect.started", "payload": {"kind": "tool_batch_effect", "record": {"effect_id": "fake-e1", "tool_name": "FakeTool"}}}
+{"sequence": 5, "recorded_at": 1700000001100000, "payload_type": "approval_wait.effect.started", "payload": {"kind": "approval_wait_effect", "record": {"pending_action_id": "fake-a1", "tool_name": "FakeTool"}}}

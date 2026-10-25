@@ -238,7 +238,18 @@ export function compareSessions(a, b, sort, dir) {
 // is estimated. `events` is the server shape (newest first, wire_ms
 // plus gen_ai.usage.*); helpers normalise to oldest-first internally.
 
-export function explainLines({ wall_ms, model_ms, provider, events } = {}) {
+export function liveStateText(live) {
+  if (!live || !live.state) return "";
+  if (live.state === "waiting for approval")
+    return "Waiting for approval" + (live.tool ? ": " + live.tool : "");
+  if (live.state === "tool running")
+    return "Tool running" + (live.tool ? ": " + live.tool : "");
+  if (live.state === "model call running") return "Model call running";
+  if (live.state === "ended") return "Ended";
+  return "Idle";
+}
+
+export function explainLines({ wall_ms, model_ms, provider, events, split } = {}) {
   const lines = [];
   const chrono = [...(events || [])].reverse();
   if (wall_ms != null && model_ms != null && wall_ms > 0) {
@@ -279,6 +290,12 @@ export function explainLines({ wall_ms, model_ms, provider, events } = {}) {
     const pct = Math.round((cacheSum / inSum) * 100);
     lines.push("Cache covered " + fmt(cacheSum) + " of " + fmt(inSum)
       + " input tokens (" + pct + "%).");
+  }
+  if (split && split.tool_ms != null && split.tool_ms > 0) {
+    lines.push("Tools ran for " + fmtDur(split.tool_ms) + ".");
+  }
+  if (split && split.approval_ms != null && split.approval_ms > 0) {
+    lines.push("Waited " + fmtDur(split.approval_ms) + " for approval.");
   }
   return lines;
 }

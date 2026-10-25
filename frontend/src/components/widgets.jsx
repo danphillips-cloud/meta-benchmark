@@ -1,7 +1,7 @@
 import React from "react";
 
 export function StatusPill({ status, extra }) {
-  const known = ["completed", "failed", "interrupted", "timeout", "running"].includes(status) ? status : "unknown";
+  const known = ["completed", "failed", "interrupted", "timeout", "running", "needs_approval"].includes(status) ? status : "unknown";
   return <span className={"pill st-" + known}>{(status || "unknown") + (extra ? " · " + extra : "")}</span>;
 }
 
