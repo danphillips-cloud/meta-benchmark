@@ -1,5 +1,5 @@
-:root { --ink:#171a21; --muted:#68707e; --faint:#9aa2b0; --line:#e3e7ed; --line2:#eef1f5; --accent:#0b6ce0; --accent-dark:#0b6ce0; --onaccent:#fff; --bad:#b42318; --ok:#0b6ce0; --warn:#9a5b06; --selected:#eef4fe; --chip:#f0f2f6; --pre:#f6f7f9; --bg:#f5f6f8; --card:#fff; --btn:#fff; --errbg:#fdf3f2; --errline:#f0d4d1; --barmodel:#0b6ce0; --barover:#7e8898; --r:12px; --st-ok:#106b31; --st-ok-bg:#e3f3e8; --st-bad:#a81c12; --st-bad-bg:#fdecea; --st-warn:#7c4a03; --st-warn-bg:#fbf0d9; --st-run:#0a54b4; --st-run-bg:#e6f0fc; }
-  :root[data-theme="dark"] { --ink:#e8eaee; --muted:#9aa3b1; --faint:#6f7889; --line:#262c38; --line2:#1c212b; --accent:#4c9aff; --accent-dark:#7db8ff; --onaccent:#0b1522; --bad:#ff9d94; --ok:#4c9aff; --warn:#f5b86b; --selected:#1a2434; --chip:#1e242f; --pre:#12151b; --bg:#0e1013; --card:#15181f; --btn:#15181f; --errbg:#2b1a19; --errline:#4d2b29; --barmodel:#4c9aff; --barover:#333d4f; --st-ok:#86dc9c; --st-ok-bg:#142b1a; --st-bad:#ffa49b; --st-bad-bg:#331b19; --st-warn:#ffc06e; --st-warn-bg:#33270f; --st-run:#8fc1ff; --st-run-bg:#13263f; }
+:root { --ink:#171a21; --muted:#68707e; --faint:#9aa2b0; --line:#e3e7ed; --line2:#eef1f5; --accent:#0b6ce0; --accent-dark:#0b6ce0; --onaccent:#fff; --bad:#b42318; --ok:#0b6ce0; --warn:#9a5b06; --selected:#eef4fe; --chip:#f0f2f6; --pre:#f6f7f9; --bg:#f5f6f8; --card:#fff; --btn:#fff; --errbg:#fdf3f2; --errline:#f0d4d1; --barmodel:#0b6ce0; --barover:#7e8898; --barstalled:#d97706; --r:12px; --st-ok:#106b31; --st-ok-bg:#e3f3e8; --st-bad:#a81c12; --st-bad-bg:#fdecea; --st-warn:#7c4a03; --st-warn-bg:#fbf0d9; --st-run:#0a54b4; --st-run-bg:#e6f0fc; }
+  :root[data-theme="dark"] { --ink:#e8eaee; --muted:#9aa3b1; --faint:#6f7889; --line:#262c38; --line2:#1c212b; --accent:#4c9aff; --accent-dark:#7db8ff; --onaccent:#0b1522; --bad:#ff9d94; --ok:#4c9aff; --warn:#f5b86b; --selected:#1a2434; --chip:#1e242f; --pre:#12151b; --bg:#0e1013; --card:#15181f; --btn:#15181f; --errbg:#2b1a19; --errline:#4d2b29; --barmodel:#4c9aff; --barover:#333d4f; --barstalled:#f5b04c; --st-ok:#86dc9c; --st-ok-bg:#142b1a; --st-bad:#ffa49b; --st-bad-bg:#331b19; --st-warn:#ffc06e; --st-warn-bg:#33270f; --st-run:#8fc1ff; --st-run-bg:#13263f; }
   * { box-sizing:border-box; }
   html, body { overflow-x:clip; }
   body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); font-size:14px; -webkit-font-smoothing:antialiased; }
@@ -87,7 +87,7 @@
   .note { font-size:12.5px; color:var(--muted); line-height:1.55; margin-top:10px; }
   .legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; font-variant-numeric:tabular-nums; }
   .sw { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:5px; }
-  .swModel { background:var(--barmodel); } .swOver { background:var(--barover); }
+  .swModel { background:var(--barmodel); } .swOver { background:var(--barover); } .swStalled { background:var(--barstalled); }
   svg.chart { width:100%; height:auto; display:block; }
   .bar { fill:var(--barmodel); } .segOverRect { fill:var(--barover); }
   .barMax { fill:var(--ink); } .barBad { fill:var(--faint); opacity:.5; } .barRun { fill:var(--warn); }

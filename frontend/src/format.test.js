@@ -226,15 +226,15 @@ test("usualBaseline: same prompt, provider and model, at least 3 earlier complet
 test("perCallSeries: oldest-first model time and input tokens, Muse only", () => {
   const events = [E(2000, 3000, 2500, 10), E(5000, 2000, 1000, 10), E(3000, 1000, 0, 10)];
   assert.deepEqual(perCallSeries(events, "meta"), [
-    { call: 1, model_ms: 3000, input_tokens: 1000, cached_tokens: 0, output_tokens: 10 },
-    { call: 2, model_ms: 5000, input_tokens: 2000, cached_tokens: 1000, output_tokens: 10 },
-    { call: 3, model_ms: 2000, input_tokens: 3000, cached_tokens: 2500, output_tokens: 10 },
+    { call: 1, model_ms: 3000, input_tokens: 1000, cached_tokens: 0, output_tokens: 10, retries: 0, stalled_ms: null },
+    { call: 2, model_ms: 5000, input_tokens: 2000, cached_tokens: 1000, output_tokens: 10, retries: 0, stalled_ms: null },
+    { call: 3, model_ms: 2000, input_tokens: 3000, cached_tokens: 2500, output_tokens: 10, retries: 0, stalled_ms: null },
   ]);
   assert.deepEqual(perCallSeries(events, "claude-code"), []);
   assert.deepEqual(perCallSeries([], "meta"), []);
   // Missing values stay null, never 0.
   assert.deepEqual(perCallSeries([E(null, null, null, null)], "meta"),
-    [{ call: 1, model_ms: null, input_tokens: null, cached_tokens: null, output_tokens: null }]);
+    [{ call: 1, model_ms: null, input_tokens: null, cached_tokens: null, output_tokens: null, retries: 0, stalled_ms: null }]);
 });
 
 test("version filter: filterSessions and chips honour harness_version", () => {
@@ -267,6 +267,23 @@ test("explainLines: tool and approval lines only when the split has them", () =>
   assert.ok(!missing.some((l) => l.startsWith("Tools ran") || l.startsWith("Waited")));
   const noSplit = explainLines({ wall_ms: 5000, model_ms: 5000, provider: "meta", events });
   assert.ok(!noSplit.some((l) => l.startsWith("Tools ran") || l.startsWith("Waited")));
+});
+
+test("explainLines + perCallSeries: retry shown only on the retried call", () => {
+  // Newest first: call2 (clean), call1 (one retry, 5 s stalled).
+  const events = [
+    { ...E(3000, 110, 0, 11), retries: 0, stalled_ms: null },
+    { ...E(11000, 100, 0, 10), retries: 1, stalled_ms: 5000 },
+  ];
+  const lines = explainLines({ wall_ms: 14000, model_ms: 14000, provider: "meta", events });
+  assert.ok(lines.some((l) => l === "Call 1 retried once after the connection stalled for 5.0 s."));
+  assert.ok(!lines.some((l) => l.startsWith("Call 2 retried")));
+  const clean = explainLines({ wall_ms: 3000, model_ms: 3000, provider: "meta", events: [E(3000, 100, 0, 10)] });
+  assert.ok(!clean.some((l) => l.includes("retried")));
+  assert.deepEqual(perCallSeries(events, "meta").map((d) => [d.retries, d.stalled_ms]),
+    [[1, 5000], [0, null]]);
+  assert.equal(liveStateText({ state: "retrying connection", tool: null, attempt: "2/10" }),
+    "Retrying connection (attempt 2/10)");
 });
 
 test("liveStateText: banner wording for every live state", () => {

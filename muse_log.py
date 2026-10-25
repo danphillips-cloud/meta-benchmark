@@ -8,6 +8,7 @@ the UI server (live view of a running run) read logs through here.
 """
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -87,25 +88,7 @@ def harvest_calls(session_id):
     path = session_log_path(session_id)
     if not path:
         return []
-    calls = []
-    for line in path.read_text(errors="replace").splitlines():
-        if "model_completed" not in line:
-            continue
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
-        for node in find_model_completed(e):
-            usage = node["usage"]
-            calls.append({
-                "model": find_value(e, "model_id"),
-                "duration_ms": node.get("duration_ms"),
-                "input_tokens": usage.get("input_tokens"),
-                "output_tokens": usage.get("output_tokens"),
-                "cached_tokens": usage.get("cached_tokens"),
-                "reasoning_tokens": usage.get("reasoning_tokens"),
-            })
-    return calls
+    return calls_from_records(read_records(path))
 
 
 def build_timeline(session_id, wall_ms):
@@ -165,12 +148,70 @@ def session_metadata(records):
     return {"model": model, "provider": provider, "version": version}
 
 
+_OPENING = re.compile(r"opening meta model stream attempt (\d+)/(\d+)")
+_RETRYING = re.compile(r"retrying meta model stream in (\d+)ms \(attempt (\d+)/(\d+)\)")
+
+
+def _status_message(e):
+    ev = (e.get("payload") or {}).get("event") or {}
+    if ev.get("kind") == "status":
+        return ev.get("message") or ""
+    return ""
+
+
+def retry_infos(records):
+    """Per-call retry data from Muse's status events, in call order.
+
+    `stalled_ms` is the time from attempt 1 opening to the final
+    attempt opening, minus the announced retry delays — the time the
+    connection sat stalled. It stays inside `duration_ms`; nothing
+    here changes model time. Calls with no status events get
+    retries 0 and stalled_ms None.
+    """
+    infos = []
+    pending = None
+
+    def fresh():
+        return {"openings": [], "delays": [], "retries": 0}
+
+    for e in records:
+        kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
+        if kind == "model_request_configured":
+            pending = fresh()
+            continue
+        msg = _status_message(e)
+        if msg:
+            if pending is None:
+                pending = fresh()
+            opened = _OPENING.search(msg)
+            if opened and e.get("recorded_at") is not None:
+                pending["openings"].append(e["recorded_at"] / 1000)
+            retry = _RETRYING.search(msg)
+            if retry:
+                pending["retries"] += 1
+                pending["delays"].append(int(retry.group(1)))
+            continue
+        if kind == "model_completed":
+            info = pending or fresh()
+            stalled = None
+            if len(info["openings"]) >= 2:
+                stalled = round(info["openings"][-1] - info["openings"][0]
+                                - sum(info["delays"]))
+            infos.append({"retries": info["retries"],
+                          "stalled_ms": stalled})
+            pending = None
+    return infos
+
+
 def calls_from_records(records):
     """Model calls (harvest shape) from already-parsed records."""
+    retries = retry_infos(records)
     calls = []
     for e in records:
         for node in find_model_completed(e):
             usage = node["usage"]
+            info = retries[len(calls)] if len(calls) < len(retries) \
+                else {"retries": 0, "stalled_ms": None}
             calls.append({
                 "model": find_value(e, "model_id"),
                 "duration_ms": node.get("duration_ms"),
@@ -178,6 +219,8 @@ def calls_from_records(records):
                 "output_tokens": usage.get("output_tokens"),
                 "cached_tokens": usage.get("cached_tokens"),
                 "reasoning_tokens": usage.get("reasoning_tokens"),
+                "retries": info["retries"],
+                "stalled_ms": info["stalled_ms"],
             })
     return calls
 
@@ -267,12 +310,26 @@ def live_state(records):
     if tool_open:
         return {"state": "tool running", "tool": tool_open[-1]}
     configured = completed = 0
+    attempt = None
     for e in records:
         kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
         if kind == "model_request_configured":
             configured += 1
+            attempt = None
         elif kind == "model_completed":
             completed += 1
+            attempt = None
+        msg = _status_message(e)
+        if msg:
+            opened = _OPENING.search(msg)
+            retry = _RETRYING.search(msg)
+            if retry:
+                attempt = f"{retry.group(2)}/{retry.group(3)}"
+            elif opened and int(opened.group(1)) >= 2:
+                attempt = f"{opened.group(1)}/{opened.group(2)}"
+    if configured > completed and attempt:
+        return {"state": "retrying connection", "tool": None,
+                "attempt": attempt}
     if configured > completed:
         return {"state": "model call running", "tool": None}
     return {"state": "idle", "tool": None}

@@ -933,11 +933,44 @@ class VisibilityTest(unittest.TestCase):
             self.assertIn("waiting for approval: FakeTool",
                           report["error"])
 
+    def test_retry_parsing_and_no_retry_case(self):
+        log = run_muse.muse_log
+        calls = log.calls_from_records(self._records("session-retry.jsonl"))
+        self.assertEqual(len(calls), 2)
+        # Model time stays Muse's duration; the stall sits inside it.
+        self.assertEqual(calls[0]["duration_ms"], 11000)
+        self.assertEqual(calls[0]["retries"], 1)
+        self.assertEqual(calls[0]["stalled_ms"], 5000)
+        # A call with no retry carries no retry data at all.
+        self.assertEqual(calls[1]["retries"], 0)
+        self.assertIsNone(calls[1]["stalled_ms"])
+        clean = log.calls_from_records(self._records("session-turns.jsonl"))
+        self.assertTrue(all(c["retries"] == 0 and c["stalled_ms"] is None
+                            for c in clean))
+        # Live: mid-retry reads as retrying, not model running.
+        recs = self._records("session-retry.jsonl")
+        self.assertEqual(log.live_state(recs[:4]), {
+            "state": "retrying connection", "tool": None,
+            "attempt": "2/10"})
+        self.assertEqual(
+            run_muse.format_live_line(log.live_state(recs[:4])),
+            "retrying connection (attempt 2/10)")
+
     def test_live_lines_format(self):
         self.assertEqual(
             run_muse.format_call_line(
                 7, {"duration_ms": 12400, "input_tokens": 41000}),
             "call 7 · 12.4 s · 41k in")
+        self.assertEqual(
+            run_muse.format_call_line(
+                1, {"duration_ms": 188600, "input_tokens": 29000,
+                    "retries": 1, "stalled_ms": 181000}),
+            "call 1 · 188.6 s (181 s stalled, 1 retry) · 29k in")
+        self.assertEqual(
+            run_muse.format_call_line(
+                2, {"duration_ms": 3000, "input_tokens": 1000,
+                    "retries": 0, "stalled_ms": None}),
+            "call 2 · 3.0 s · 1k in")
         self.assertEqual(
             run_muse.format_live_line(
                 {"state": "waiting for approval", "tool": "FakeTool"}),
@@ -1136,7 +1169,9 @@ class IndexHtmlTest(unittest.TestCase):
     def test_part_f_visibility_hooks_present(self):
         for marker in ("liveBanner", "liveStateText", "time_split",
                        "Approval wait", "needs_approval",
-                       "Waited ", "Tools ran for "):
+                       "Waited ", "Tools ran for ",
+                       "stalled before retry", "Retrying connection",
+                       "swStalled"):
             self.assertIn(marker, self.src)
 
     def test_missing_values_never_become_zero(self):

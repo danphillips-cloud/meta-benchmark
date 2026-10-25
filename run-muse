@@ -349,11 +349,21 @@ def format_call_line(n, call):
     secs = f"{dur / 1000:.1f} s" if dur is not None else "–"
     inp = call.get("input_tokens")
     tok = f"{round(inp / 1000)}k in" if inp is not None else "– in"
+    retries = call.get("retries") or 0
+    stalled = call.get("stalled_ms")
+    if retries and stalled is not None:
+        word = "retry" if retries == 1 else "retries"
+        return (f"call {n} · {secs} ({round(stalled / 1000)} s stalled, "
+                f"{retries} {word}) · {tok}")
     return f"call {n} · {secs} · {tok}"
 
 
 def format_live_line(state):
     tool = state.get("tool")
+    if state.get("state") == "retrying connection":
+        attempt = state.get("attempt")
+        return f"retrying connection (attempt {attempt})" if attempt \
+            else "retrying connection"
     if state.get("state") == "waiting for approval":
         return f"waiting for approval: {tool}" if tool \
             else "waiting for approval"
