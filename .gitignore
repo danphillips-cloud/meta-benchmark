@@ -2,7 +2,6 @@
 muse-runs/
 # Local notes: research, resume notes, and draft reports stay local.
 .docs/
-generated_images/
 __pycache__/
 frontend/node_modules/
 .env
