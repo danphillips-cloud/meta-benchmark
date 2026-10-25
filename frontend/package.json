@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "node --test src/format.test.js"
   },
   "dependencies": {
     "@tanstack/react-table": "9.3.1",

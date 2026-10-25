@@ -180,3 +180,9 @@
   .foot { font-size:11.5px; color:var(--faint); margin-top:24px; }
   .live { font-weight:600; color:var(--accent-dark); display:block; }
   .live.paused { color:var(--warn); }
+  a.navItem { text-decoration:none; }
+  .panel a { color:var(--accent-dark); }
+  .sortBtn { font:inherit; font-size:inherit; font-weight:inherit; letter-spacing:inherit; text-transform:inherit; color:inherit; background:none; border:none; padding:0; cursor:pointer; white-space:nowrap; }
+  .sortBtn:hover { color:var(--ink); }
+  .runsTable tr.dim td { color:var(--faint); }
+  .pagerRow { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap; }

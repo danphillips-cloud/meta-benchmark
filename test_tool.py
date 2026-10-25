@@ -845,12 +845,14 @@ class IndexHtmlTest(unittest.TestCase):
     def test_three_way_compare_hooks_present(self):
         # One prompt run 3 ways (a comparison set) gets a median table plus
         # a round-by-leg matrix; manual compare takes two extra sessions.
-        # Dashboard shell: sidebar views persisted in localStorage, a
-        # removable selected-run chip, recent-runs chart, medians panel.
+        # Dashboard shell: URL routes own the selected run, sidebar links
+        # follow the URL, a removable selected-run chip, the TanStack runs
+        # table, recent-runs chart, medians panel.
         for marker in ("compareSelect2", "CompareSet", "CallChart",
                        "RecentRunsChart", "Medians by provider/model",
-                       "data-view-panel", "muse-view", "runChip",
-                       "runList", "round"):
+                       "data-view-panel", "BrowserRouter", "/runs/:id",
+                       "Run not found", "runChip", "runsTable",
+                       "useLegacyTable", "RUNS_PAGE_SIZE"):
             self.assertIn(marker, self.src)
 
     def test_missing_values_never_become_zero(self):

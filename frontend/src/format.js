@@ -62,6 +62,87 @@ export function scopedRuns(d) {
   return { runs, label: "This prompt · " + runs.length + (runs.length === 1 ? " run" : " runs") };
 }
 
+// --- Runs table state (Step 5) -------------------------------------
+// Filters and sort for /runs live in the URL query string so a filtered
+// view is linkable and survives refresh. These pure helpers own the
+// mapping both ways, plus filtering and honest sorting (missing values
+// always sort last, never as 0).
+
+export const RUNS_PAGE_SIZE = 50;
+export const RUNS_SORTS = ["at", "prompt", "provider_model", "mode", "status", "calls", "wall_ms", "model_ms", "overhead_ms"];
+export const RUNS_DEFAULT_SORT = { sort: "at", dir: "desc" };
+
+export function runMode(s) {
+  return (s && s.compare_mode) || "single";
+}
+
+export function parseRunsQuery(params) {
+  const p = typeof params === "string" ? new URLSearchParams(params) : params;
+  const get = (k) => (p && typeof p.get === "function" ? (p.get(k) ?? "") : "");
+  const sort = RUNS_SORTS.includes(get("sort")) ? get("sort") : RUNS_DEFAULT_SORT.sort;
+  const dirRaw = get("dir");
+  const dir = dirRaw === "asc" || dirRaw === "desc" ? dirRaw : RUNS_DEFAULT_SORT.dir;
+  return {
+    q: get("q"), provider: get("provider"), model: get("model"),
+    status: get("status"), mode: get("mode"), sort, dir,
+  };
+}
+
+export function buildRunsQuery({ q, provider, model, status, mode, sort, dir }) {
+  const p = new URLSearchParams();
+  if (q) p.set("q", q);
+  if (provider) p.set("provider", provider);
+  if (model) p.set("model", model);
+  if (status) p.set("status", status);
+  if (mode) p.set("mode", mode);
+  if (sort !== RUNS_DEFAULT_SORT.sort || dir !== RUNS_DEFAULT_SORT.dir) {
+    p.set("sort", sort);
+    p.set("dir", dir);
+  }
+  return p;
+}
+
+// Clicking a column header cycles asc -> desc -> back to the default.
+export function nextRunsSort(current, sortId) {
+  if (current.sort !== sortId) return { sort: sortId, dir: sortId === "at" ? "desc" : "asc" };
+  if (current.dir === "asc") return { sort: sortId, dir: "desc" };
+  return { ...RUNS_DEFAULT_SORT };
+}
+
+export function filterSessions(sessions, f) {
+  const q = (f.q || "").trim().toLowerCase();
+  return (sessions || []).filter((s) =>
+    (!q || (s.prompt || s.run_id || "").toLowerCase().includes(q)) &&
+    (!f.provider || s.provider === f.provider) &&
+    (!f.model || s.model === f.model) &&
+    (!f.status || s.status === f.status) &&
+    (!f.mode || runMode(s) === f.mode));
+}
+
+const SORT_VALUE = {
+  at: (s) => s.at || null,
+  prompt: (s) => s.prompt || null,
+  provider_model: (s) => legKey(s),
+  mode: (s) => runMode(s),
+  status: (s) => s.status || null,
+  calls: (s) => (s.calls == null ? null : s.calls),
+  wall_ms: (s) => (s.wall_ms == null ? null : s.wall_ms),
+  model_ms: (s) => (s.model_ms == null ? null : s.model_ms),
+  overhead_ms: (s) => (s.overhead_ms == null ? null : s.overhead_ms),
+};
+
+export function compareSessions(a, b, sort, dir) {
+  const get = SORT_VALUE[sort] || SORT_VALUE.at;
+  const va = get(a), vb = get(b);
+  if (va == null && vb == null) return 0;
+  if (va == null) return 1; // missing always last, in both directions
+  if (vb == null) return -1;
+  const cmp = typeof va === "number" && typeof vb === "number"
+    ? va - vb
+    : String(va).localeCompare(String(vb));
+  return dir === "desc" ? -cmp : cmp;
+}
+
 export function dataSignature(d) {
   return JSON.stringify([d.selected, d.status,
     (d.sessions || []).map((s) => [s.run_id, s.status, s.wall_ms, s.calls]),

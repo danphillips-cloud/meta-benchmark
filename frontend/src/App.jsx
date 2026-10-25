@@ -1,14 +1,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import {
+  BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate,
+} from "react-router";
 import { dataSignature, localTime, shortText } from "./format.js";
-import { copyText, deleteRun, download, fetchLogs } from "./api.js";
+import { deleteRun, download, fetchLogs } from "./api.js";
 import { MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
 import Overview from "./views/Overview.jsx";
 import Runs from "./views/Runs.jsx";
 import Compare from "./views/Compare.jsx";
 import Timeline from "./views/Timeline.jsx";
 
-const VIEWS = ["overview", "runs", "compare", "timeline"];
 const EMPTY = { sessions: [], events: [], timeline: [], errors: [] };
 
 function initialTheme() {
@@ -18,29 +20,45 @@ function initialTheme() {
   } catch (e) { return "light"; }
 }
 
-function App() {
-  const [view, setViewState] = useState(() => {
-    try { return VIEWS.includes(localStorage.getItem("muse-view")) ? localStorage.getItem("muse-view") : "overview"; }
-    catch (e) { return "overview"; }
-  });
+function NotFound({ what }) {
+  return (
+    <section className="panel" aria-label={what}>
+      <div className="pt" style={{ fontSize: 15, fontWeight: 650 }}>{what}</div>
+      <p className="note">That link does not match a recorded run. It may have been deleted.</p>
+      <p><Link to="/runs">View all runs →</Link></p>
+    </section>
+  );
+}
+
+function activeView(pathname) {
+  if (pathname === "/") return "overview";
+  if (pathname === "/runs") return "runs";
+  if (pathname.startsWith("/runs/")) return "overview";
+  if (pathname.startsWith("/compare")) return "compare";
+  if (pathname.startsWith("/timeline")) return "timeline";
+  return "overview";
+}
+
+function AppShell() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const [theme, setTheme] = useState(initialTheme);
   const [data, setData] = useState(EMPTY);
-  const [selectedRun, setSelectedRun] = useState("");
-  const [followDefault, setFollowDefault] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [paused, setPaused] = useState(false);
   const [sourceText, setSourceText] = useState("Waiting for logs…");
   const [exportOpen, setExportOpen] = useState(false);
-  const selectedRef = useRef("");
-  const followRef = useRef(false);
   const sigRef = useRef("");
   const dataRef = useRef(EMPTY);
   const sessionSelectRef = useRef(null);
 
-  const setView = useCallback((name) => {
-    if (!VIEWS.includes(name)) name = "overview";
-    setViewState(name);
-    try { localStorage.setItem("muse-view", name); } catch (e) {}
-  }, []);
+  const runDetail = matchPath("/runs/:id", location.pathname);
+  const timelineDetail = matchPath("/timeline/:id", location.pathname);
+  const compareDetail = matchPath("/compare/:setId", location.pathname);
+  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || "";
+  const compareSetId = (compareDetail && compareDetail.params.setId) || "";
+  const routeRunRef = useRef(routeRunId);
+  routeRunRef.current = routeRunId;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -50,18 +68,13 @@ function App() {
   const refresh = useCallback(async (runId) => {
     if (document.hidden) { setPaused(true); return; }
     try {
-      const d = await fetchLogs(runId ?? selectedRef.current);
+      const d = await fetchLogs(runId ?? routeRunRef.current);
       dataRef.current = d;
+      setLoaded(true);
       setPaused(false);
       setSourceText((d.sessions || []).length
         ? "Sessions: " + (d.sessions || []).length + " run(s) · " + (d.events || []).length + " call(s) · updated " + new Date().toLocaleTimeString()
         : "No runs yet. Run ./run-muse in your terminal and type a prompt.");
-      // Pin the server's newest-completed default until the user picks
-      // or clears a run (matches the vanilla page's select behaviour).
-      if (!followRef.current && !selectedRef.current && d.selected) {
-        selectedRef.current = d.selected;
-        setSelectedRun(d.selected);
-      }
       const sig = dataSignature(d);
       if (sig === sigRef.current) return;
       sigRef.current = sig;
@@ -71,32 +84,21 @@ function App() {
     }
   }, []);
 
+  useEffect(() => { sigRef.current = ""; refresh(routeRunId); }, [routeRunId, refresh]);
+
   useEffect(() => {
-    refresh(selectedRef.current);
     const t = setInterval(() => refresh(), 2000);
     const onVis = () => { if (!document.hidden) refresh(); };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
   }, [refresh]);
 
+  // The selected run lives in the URL. Clicking a run anywhere goes to
+  // its Overview URL; browser back/forward then move between runs.
   const selectRun = useCallback((runId) => {
     if (!runId) return;
-    followRef.current = false;
-    setFollowDefault(false);
-    selectedRef.current = runId;
-    setSelectedRun(runId);
-    sigRef.current = "";
-    refresh(runId);
-  }, [refresh]);
-
-  const clearSelectedRun = useCallback(() => {
-    followRef.current = true;
-    setFollowDefault(true);
-    selectedRef.current = "";
-    setSelectedRun("");
-    sigRef.current = "";
-    refresh("");
-  }, [refresh]);
+    navigate("/runs/" + encodeURIComponent(runId));
+  }, [navigate]);
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -108,22 +110,33 @@ function App() {
   }, [exportOpen]);
 
   const handleDelete = useCallback(async () => {
-    const target = selectedRef.current || dataRef.current.selected;
+    const target = routeRunRef.current || dataRef.current.selected;
     if (!target) return;
     if (!confirm("Delete session " + target + "? This removes its local run data.")) return;
     const result = await deleteRun(target);
     if (!result.ok) { alert(result.reason || "Delete failed."); return; }
-    selectedRef.current = "";
-    setSelectedRun("");
     sigRef.current = "";
+    navigate("/runs");
     refresh("");
-  }, [refresh]);
+  }, [navigate, refresh]);
 
-  const selSession = (data.sessions || []).find((s) => s.run_id === data.selected) || {};
-  const sessionValue = followDefault ? (data.selected || "") : (selectedRun || data.selected || "");
+  const sessions = data.sessions || [];
+  const runNotFound = loaded && Boolean(routeRunId)
+    && !sessions.some((s) => s.run_id === routeRunId);
+  const compareRep = compareSetId
+    ? sessions.find((s) => s.comparison_id === compareSetId) : null;
+  const compareNotFound = loaded && Boolean(compareSetId) && !compareRep;
+  const compareData = compareRep ? { ...data, selected: compareRep.run_id } : data;
+  const selSession = sessions.find((s) => s.run_id === data.selected) || {};
+  const view = activeView(location.pathname);
   const chipText = data.selected
     ? (selSession.at ? localTime(selSession.at).slice(11) + " · " : "") + shortText(data.prompt || "Selected run", 34)
     : "";
+  const goto = (name) => {
+    if (name === "runs") navigate("/runs");
+    else if (name === "compare") navigate(selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare");
+    else navigate("/");
+  };
 
   const exportCsv = () => {
     const lastData = dataRef.current;
@@ -140,6 +153,12 @@ function App() {
       JSON.stringify(lastData, null, 2), "application/json");
   };
 
+  const NAV = [
+    ["overview", "Overview", "/"],
+    ["runs", "Runs", "/runs"],
+    ["compare", "Compare", selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare"],
+    ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
+  ];
   return (
     <>
       <header className="topbar">
@@ -148,8 +167,8 @@ function App() {
           <span className="runChip">
             <span className={"dot " + (data.status || selSession.status || "")}></span>
             <button className="chipText" type="button" title={(data.prompt || "Selected run") + " · " + ((data.provider || "?") + "/" + (data.model || "?"))}
-              onClick={() => { setView("runs"); setTimeout(() => sessionSelectRef.current && sessionSelectRef.current.focus(), 0); }}>{chipText}</button>
-            <button className="chipX" type="button" aria-label="Clear selected run" title="Clear selected run" onClick={clearSelectedRun}>×</button>
+              onClick={() => navigate("/runs/" + encodeURIComponent(data.selected))}>{chipText}</button>
+            <button className="chipX" type="button" aria-label="Clear selected run" title="Clear selected run" onClick={() => navigate("/")}>×</button>
           </span>
         ) : null}
         <div className="topbarRight">
@@ -167,11 +186,11 @@ function App() {
       </header>
       <main className="shell">
         <nav className="sidebar" aria-label="Views">
-          {VIEWS.map((v) => (
-            <button key={v} type="button" className={"navItem" + (view === v ? " active" : "")}
-              aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
-              <NavIcon view={v} />{v[0].toUpperCase() + v.slice(1)}
-            </button>
+          {NAV.map(([key, label, to]) => (
+            <Link key={key} to={to} className={"navItem" + (view === key ? " active" : "")}
+              aria-current={view === key ? "page" : undefined}>
+              <NavIcon view={key} />{label}
+            </Link>
           ))}
           <div className="sideFoot">
             <span className={"live" + (paused ? " paused" : "")}>{paused ? "● Paused (tab hidden)" : "● Live"}</span>
@@ -179,10 +198,16 @@ function App() {
           </div>
         </nav>
         <div className="content">
-          <div hidden={view !== "overview"}><Overview data={data} onSelect={selectRun} onGoto={setView} /></div>
-          <div hidden={view !== "runs"}><Runs data={data} sessionValue={sessionValue} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} sessionSelectRef={sessionSelectRef} /></div>
-          <div hidden={view !== "compare"}><Compare data={data} onSelect={selectRun} /></div>
-          <div hidden={view !== "timeline"}><Timeline data={data} /></div>
+          <Routes>
+            <Route path="/" element={<Overview data={data} onSelect={selectRun} onGoto={goto} />} />
+            <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} sessionSelectRef={sessionSelectRef} />} />
+            <Route path="/runs/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Overview data={data} onSelect={selectRun} onGoto={goto} />} />
+            <Route path="/compare/:setId" element={compareNotFound ? <NotFound what="Compare set not found" /> : <Compare data={compareData} onSelect={selectRun} />} />
+            <Route path="/compare" element={<Compare data={data} onSelect={selectRun} />} />
+            <Route path="/timeline/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Timeline data={data} />} />
+            <Route path="/timeline" element={<Timeline data={data} />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
           <details className="helpBox">
             <summary>How to read this · commands · SDK docs</summary>
             <div className="panel">
@@ -201,6 +226,14 @@ function App() {
         </div>
       </main>
     </>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <AppShell />
+    </BrowserRouter>
   );
 }
 
