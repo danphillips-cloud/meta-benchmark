@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+import muse_log  # noqa: E402
 from muse_log import build_timeline, harvest_calls  # noqa: E402
 
 ROOT = Path(__file__).parent
@@ -257,14 +258,21 @@ def ensure_ui():
         subprocess.run(["xdg-open", UI_URL], capture_output=True)
 
 
-def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None):
+def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
+                watch=None):
     """Run one harness process, writing stdout to stdout_path and
     stderr to the sibling stderr.log. Returns exit state plus the
-    stdout lines stamped with arrival time in ms since start."""
+    stdout lines stamped with arrival time in ms since start.
+
+    `watch`, when given, is polled while the process runs. It may
+    return ("needs_approval", tool) to stop the process at once;
+    the result then carries needs_approval=tool.
+    """
     started = time.monotonic()
     lines = []
     timed_out = False
     interrupted = False
+    needs_approval = None
     with open(stdout_path, "w") as out, \
             open(stdout_path.with_name("stderr.log"), "w") as err:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err,
@@ -289,45 +297,94 @@ def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None):
         read_thread.start()
         if input_text is not None:
             threading.Thread(target=writer, daemon=True).start()
-        try:
-            exit_code = proc.wait(timeout=timeout)
-            wall_ms = round((time.monotonic() - started) * 1000)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+
+        def stop_proc():
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             try:
-                exit_code = proc.wait(timeout=10)
+                return proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                exit_code = proc.wait()
+                return proc.wait()
+
+        try:
+            deadline = started + timeout if timeout is not None else None
+            while True:
+                try:
+                    exit_code = proc.wait(timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+                if watch is not None:
+                    verdict = watch()
+                    if verdict and verdict[0] == "needs_approval":
+                        needs_approval = verdict[1]
+                        exit_code = stop_proc()
+                        break
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    exit_code = stop_proc()
+                    break
             wall_ms = round((time.monotonic() - started) * 1000)
         except KeyboardInterrupt:
             interrupted = True
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                exit_code = proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                exit_code = proc.wait()
+            exit_code = stop_proc()
             wall_ms = round((time.monotonic() - started) * 1000)
         read_thread.join(timeout=5)
     return {
         "wall_ms": wall_ms,
         "exit_code": exit_code, "timed_out": timed_out,
         "interrupted": interrupted, "lines": lines,
+        "needs_approval": needs_approval,
     }
+
+
+def format_call_line(n, call):
+    dur = call.get("duration_ms")
+    secs = f"{dur / 1000:.1f} s" if dur is not None else "–"
+    inp = call.get("input_tokens")
+    tok = f"{round(inp / 1000)}k in" if inp is not None else "– in"
+    return f"call {n} · {secs} · {tok}"
+
+
+def format_live_line(state):
+    tool = state.get("tool")
+    if state.get("state") == "waiting for approval":
+        return f"waiting for approval: {tool}" if tool \
+            else "waiting for approval"
+    if state.get("state") == "tool running":
+        return f"tool running: {tool}" if tool else "tool running"
+    return state.get("state") or "idle"
+
+
+def _live_watch(session_id, seen):
+    """Poll closure for run_process: print finished calls and the
+    live state, and stop the run if an approval prompt appears."""
+    path = muse_log.session_log_path(session_id)
+    if not path:
+        return None
+    records = muse_log.read_records(path)
+    calls = muse_log.calls_from_records(records)
+    while seen["calls"] < len(calls):
+        seen["calls"] += 1
+        print(format_call_line(seen["calls"], calls[seen["calls"] - 1]),
+              flush=True)
+    state = muse_log.live_state(records)
+    if state["state"] == "waiting for approval":
+        return ("needs_approval", state.get("tool"))
+    text = format_live_line(state)
+    if text != seen.get("live"):
+        seen["live"] = text
+        if sys.stdout.isatty():
+            print("\r" + text + "   ", end="", flush=True)
+        else:
+            print(text, flush=True)
+    return None
 
 
 def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
@@ -341,12 +398,19 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
     cmd = ["muse", "exec", "--json", "--provider", provider,
            "--prompt-file", str(run_dir / "prompt.md"),
            "--workspace", str(workspace),
-           "--session-id", session_id]
+           "--session-id", session_id,
+           "--approval-mode", "never"]
     if provider != "echo":
         cmd += ["--model", model]
     if minimal:
         cmd += ["--disable-reminders", "--no-foreign-personal-context"]
-    proc = run_process(cmd, workspace, env, run_dir / "events.jsonl", timeout)
+    seen = {"calls": 0, "live": None}
+    watch = (lambda: _live_watch(session_id, seen)) \
+        if provider != "echo" else None
+    proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
+                       timeout, watch=watch)
+    if sys.stdout.isatty():
+        print(flush=True)
     wall_ms = proc["wall_ms"]
     exit_code = proc["exit_code"]
     timed_out = proc["timed_out"]
@@ -379,6 +443,7 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
         "interrupted": interrupted, "reply": reply,
         "calls": calls, "timeline": build_timeline(session_id, wall_ms),
         "command": " ".join(cmd), "usage_model": usage_model,
+        "needs_approval": proc.get("needs_approval"),
     }
 
 
@@ -630,7 +695,9 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
              "exit_code": 130, "timed_out": False, "interrupted": True,
              "reply": "", "calls": [], "timeline": [], "command": None,
              "usage_model": None}
-    if r["timed_out"]:
+    if r.get("needs_approval"):
+        status = "needs_approval"
+    elif r["timed_out"]:
         status = "timeout"
     elif r.get("interrupted"):
         status = "interrupted"
@@ -643,6 +710,16 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     if err_file.is_file():
         lines = err_file.read_text(errors="replace").strip().splitlines()
         stderr_tail = lines[-1] if lines else ""
+    split = {"model_ms": None, "tool_ms": None,
+             "approval_ms": None, "muse_ms": None}
+    if r.get("session_id") and provider not in ("anthropic", "claude-code"):
+        log_path = muse_log.session_log_path(r["session_id"])
+        if log_path:
+            dur = [c["duration_ms"] for c in r["calls"]
+                   if c.get("duration_ms") is not None]
+            split = muse_log.time_split(
+                muse_log.read_records(log_path), r["wall_ms"],
+                sum(dur) if dur else None)
     report = {
         "at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id, "prompt": prompt,
@@ -652,6 +729,9 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "comparison_id": comparison_id, "round": compare_round,
         "compare_mode": compare_mode,
         "harness_version": version,
+        "tool_ms": split["tool_ms"], "approval_ms": split["approval_ms"],
+        "muse_ms": split["muse_ms"],
+        "needs_approval_tool": r.get("needs_approval"),
         "status": status, "timeout_seconds": timeout,
         "command": r["command"],
         "wall_ms": r["wall_ms"], "exit_code": r["exit_code"],
@@ -660,7 +740,9 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "num_turns": r.get("num_turns"), "cost_usd": r.get("cost_usd"),
         "totals": r.get("totals"),
         "metrics_unavailable": status == "completed" and not r["calls"],
-        "error": r.get("error_override")
+        "error": (f"waiting for approval: {r['needs_approval']}"
+                  if r.get("needs_approval") else None)
+                 or r.get("error_override")
                  or (stderr_tail if status != "completed" else None),
     }
     (run_dir / "report.json").write_text(json.dumps(report, indent=2))
@@ -684,7 +766,12 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
               f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s) · {status}")
     if r["reply"]:
         print(r["reply"][:500])
-    if status == "timeout":
+    if status == "needs_approval":
+        print(f"WARNING: stopped — waiting for approval: "
+              f"{r.get('needs_approval')}. The run was stopped at once "
+              f"instead of waiting. Partial files are in "
+              f"{run_dir / 'workspace'}")
+    elif status == "timeout":
         print(f"Timed out after {timeout} seconds. That is the run cap, "
               "not a crash. Partial files are in "
               f"{run_dir / 'workspace'}")
@@ -695,6 +782,95 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         print("error:", report["error"], file=sys.stderr)
     print(f"UI: {UI_URL}  (run {run_id})")
     return report
+
+
+def _fmt_bucket(ms):
+    return "–" if ms is None else f"{ms / 1000:.1f} s"
+
+
+def record_watch_turn(turn, session_id):
+    """Append one finished watched turn as a muse-watch run."""
+    RUNS.mkdir(exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" \
+        + uuid.uuid4().hex[:6]
+    run_dir = RUNS / run_id
+    run_dir.mkdir()
+    (run_dir / "prompt.md").write_text(turn["prompt"])
+    split = turn["split"]
+    report = {
+        "at": turn["at"], "run_id": run_id, "prompt": turn["prompt"],
+        "model": turn["model"], "provider": "muse-watch",
+        "session_id": session_id, "context_mode": "interactive",
+        "comparison_id": None, "round": None, "compare_mode": None,
+        "harness_version": turn["version"],
+        "tool_ms": split["tool_ms"],
+        "approval_ms": split["approval_ms"],
+        "muse_ms": split["muse_ms"],
+        "needs_approval_tool": None,
+        "status": "completed", "timeout_seconds": None,
+        "command": "./run-muse --watch",
+        "wall_ms": turn["wall_ms"], "exit_code": 0,
+        "reply": "", "calls": turn["calls"], "timeline": [],
+        "api_ms": None, "ttft_ms": None, "num_turns": None,
+        "cost_usd": None, "totals": None,
+        "metrics_unavailable": False, "error": None,
+        "turn_index": turn["index"],
+    }
+    (run_dir / "report.json").write_text(json.dumps(report, indent=2))
+    summary = {k: v for k, v in report.items() if k != "timeline"}
+    with open(RUNS / "index.jsonl", "a") as f:
+        f.write(json.dumps(summary) + "\n")
+    print(f"turn {turn['index']} · wall {_fmt_bucket(turn['wall_ms'])}"
+          f" · model {_fmt_bucket(split['model_ms'])}"
+          f" · tools {_fmt_bucket(split['tool_ms'])}"
+          f" · approval {_fmt_bucket(split['approval_ms'])}"
+          f" · Muse {_fmt_bucket(split['muse_ms'])}"
+          f" · {len(turn['calls'])} call(s)", flush=True)
+    return report
+
+
+def run_watch(session_arg=None):
+    """Attach read-only to a Muse session and record its turns.
+
+    Never starts, stops or answers Muse: the log file is only read.
+    Runs until the session ends or Ctrl+C.
+    """
+    if session_arg:
+        path = muse_log.session_log_path(session_arg)
+        session_id = session_arg
+    else:
+        path = muse_log.newest_session_path()
+        session_id = path.parent.name if path else None
+    if not path or not Path(path).is_file():
+        print("No Muse session log found to watch.", file=sys.stderr)
+        return
+    print(f"Watching session {session_id} read-only. "
+          f"Run Muse normally in another terminal; Ctrl+C stops "
+          f"watching. UI: {UI_URL}", flush=True)
+    recorded = set()
+    try:
+        while True:
+            records = muse_log.read_records(path)
+            for turn in muse_log.split_turns(records):
+                if turn["index"] not in recorded:
+                    recorded.add(turn["index"])
+                    record_watch_turn(turn, session_id)
+            if any(e.get("payload_type") == "session.end"
+                   for e in records):
+                print("Session ended.", flush=True)
+                return
+            time.sleep(1)
+    except KeyboardInterrupt:
+        # Record a trailing turn whose activity is already finished.
+        records = muse_log.read_records(path)
+        turns = muse_log.split_turns(records)
+        # split_turns holds back the live trailing turn; close it here
+        # only when the session actually ended in the log.
+        for turn in turns:
+            if turn["index"] not in recorded:
+                recorded.add(turn["index"])
+                record_watch_turn(turn, session_id)
+        print("\nStopped watching.", flush=True)
 
 
 def parse_compare_models(text):
@@ -823,12 +999,22 @@ def main():
                              "(COMPARE_MODELS)")
     parser.add_argument("--repeat", type=int, default=None,
                         help="compare rounds, alternating order (default 1)")
+    parser.add_argument("--watch", nargs="?", const="", default=None,
+                        metavar="SESSION",
+                        help="watch a Muse session read-only (newest "
+                             "when no session id is given) and record "
+                             "each finished turn")
     args = parser.parse_args()
     if args.repeat is not None and not args.compare:
         parser.error("--repeat needs --compare")
+    if args.watch is not None and (args.prompt or args.compare):
+        parser.error("--watch takes no prompt or --compare")
     mode = args.compare
     args.model = args.model or default_model(args.provider)
     ensure_ui()
+    if args.watch is not None:
+        run_watch(args.watch or None)
+        return
     prompt = " ".join(args.prompt).strip()
     repeat = args.repeat if args.repeat is not None else 1
     if mode is not None and repeat < 1:

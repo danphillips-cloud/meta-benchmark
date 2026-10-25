@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { buildRunsQuery, explainLines, fmt, fmtDur, fmtDurParts, fmtMs, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
+import { buildRunsQuery, explainLines, fmt, fmtDur, fmtDurParts, fmtMs, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
 import { Chip, StatIcon, StatusPill } from "../components/widgets.jsx";
@@ -119,10 +119,14 @@ export default function Overview({ data, onSelect, onGoto }) {
     notes.push("Run in progress — totals grow as calls land.");
   if (["failed", "interrupted", "timeout"].includes(data.status || sel.status))
     notes.push("This run did not complete. It stays in Runs, but it is excluded from all medians.");
+  if ((data.status || sel.status) === "needs_approval")
+    notes.push("This run was stopped because it waited for approval. It stays in Runs, but it is excluded from all medians.");
 
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
   const scope = overviewScope(data, shared);
-  const whatLines = explainLines({ wall_ms: wall, model_ms: modelTotal, provider: data.provider || sel.provider, events });
+  const split = data.time_split || {};
+  const toolP = fmtDurParts(split.tool_ms ?? null), apprP = fmtDurParts(split.approval_ms ?? null), museP = fmtDurParts(split.muse_ms ?? null);
+  const whatLines = explainLines({ wall_ms: wall, model_ms: modelTotal, provider: data.provider || sel.provider, events, split });
   const baseline = usualBaseline(sel.run_id ? sel : null, data.sessions || []);
   const usualWall = baseline && baseline.wall_ms != null ? " · usual " + fmtDur(baseline.wall_ms) : "";
   const usualModel = baseline && baseline.model_ms != null ? " · usual " + fmtDur(baseline.model_ms) : "";
@@ -175,13 +179,22 @@ export default function Overview({ data, onSelect, onGoto }) {
             : ""}
         </div>
       </section>
+      {(data.status === "running" || sel.status === "running") && data.live_state ? (
+        <div className={"liveBanner" + (data.live_state.state === "waiting for approval" ? " warn" : "")} role="status">
+          {"Live: " + liveStateText(data.live_state)}
+        </div>
+      ) : null}
       <div className="stats">
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
           detail={(hasEvents ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
           detail={(data.provider === "claude-code" && modelTotal != null ? share(modelTotal) + " · reported API time" : share(modelTotal)) + usualModel} />
-        <StatCard label="Overhead" icon="overhead" hero value={overP[0]} unit={overP[1].trim()} title={overhead == null ? "" : fmtMs(overhead) + " ms"}
-          detail={share(overhead) + usualOver} />
+        <StatCard label="Tools" icon="overhead" value={toolP[0]} unit={toolP[1].trim()} title={split.tool_ms == null ? "" : fmtMs(split.tool_ms) + " ms"}
+          detail={share(split.tool_ms ?? null)} />
+        <StatCard label="Approval wait" icon="overhead" value={apprP[0]} unit={apprP[1].trim()} title={split.approval_ms == null ? "" : fmtMs(split.approval_ms) + " ms"}
+          detail={share(split.approval_ms ?? null)} />
+        <StatCard label="Muse" icon="overhead" hero value={museP[0]} unit={museP[1].trim()} title={split.muse_ms == null ? "" : fmtMs(split.muse_ms) + " ms"}
+          detail={share(split.muse_ms ?? null)} />
         <div className="stat">
           <div className="statTop"><small>Input tokens</small><StatIcon kind="input" /></div>
           <div className="big"><span>{fmt(sel.input_tokens)}</span></div>

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, runMode, showBrush, usualBaseline,
+  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, runMode, showBrush, usualBaseline,
 } from "./format.js";
 
 const S = (over) => ({
@@ -254,6 +254,28 @@ test("version filter: filterSessions and chips honour harness_version", () => {
 test("explainLines: a near-even split is not called domination", () => {
   const lines = explainLines({ wall_ms: 18500, model_ms: 9400, provider: "meta", events: [] });
   assert.match(lines[0], /\(51%\)\. Model and overhead were about even\./);
+});
+
+test("explainLines: tool and approval lines only when the split has them", () => {
+  const events = [E(3000, 1000, 0, 10)];
+  const withSplit = explainLines({ wall_ms: 50000, model_ms: 10000, provider: "meta", events, split: { tool_ms: 41000, approval_ms: 126000, muse_ms: null } });
+  assert.ok(withSplit.some((l) => l === "Tools ran for 41.0 s."));
+  assert.ok(withSplit.some((l) => l.startsWith("Waited ")));
+  const zero = explainLines({ wall_ms: 5000, model_ms: 5000, provider: "meta", events, split: { tool_ms: 0, approval_ms: 0, muse_ms: 0 } });
+  assert.ok(!zero.some((l) => l.startsWith("Tools ran") || l.startsWith("Waited")));
+  const missing = explainLines({ wall_ms: 5000, model_ms: 5000, provider: "meta", events, split: { tool_ms: null, approval_ms: null, muse_ms: null } });
+  assert.ok(!missing.some((l) => l.startsWith("Tools ran") || l.startsWith("Waited")));
+  const noSplit = explainLines({ wall_ms: 5000, model_ms: 5000, provider: "meta", events });
+  assert.ok(!noSplit.some((l) => l.startsWith("Tools ran") || l.startsWith("Waited")));
+});
+
+test("liveStateText: banner wording for every live state", () => {
+  assert.equal(liveStateText(null), "");
+  assert.equal(liveStateText({ state: "waiting for approval", tool: "Bash" }), "Waiting for approval: Bash");
+  assert.equal(liveStateText({ state: "tool running", tool: "Read" }), "Tool running: Read");
+  assert.equal(liveStateText({ state: "model call running", tool: null }), "Model call running");
+  assert.equal(liveStateText({ state: "idle", tool: null }), "Idle");
+  assert.equal(liveStateText({ state: "ended", tool: null }), "Ended");
 });
 
 test("usualBaseline: never compares across context modes", () => {

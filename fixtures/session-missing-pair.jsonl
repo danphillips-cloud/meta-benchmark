@@ -1,0 +1,5 @@
+{"sequence": 1, "recorded_at": 1700000000000000, "payload_type": "runtime.session.metadata", "payload": {"kind": "metadata", "record": {"model_id": "fake-model-1", "provider_id": "fake-provider", "build": {"semver": "0.0.0-test", "sha": "fake"}}}}
+{"sequence": 2, "recorded_at": 1700000000100000, "payload_type": "runtime.user_intent.accepted", "payload": {"intent_id": "fake-intent-1", "surface": "main", "semantic_kind": {"kind": "chat"}, "model_messages": [{"content": [{"type": "text", "text": "fake prompt"}]}]}}
+{"sequence": 3, "recorded_at": 1700000003000000, "payload_type": "runtime.session", "payload": {"event": {"kind": "model_completed", "duration_ms": 2500, "usage": {"input_tokens": 50, "output_tokens": 5, "cached_tokens": 0, "reasoning_tokens": 1}}}}
+{"sequence": 4, "recorded_at": 1700000003100000, "payload_type": "tool_batch.effect.started", "payload": {"kind": "tool_batch_effect", "record": {"effect_id": "fake-e1", "tool_name": "FakeTool"}}}
+{"sequence": 5, "recorded_at": 1700000004000000, "payload_type": "session.end", "payload": {"kind": "session_end", "record": {"exit_reason": "fake"}}}

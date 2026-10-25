@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from unittest import mock
@@ -825,6 +826,166 @@ class RunProcessTest(unittest.TestCase):
             self.assertTrue(result["timed_out"])
 
 
+class VisibilityTest(unittest.TestCase):
+    """Part F: split, live state, turns, approval stop (sanitised)."""
+
+    def _records(self, name):
+        return run_muse.muse_log.read_records(HERE / "fixtures" / name)
+
+    def test_metadata_version_from_build_field(self):
+        meta = run_muse.muse_log.session_metadata(
+            self._records("session-turns.jsonl"))
+        self.assertEqual(meta, {"model": "fake-model-1",
+                                "provider": "fake-provider",
+                                "version": "0.0.0-test"})
+
+    def test_turn_boundaries_and_split_exclude_think_time(self):
+        turns = run_muse.muse_log.split_turns(
+            self._records("session-turns.jsonl"))
+        self.assertEqual(len(turns), 2)
+        self.assertEqual([t["prompt"] for t in turns],
+                         ["fake prompt one", "fake prompt two"])
+        # Turn 1: wall ends at last activity, not at the next prompt
+        # 53 s later. Nested approval is not double-counted as tool.
+        self.assertEqual(turns[0]["wall_ms"], 7300)
+        self.assertEqual(turns[0]["split"], {
+            "model_ms": 5000, "tool_ms": 1500,
+            "approval_ms": 500, "muse_ms": 300})
+        self.assertEqual(turns[1]["wall_ms"], 5200)
+        self.assertEqual(turns[1]["split"], {
+            "model_ms": 5000, "tool_ms": 0,
+            "approval_ms": 0, "muse_ms": 200})
+        self.assertEqual(turns[0]["version"], "0.0.0-test")
+
+    def test_missing_pair_shows_dash_never_an_estimate(self):
+        turns = run_muse.muse_log.split_turns(
+            self._records("session-missing-pair.jsonl"))
+        self.assertEqual(len(turns), 1)
+        self.assertIsNone(turns[0]["split"]["tool_ms"])
+        self.assertEqual(turns[0]["split"]["approval_ms"], 0)
+        self.assertIsNone(turns[0]["split"]["muse_ms"])
+        # A live (not ended) trailing turn is held back, not recorded.
+        self.assertEqual(run_muse.muse_log.split_turns(
+            self._records("session-approval.jsonl")), [])
+
+    def test_live_state_from_log(self):
+        log = run_muse.muse_log
+        turns = self._records("session-turns.jsonl")
+        self.assertEqual(log.live_state([]),
+                         {"state": "idle", "tool": None})
+        self.assertEqual(log.live_state(turns[:3]),
+                         {"state": "model call running", "tool": None})
+        self.assertEqual(log.live_state(turns[:5]),
+                         {"state": "tool running", "tool": "FakeTool"})
+        self.assertEqual(log.live_state(turns),
+                         {"state": "ended", "tool": None})
+        self.assertEqual(
+            log.live_state(self._records("session-approval.jsonl")),
+            {"state": "waiting for approval", "tool": "FakeTool"})
+
+    def test_watch_callback_stops_run_at_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = run_muse.run_process(
+                ["sh", "-c", "sleep 5"], Path(td), dict(os.environ),
+                Path(td) / "out.log", timeout=30,
+                watch=lambda: ("needs_approval", "FakeTool"))
+            self.assertEqual(result["needs_approval"], "FakeTool")
+            self.assertLess(result["wall_ms"], 4000)
+
+    def test_exec_uses_approval_mode_never(self):
+        captured = {}
+
+        def fake_process(cmd, cwd, env, out, timeout, input_text=None,
+                         watch=None):
+            captured["cmd"] = cmd
+            Path(out).write_text("")
+            return {"wall_ms": 1, "exit_code": 1, "timed_out": False,
+                    "interrupted": False, "lines": [],
+                    "needs_approval": "FakeTool"}
+
+        with tempfile.TemporaryDirectory() as td:
+            old = run_muse.run_process
+            run_muse.run_process = fake_process
+            try:
+                result = run_muse.run_muse_exec(
+                    "hi", Path(td), "meta", "fake-model", False, 30,
+                    session_id="fake-session")
+            finally:
+                run_muse.run_process = old
+        self.assertIn("--approval-mode", captured["cmd"])
+        self.assertIn("never", captured["cmd"])
+        self.assertEqual(result["needs_approval"], "FakeTool")
+
+    def test_run_records_needs_approval_status(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs, old_fn = run_muse.RUNS, run_muse.run_muse_exec
+            run_muse.RUNS = runs
+            run_muse.run_muse_exec = lambda *a, **k: _completed(
+                needs_approval="FakeTool")
+            try:
+                report = run_muse.run_prompt(
+                    "hi", provider="meta", model="fake-model")
+            finally:
+                run_muse.RUNS, run_muse.run_muse_exec = old_runs, old_fn
+            self.assertEqual(report["status"], "needs_approval")
+            self.assertEqual(report["needs_approval_tool"], "FakeTool")
+            self.assertIn("waiting for approval: FakeTool",
+                          report["error"])
+
+    def test_live_lines_format(self):
+        self.assertEqual(
+            run_muse.format_call_line(
+                7, {"duration_ms": 12400, "input_tokens": 41000}),
+            "call 7 · 12.4 s · 41k in")
+        self.assertEqual(
+            run_muse.format_live_line(
+                {"state": "waiting for approval", "tool": "FakeTool"}),
+            "waiting for approval: FakeTool")
+        self.assertEqual(
+            run_muse.format_live_line(
+                {"state": "tool running", "tool": "FakeTool"}),
+            "tool running: FakeTool")
+
+    def test_server_live_state_and_split_for_running_run(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-live").mkdir(parents=True)
+            sess = Path(td) / "sessions" / "fake-session-1"
+            sess.mkdir(parents=True)
+            (sess / "session.jsonl").write_text(
+                (HERE / "fixtures" / "session-approval.jsonl")
+                .read_text())
+            run = {"run_id": "run-live",
+                   "at": datetime.now(timezone.utc).isoformat(),
+                   "prompt": "fake prompt", "model": "fake-model-1",
+                   "provider": "meta", "session_id": "fake-session-1",
+                   "context_mode": "full", "comparison_id": None,
+                   "status": "running", "timeout_seconds": 1800,
+                   "wall_ms": None, "exit_code": None, "reply": "",
+                   "calls": [], "metrics_unavailable": False,
+                   "error": None}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old_index = server.INDEX
+            old_env = os.environ.get("MUSE_SESSIONS_DIR")
+            server.INDEX = runs / "index.jsonl"
+            server._SESSION_LOG_CACHE.clear()
+            os.environ["MUSE_SESSIONS_DIR"] = str(Path(td) / "sessions")
+            try:
+                data = server.read_logs("run-live")
+            finally:
+                server.INDEX = old_index
+                server._SESSION_LOG_CACHE.clear()
+                if old_env is None:
+                    os.environ.pop("MUSE_SESSIONS_DIR", None)
+                else:
+                    os.environ["MUSE_SESSIONS_DIR"] = old_env
+            self.assertEqual(data["live_state"], {
+                "state": "waiting for approval", "tool": "FakeTool"})
+            self.assertIsNone(data["time_split"]["approval_ms"])
+            self.assertIsNone(data["time_split"]["muse_ms"])
+
+
 class HarnessVersionTest(unittest.TestCase):
     def setUp(self):
         run_muse._harness_version_cache.clear()
@@ -970,6 +1131,12 @@ class IndexHtmlTest(unittest.TestCase):
                        "explainLines", "usualBaseline", "perCallSeries",
                        "harness_version", "versionFilter",
                        "Claude Code doesn't report per-call time"):
+            self.assertIn(marker, self.src)
+
+    def test_part_f_visibility_hooks_present(self):
+        for marker in ("liveBanner", "liveStateText", "time_split",
+                       "Approval wait", "needs_approval",
+                       "Waited ", "Tools ran for "):
             self.assertIn(marker, self.src)
 
     def test_missing_values_never_become_zero(self):
