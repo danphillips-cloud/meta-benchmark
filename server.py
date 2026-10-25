@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 29
+VERSION = 30
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -61,12 +61,16 @@ def _is_stale_running(run):
 
 def _run_model_ms(run):
     """Sum of per-call durations, or the harness-reported API total
-    when calls carry none (Claude Code reports no per-call time)."""
+    when calls carry none (Claude Code reports no per-call time).
+    None when nothing was recorded: a dash, never an invented 0.
+    A recorded 0 stays 0."""
     durations = [c.get("duration_ms") for c in (run.get("calls") or [])
                  if c.get("duration_ms") is not None]
     if durations:
         return sum(durations)
-    return run.get("api_ms") or 0
+    if run.get("api_ms") is not None:
+        return run.get("api_ms")
+    return None
 
 
 def _run_split(run, records=None):
@@ -153,7 +157,8 @@ def session_row(r):
         "cost_usd": r.get("cost_usd"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
         "model_ms": model_ms,
-        "overhead_ms": max(0, (r.get("wall_ms") or 0) - model_ms),
+        "overhead_ms": None if model_ms is None or r.get("wall_ms") is None
+                       else max(0, r["wall_ms"] - model_ms),
         "input_tokens": _run_tokens(r, "input_tokens"),
         "output_tokens": _run_tokens(r, "output_tokens"),
         "tool_ms": r.get("tool_ms"), "approval_ms": r.get("approval_ms"),

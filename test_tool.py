@@ -12,6 +12,7 @@ loading, the BENCH_CLAUDE_MODEL default, the --repeat check, the
 terminal compare modes, the paid-run notice, and timeout defaults.
 """
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -23,6 +24,11 @@ from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).parent
+
+# Tests never start the UI, so say so once here: this keeps "UI:"
+# lines out of the test output. Tests that exercise the UI pointer
+# opt back out locally.
+os.environ.setdefault("RUN_MUSE_NO_UI", "1")
 
 
 def load(name, path):
@@ -208,6 +214,72 @@ class StaticFilesTest(unittest.TestCase):
             server.PORT = old_port
 
 
+class PortHeldTest(unittest.TestCase):
+    def test_foreign_server_on_port_prints_message_and_starts_nothing(self):
+        # A plain http.server on a random free port is another app:
+        # ensure_ui must name the port, start no server and open no tab.
+        # Never the default port: tests must not touch a real UI.
+        import http.server
+        import threading
+        httpd = http.server.HTTPServer(
+            ("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        old_port, old_url = run_muse.PORT, run_muse.UI_URL
+        run_muse.PORT = port
+        run_muse.UI_URL = f"http://127.0.0.1:{port}/"
+        started, opened = [], []
+        try:
+            with mock.patch.dict(os.environ):
+                os.environ.pop("RUN_MUSE_NO_UI", None)
+                with mock.patch.object(run_muse, "start_ui",
+                                       lambda: started.append(1)), \
+                        mock.patch.object(run_muse.subprocess, "run",
+                                          lambda *a, **k: opened.append(a)), \
+                        mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                    run_muse.ensure_ui()
+                    # No UI line may point at the other app.
+                    enabled = run_muse.ui_enabled()
+                    suffix = run_muse._ui_suffix()
+        finally:
+            run_muse.PORT, run_muse.UI_URL = old_port, old_url
+            run_muse._ui_blocked = False
+            httpd.shutdown()
+            httpd.server_close()
+        self.assertIn(f"Port {port} is in use by another app", err.getvalue())
+        self.assertIn(f"PORT={port + 1} ./run-muse", err.getvalue())
+        self.assertEqual(started, [])
+        self.assertEqual(opened, [])
+        self.assertFalse(enabled)
+        self.assertEqual(suffix, "")
+
+    def test_foreign_process_found_on_restart_opens_no_tab(self):
+        # Our server answered with an old version, but the pid on the
+        # port is not ours: no signal, no restart, no tab, no UI line.
+        opened, killed = [], []
+        logs = {"version": -1}
+        try:
+            with mock.patch.dict(os.environ):
+                os.environ.pop("RUN_MUSE_NO_UI", None)
+                with mock.patch.object(run_muse, "fetch_ui_logs", lambda: logs), \
+                        mock.patch.object(run_muse, "_pids_on_port", lambda port: ["4242"]), \
+                        mock.patch.object(run_muse, "_pid_cmdline", lambda pid: "python3 -m http.server"), \
+                        mock.patch.object(run_muse, "_pid_cwd", lambda pid: "/elsewhere"), \
+                        mock.patch.object(run_muse, "start_ui", lambda: killed.append("start")), \
+                        mock.patch.object(run_muse.subprocess, "run",
+                                          lambda *a, **k: opened.append(a)), \
+                        mock.patch("sys.stderr", new_callable=io.StringIO), \
+                        mock.patch("sys.stdout", new_callable=io.StringIO):
+                    run_muse.ensure_ui()
+                    enabled = run_muse.ui_enabled()
+        finally:
+            run_muse._ui_blocked = False
+        self.assertEqual(opened, [])
+        self.assertEqual(killed, [])
+        self.assertFalse(enabled)
+
+
 class StaleRunningTest(unittest.TestCase):
     def test_old_running_without_report_is_not_running(self):
         with tempfile.TemporaryDirectory() as td:
@@ -383,6 +455,73 @@ class DeleteRunTest(unittest.TestCase):
                 self.assertFalse((runs / "run-crashed").exists())
             finally:
                 server.INDEX = old
+
+
+class NoInventedZerosTest(unittest.TestCase):
+    def _read(self, run):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        runs = Path(td.name) / "muse-runs"
+        (runs / run["run_id"]).mkdir(parents=True)
+        (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+        old = server.INDEX
+        server.INDEX = runs / "index.jsonl"
+        try:
+            return server.read_logs(run["run_id"])
+        finally:
+            server.INDEX = old
+
+    def test_no_durations_and_no_api_ms_is_none_not_zero(self):
+        # Echo shape: a call record exists but nothing timed it.
+        data = self._read({
+            "run_id": "run-echo", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "echo", "provider": "echo",
+            "exit_code": 0, "error": None, "reply": "hi", "wall_ms": 900,
+            "status": "completed",
+            "calls": [{"duration_ms": None, "input_tokens": 1,
+                       "output_tokens": 1}]})
+        self.assertIsNone(data["model_ms"])
+        self.assertIsNone(data["sessions"][0]["model_ms"])
+        self.assertIsNone(data["sessions"][0]["overhead_ms"])
+        self.assertIsNone(data["time_split"]["model_ms"])
+
+    def test_no_calls_at_all_is_none(self):
+        data = self._read({
+            "run_id": "run-empty", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "m", "provider": "meta",
+            "exit_code": 0, "error": None, "reply": "", "wall_ms": 900,
+            "status": "interrupted", "calls": []})
+        self.assertIsNone(data["model_ms"])
+        self.assertIsNone(data["sessions"][0]["model_ms"])
+
+    def test_a_real_zero_stays_zero(self):
+        data = self._read({
+            "run_id": "run-zero", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "m", "provider": "meta",
+            "exit_code": 0, "error": None, "reply": "", "wall_ms": 900,
+            "status": "completed",
+            "calls": [{"duration_ms": 0, "input_tokens": 1,
+                       "output_tokens": 1}]})
+        self.assertEqual(data["model_ms"], 0)
+        self.assertEqual(data["sessions"][0]["model_ms"], 0)
+        self.assertEqual(data["sessions"][0]["overhead_ms"], 900)
+
+    def test_terminal_summary_prints_model_dash_when_unrecorded(self):
+        import contextlib
+        report = {"status": "interrupted", "provider": "meta",
+                  "model": "m", "metrics_unavailable": False,
+                  "error": None, "timeout_seconds": 5, "run_id": "r-x"}
+        r = {"wall_ms": 5000, "calls": [{"duration_ms": None,
+                                        "input_tokens": None,
+                                        "output_tokens": None}],
+             "api_ms": None, "totals": None, "reply": "",
+             "needs_approval": None}
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as td, \
+                contextlib.redirect_stdout(out):
+            run_muse.print_summary(report, r, Path(td))
+        self.assertIn("model –", out.getvalue())
+        self.assertNotIn("model 0 ms", out.getvalue())
 
 
 class OverheadClampTest(unittest.TestCase):
@@ -584,6 +723,174 @@ class RepeatArgTest(unittest.TestCase):
         self.assertIn("invalid choice", err)
         err = self._main_error(["run-muse", "--compare", "what is 2+2"])
         self.assertIn("invalid choice", err)
+
+
+class TerminalOutputTest(unittest.TestCase):
+    def _summary_out(self, report, r, env=None):
+        import contextlib
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.dict(os.environ, env or {}, clear=False), \
+                contextlib.redirect_stdout(out):
+            if not env or "RUN_MUSE_NO_UI" not in env:
+                os.environ.pop("RUN_MUSE_NO_UI", None)
+            run_muse.print_summary(report, r, Path(td))
+        return out.getvalue()
+
+    def _report(self, **over):
+        report = {"status": "completed", "provider": "meta", "model": "m",
+                  "metrics_unavailable": False, "error": None,
+                  "timeout_seconds": 5, "run_id": "r-x"}
+        report.update(over)
+        return report
+
+    def _result(self, **over):
+        r = {"wall_ms": 10, "calls": [{"duration_ms": 5,
+                                      "input_tokens": 1,
+                                      "output_tokens": 1}],
+             "api_ms": None, "totals": None, "reply": "",
+             "needs_approval": None}
+        r.update(over)
+        return r
+
+    def test_long_reply_gets_a_full_reply_marker(self):
+        out = self._summary_out(self._report(), self._result(reply="x" * 600))
+        self.assertIn("x" * 500, out)
+        self.assertIn("… (full reply: muse-runs/r-x/report.json)", out)
+        self.assertNotIn("x" * 501, out)
+        short = self._summary_out(self._report(), self._result(reply="short"))
+        self.assertIn("short", short)
+        self.assertNotIn("full reply", short)
+
+    def test_ui_line_skipped_when_no_ui_is_set(self):
+        hidden = self._summary_out(self._report(), self._result(),
+                                   env={"RUN_MUSE_NO_UI": "1"})
+        self.assertNotIn("UI:", hidden)
+        shown = self._summary_out(self._report(), self._result(), env={})
+        self.assertIn("UI:", shown)
+
+    def test_stdout_flushed_before_error_on_stderr(self):
+        events = []
+
+        class FakeStream:
+            def __init__(self, name):
+                self.name = name
+
+            def write(self, text):
+                if text.strip():
+                    events.append((self.name, text.strip()))
+                return len(text)
+
+            def flush(self):
+                events.append((self.name, "FLUSH"))
+
+        report = self._report(status="failed", error="boom")
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch("sys.stdout", FakeStream("out")), \
+                mock.patch("sys.stderr", FakeStream("err")):
+            run_muse.print_summary(report, self._result(), Path(td))
+        flush_at = events.index(("out", "FLUSH"))
+        error_at = next(i for i, e in enumerate(events)
+                        if e[0] == "err" and "boom" in e[1])
+        self.assertLess(flush_at, error_at)
+
+    def test_compare_ends_with_a_closing_line(self):
+        import contextlib
+        import re
+        statuses = iter([{"status": "completed"}, {"status": "failed"}])
+        out = io.StringIO()
+        with mock.patch.dict(os.environ):
+            os.environ.pop("RUN_MUSE_NO_UI", None)
+            with mock.patch.object(
+                    run_muse, "compare_models_for",
+                    lambda mode: [("meta", "a"), ("meta", "b")]), \
+                    mock.patch.object(run_muse, "run_prompt",
+                                      lambda *a, **k: next(statuses)), \
+                    contextlib.redirect_stdout(out):
+                run_muse.run_compare("hi", "meta", False, None, 1)
+        match = re.search(
+            r"Compare set ([0-9a-f]{8}) done: 1 completed of 2\. "
+            r"UI: \S+compare/\1", out.getvalue())
+        self.assertIsNotNone(match, out.getvalue())
+
+    def test_help_mentions_ctrl_c(self):
+        text = run_muse.handle_command("/help", {"mode": "single"})["text"]
+        self.assertIn("Ctrl+C stops a run", text)
+
+
+class SigintTest(unittest.TestCase):
+    def test_main_restores_default_sigint_handler(self):
+        # A launcher started in the background of a non-interactive
+        # shell inherits SIGINT as ignored, so kill -INT would do
+        # nothing. main() must restore the default handler.
+        import signal as signal_mod
+        previous = signal_mod.signal(signal_mod.SIGINT, signal_mod.SIG_IGN)
+        try:
+            with mock.patch.object(sys, "argv",
+                                   ["run-muse", "--repeat", "2", "hi"]):
+                with self.assertRaises(SystemExit):
+                    run_muse.main()
+            self.assertEqual(signal_mod.getsignal(signal_mod.SIGINT),
+                             signal_mod.default_int_handler)
+        finally:
+            signal_mod.signal(signal_mod.SIGINT, previous)
+
+
+class ExitCodeTest(unittest.TestCase):
+    def test_status_to_exit_code_mapping(self):
+        self.assertEqual(run_muse.exit_code_for("completed"), 0)
+        self.assertEqual(run_muse.exit_code_for("interrupted"), 130)
+        for status in ("failed", "timeout", "needs_approval"):
+            self.assertEqual(run_muse.exit_code_for(status), 1, status)
+
+    def test_single_run_main_returns_status_code(self):
+        for status, code in (("completed", 0), ("failed", 1),
+                             ("timeout", 1), ("needs_approval", 1),
+                             ("interrupted", 130)):
+            with mock.patch.object(sys, "argv", ["run-muse", "hi"]), \
+                    mock.patch.object(run_muse, "ensure_ui", lambda: None), \
+                    mock.patch.object(
+                        run_muse, "run_prompt",
+                        lambda *a, **k: {"status": status}):
+                self.assertEqual(run_muse.main(), code, status)
+
+    def test_compare_main_returns_compare_code(self):
+        with mock.patch.object(sys, "argv",
+                               ["run-muse", "--compare", "meta", "hi"]), \
+                mock.patch.object(run_muse, "ensure_ui", lambda: None), \
+                mock.patch.object(run_muse, "run_compare",
+                                  lambda *a, **k: 1):
+            self.assertEqual(run_muse.main(), 1)
+
+    def test_run_compare_aggregates_statuses(self):
+        statuses = iter([{"status": "completed"}, {"status": "failed"}])
+        with mock.patch.object(run_muse, "compare_models_for",
+                               lambda mode: [("meta", "a"), ("meta", "b")]), \
+                mock.patch.object(run_muse, "run_prompt",
+                                  lambda *a, **k: next(statuses)):
+            self.assertEqual(
+                run_muse.run_compare("hi", "meta", False, None, 1), 1)
+        statuses = iter([{"status": "completed"},
+                         {"status": "interrupted"}])
+        with mock.patch.object(run_muse, "compare_models_for",
+                               lambda mode: [("meta", "a"), ("meta", "b")]), \
+                mock.patch.object(run_muse, "run_prompt",
+                                  lambda *a, **k: next(statuses)):
+            self.assertEqual(
+                run_muse.run_compare("hi", "meta", False, None, 1), 130)
+        statuses = iter([{"status": "completed"}, {"status": "completed"}])
+        with mock.patch.object(run_muse, "compare_models_for",
+                               lambda mode: [("meta", "a"), ("meta", "b")]), \
+                mock.patch.object(run_muse, "run_prompt",
+                                  lambda *a, **k: next(statuses)):
+            self.assertEqual(
+                run_muse.run_compare("hi", "meta", False, None, 1), 0)
+
+    def test_prompt_loop_still_exits_zero(self):
+        with mock.patch.object(sys, "argv", ["run-muse"]), \
+                mock.patch.object(run_muse, "ensure_ui", lambda: None), \
+                mock.patch("builtins.input", side_effect=EOFError):
+            self.assertEqual(run_muse.main(), 0)
 
 
 class CompareModelsForTest(unittest.TestCase):
