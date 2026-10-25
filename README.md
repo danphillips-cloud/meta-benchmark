@@ -4,7 +4,7 @@ A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows wh
 
 You can also compare models on the same prompt: two Meta models, or Meta against Claude.
 
-![Overview: wall time split into model, tools, approval wait and Muse, with a plain-words summary](docs/overview.png)
+<img src="docs/overview.png" width="720" alt="Overview: wall time split into model, tools, approval wait and Muse, with a plain-words summary">
 
 ## Requirements
 
@@ -39,19 +39,16 @@ ANTHROPIC_API_KEY=your-anthropic-key
 
 **On the page**
 
-The page follows a run in progress and refreshes every two seconds.
+- **Live.** The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
+- **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
+- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
+- **Compare** shows medians for a compare set, with the fastest marked.
+- **Timeline** lists the model calls and every step Muse recorded, in order.
+- **Export** saves the selected run as CSV or JSON.
 
-| To | Use |
-|---|---|
-| See where the time went | **Overview**: the time cards and **What happened** |
-| Find a run | **Runs**: sort, filter, click a row |
-| Compare runs | **Compare** |
-| See every step | **Timeline** |
-| Save a run | **Export** menu |
+<img src="docs/runs.png" width="720" alt="Runs: every run, sortable and filterable">
 
-![Runs: every run, sortable and filterable](docs/runs.png)
-
-![Timeline: every step Muse recorded, in order](docs/timeline.png)
+<img src="docs/timeline.png" width="720" alt="Timeline: model calls and every step Muse recorded, in order">
 
 ## Usage
 
