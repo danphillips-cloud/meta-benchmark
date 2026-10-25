@@ -10,7 +10,7 @@ Work in progress. I've tested it on macOS with Muse Code 1.4.13. Expect rough ed
 
 ## Requirements
 
-Python 3.9 or newer, on macOS or Linux. The `python3` that comes with macOS works. No packages to install. Muse Code. Claude Code runs also need the `claude` CLI.
+Python 3.9 or newer on macOS or Linux, and Muse Code. Claude Code runs also need the `claude` CLI.
 
 ## Quick start
 
@@ -21,36 +21,7 @@ muse login    # first time only
 ./run-muse
 ```
 
-## API keys
-
-Muse runs need no key. Claude Code and raw API runs read keys from a `.env` file in the repo root, which is gitignored:
-
-```sh
-MODEL_API_KEY=your-meta-key
-ANTHROPIC_API_KEY=your-anthropic-key
-```
-
-## How to use
-
-**In the terminal**
-
-1. Run `./run-muse`. The results page opens at http://127.0.0.1:8765.
-2. Type a prompt at `muse>` and press Enter. Each prompt is one run.
-3. The reply prints with one summary line: wall time, model time, tokens.
-4. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
-
-**On the page**
-
-- **Live.** The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
-- **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
-- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
-- **Compare** shows medians for a compare set, with the fastest marked.
-- **Timeline** lists the model calls and every step Muse recorded, in order.
-- **Export** saves the selected run as CSV or JSON.
-
-<img src="docs/runs.png" width="720" alt="Runs: every run, sortable and filterable">
-
-<img src="docs/timeline.png" width="720" alt="Timeline: model calls and every step Muse recorded, in order">
+The results page opens at http://127.0.0.1:8765. Type a prompt at `muse>` and press Enter. Each prompt is one run. The reply prints with a summary line: wall time, model time and tokens.
 
 ## Usage
 
@@ -67,9 +38,32 @@ ANTHROPIC_API_KEY=your-anthropic-key
 | Meta vs Claude | `./run-muse --compare claude` |
 | Custom | `./run-muse --compare custom` |
 
-Meta vs Claude uses API keys and is billed per token. Single and Meta vs Meta use the Muse subscription.
+Single and Meta vs Meta use the Muse subscription. Meta vs Claude uses API keys and is billed per token.
 
-In the loop, `/mode meta`, `/mode claude`, and `/mode single` switch mode. `/help` lists commands. The prompt shows the mode, for example `muse[meta]>`.
+In the prompt loop, `/mode meta`, `/mode claude` and `/mode single` switch mode, and the prompt shows it, for example `muse[meta]>`. `/help` lists commands. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
+
+### API keys
+
+Only Claude Code and raw API runs need keys. Put them in a `.env` file in the repo root. It's gitignored.
+
+```sh
+MODEL_API_KEY=your-meta-key
+ANTHROPIC_API_KEY=your-anthropic-key
+```
+
+## The page
+
+The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
+
+- **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
+- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
+- **Compare** shows medians for a compare set, with the fastest marked.
+- **Timeline** lists the model calls and every step Muse recorded, in order.
+- **Export** saves the selected run as CSV or JSON.
+
+<img src="docs/runs.png" width="720" alt="Runs: every run, sortable and filterable">
+
+<img src="docs/timeline.png" width="720" alt="Timeline: model calls and every step Muse recorded, in order">
 
 ## Reading the numbers
 
