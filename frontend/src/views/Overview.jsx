@@ -125,6 +125,8 @@ export default function Overview({ data, onSelect, onGoto }) {
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
   const scope = overviewScope(data, shared);
   const split = data.time_split || {};
+  const retryTotal = events.reduce((a, e) => a + (e["retries"] || 0), 0);
+  const stalledTotal = events.reduce((a, e) => a + (e["stalled_ms"] || 0), 0);
   const toolP = fmtDurParts(split.tool_ms ?? null), apprP = fmtDurParts(split.approval_ms ?? null), museP = fmtDurParts(split.muse_ms ?? null);
   const whatLines = explainLines({ wall_ms: wall, model_ms: modelTotal, provider: data.provider || sel.provider, events, split });
   const baseline = usualBaseline(sel.run_id ? sel : null, data.sessions || []);
@@ -188,7 +190,9 @@ export default function Overview({ data, onSelect, onGoto }) {
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
           detail={(hasEvents ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
-          detail={(data.provider === "claude-code" && modelTotal != null ? share(modelTotal) + " · reported API time" : share(modelTotal)) + usualModel} />
+          detail={retryTotal > 0 && stalledTotal > 0
+            ? fmtDur(stalledTotal) + " stalled before retry"
+            : (data.provider === "claude-code" && modelTotal != null ? share(modelTotal) + " · reported API time" : share(modelTotal)) + usualModel} />
         <StatCard label="Tools" icon="overhead" value={toolP[0]} unit={toolP[1].trim()} title={split.tool_ms == null ? "" : fmtMs(split.tool_ms) + " ms"}
           detail={share(split.tool_ms ?? null)} />
         <StatCard label="Approval wait" icon="overhead" value={apprP[0]} unit={apprP[1].trim()} title={split.approval_ms == null ? "" : fmtMs(split.approval_ms) + " ms"}
@@ -213,7 +217,7 @@ export default function Overview({ data, onSelect, onGoto }) {
       <section className="panel" aria-label="Per-call breakdown" style={{ marginTop: 12 }}>
         <div className="panelHead"><div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div></div>
         <PerCallChart events={events} provider={data.provider || sel.provider} />
-        {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span><span>line = input tokens</span></div> : null}
+        {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span>{retryTotal > 0 ? <span><span className="sw swStalled"></span>stalled</span> : null}<span>line = input tokens</span></div> : null}
       </section>
       <section className="panel" aria-label="Shared filters" style={{ marginTop: 12, padding: "12px 16px" }}>
         <div className="label" style={{ marginBottom: 8 }}>Filters · shared with Runs</div>

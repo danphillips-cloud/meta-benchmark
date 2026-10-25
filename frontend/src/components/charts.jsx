@@ -70,6 +70,7 @@ function PerCallTip({ active, payload }) {
     <div className="chartTip">
       <div className="chartTipTitle">{"Call " + d.call}</div>
       <div>{"Model: " + (d.model_ms == null ? "not reported" : fmtSec(d.model_ms))}</div>
+      {d.retries > 0 && d.stalled_ms != null ? <div>{"Stalled: " + fmtSec(d.stalled_ms) + " (" + d.retries + (d.retries === 1 ? " retry" : " retries") + ")"}</div> : null}
       <div>{"Input: " + fmt(d.input_tokens) + " tokens"}</div>
       <div>{"Cached: " + fmt(d.cached_tokens) + " tokens"}</div>
     </div>
@@ -86,6 +87,8 @@ export function PerCallChart({ events, provider }) {
     ...d,
     label: String(d.call),
     model_s: d.model_ms == null ? 0 : d.model_ms / 1000,
+    active_s: d.model_ms == null ? 0 : Math.max(0, d.model_ms - (d.stalled_ms || 0)) / 1000,
+    stalled_s: (d.stalled_ms || 0) / 1000,
   }));
   return (
     <div style={{ width: "100%", height: 220 }}>
@@ -98,7 +101,8 @@ export function PerCallChart({ events, provider }) {
           <YAxis yAxisId="tokens" orientation="right" tick={{ fontSize: 11, fill: "var(--muted)" }} tickLine={false} axisLine={false} width={52}
             tickFormatter={(v) => fmt(v)} />
           <Tooltip content={<PerCallTip />} cursor={{ fill: "var(--chip)", opacity: 0.5 }} />
-          <Bar yAxisId="time" dataKey="model_s" name="Model time" fill="var(--barmodel)" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+          <Bar yAxisId="time" dataKey="active_s" stackId="call" name="Model time" fill="var(--barmodel)" isAnimationActive={false} />
+          <Bar yAxisId="time" dataKey="stalled_s" stackId="call" name="Stalled" fill="var(--barstalled)" radius={[3, 3, 0, 0]} isAnimationActive={false} />
           <Line yAxisId="tokens" type="monotone" dataKey="input_tokens" name="Input tokens" stroke="var(--ink)" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
         </ComposedChart>
       </ResponsiveContainer>

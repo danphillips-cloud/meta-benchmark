@@ -240,6 +240,8 @@ export function compareSessions(a, b, sort, dir) {
 
 export function liveStateText(live) {
   if (!live || !live.state) return "";
+  if (live.state === "retrying connection")
+    return "Retrying connection" + (live.attempt ? " (attempt " + live.attempt + ")" : "");
   if (live.state === "waiting for approval")
     return "Waiting for approval" + (live.tool ? ": " + live.tool : "");
   if (live.state === "tool running")
@@ -291,6 +293,15 @@ export function explainLines({ wall_ms, model_ms, provider, events, split } = {}
     lines.push("Cache covered " + fmt(cacheSum) + " of " + fmt(inSum)
       + " input tokens (" + pct + "%).");
   }
+  chrono.forEach((e, i) => {
+    const retries = e["retries"] || 0;
+    const stalled = e["stalled_ms"];
+    if (retries > 0 && stalled != null) {
+      lines.push("Call " + (i + 1) + " retried "
+        + (retries === 1 ? "once" : retries + " times")
+        + " after the connection stalled for " + fmtDur(stalled) + ".");
+    }
+  });
   if (split && split.tool_ms != null && split.tool_ms > 0) {
     lines.push("Tools ran for " + fmtDur(split.tool_ms) + ".");
   }
@@ -331,6 +342,8 @@ export function perCallSeries(events, provider) {
     input_tokens: e["gen_ai.usage.input_tokens"] ?? null,
     cached_tokens: e["gen_ai.usage.cached_tokens"] ?? null,
     output_tokens: e["gen_ai.usage.output_tokens"] ?? null,
+    retries: e["retries"] || 0,
+    stalled_ms: e["stalled_ms"] ?? null,
   }));
 }
 

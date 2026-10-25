@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 27
+VERSION = 28
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -227,9 +227,21 @@ def read_logs(run_id=None):
             "gen_ai.usage.output_tokens": call.get("output_tokens"),
             "gen_ai.usage.cached_tokens": call.get("cached_tokens"),
             "gen_ai.usage.reasoning_tokens": call.get("reasoning_tokens"),
+            "retries": call.get("retries") or 0,
+            "stalled_ms": call.get("stalled_ms"),
             "operation": "model call",
             "ok": selected.get("exit_code") == 0,
         })
+    # Retry data lives in the session log, not in old run summaries:
+    # merge it per call (call order) whenever the log is available.
+    if selected.get("session_id"):
+        _log = live_session_log(selected["session_id"])
+        if _log:
+            _infos = muse_log.retry_infos(muse_log.read_records(_log))
+            for _i, _info in enumerate(_infos):
+                if _i < len(events):
+                    events[_i]["retries"] = _info["retries"]
+                    events[_i]["stalled_ms"] = _info["stalled_ms"]
     events.reverse()
     if selected.get("error") or selected.get("exit_code") not in (0, None):
         errors.append({"at": selected.get("at"), "operation": selected.get("run_id"),
