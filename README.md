@@ -4,6 +4,8 @@ A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows wh
 
 You can also compare models on the same prompt: two Meta models, or Meta against Claude.
 
+![Overview: wall time split into model, tools, approval wait and Muse, with a plain-words summary](docs/overview.png)
+
 ## Requirements
 
 Python 3 and macOS or Linux. No packages to install. Muse Code. Claude Code runs also need the `claude` CLI.
@@ -37,21 +39,26 @@ ANTHROPIC_API_KEY=your-anthropic-key
 
 **On the page**
 
-The page refreshes every two seconds, so calls show up while a run is live.
+The page follows a run in progress and refreshes every two seconds.
 
 | To | Use |
 |---|---|
-| Pick a run | **Session** dropdown, or click a row in **Sessions, grouped** |
-| See where the time went | **Wire** vs **Total** cards. See Reading the numbers |
-| Compare two runs | **Compare sessions** |
-| See every step | **Full timeline**, then **Show full timeline** |
-| Save a run | **Export CSV**, **Export JSON**, or **Copy summary** |
+| See where the time went | **Overview**: the time cards and **What happened** |
+| Find a run | **Runs**: sort, filter, click a row |
+| Compare runs | **Compare** |
+| See every step | **Timeline** |
+| Save a run | **Export** menu |
+
+![Runs: every run, sortable and filterable](docs/runs.png)
+
+![Timeline: every step Muse recorded, in order](docs/timeline.png)
 
 ## Usage
 
 ```sh
 ./run-muse "write a python script that counts lines in a file, then run it on itself"
 ./run-muse --minimal "what is 2+2"                # controlled context
+./run-muse --watch                                # time your own Muse session, read-only
 ```
 
 | Mode | Command |
@@ -67,9 +74,9 @@ In the loop, `/mode meta`, `/mode claude`, and `/mode single` switch mode. `/hel
 
 ## Reading the numbers
 
-**Wire** is one model call. **Total** is the whole run. The gap is local overhead.
+**Wall** is the whole run. It splits into **Model** (the model thinking), **Tools** (commands Muse ran), **Approval wait**, and **Muse** (everything else Muse did). All four come from timestamps in Muse's own log. A dash means the log didn't record it.
 
-Claude Code doesn't report per-call time, so its Wire column is blank and Model total uses its API time.
+Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
 
 ## Advanced
 
