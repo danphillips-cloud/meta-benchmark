@@ -752,6 +752,26 @@ class DefaultTimeoutTest(unittest.TestCase):
                                    "run_muse_exec", timeout=42), (42, 42))
 
 
+class RunProcessTest(unittest.TestCase):
+    def test_wall_time_excludes_reader_join(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = run_muse.run_process(
+                ["sh", "-c", "sleep 3 & echo hi"], Path(td),
+                dict(os.environ), Path(td) / "out.log", timeout=10)
+            self.assertLess(result["wall_ms"], 2000)
+            self.assertTrue(
+                any("hi" in line for _, line in result["lines"]))
+
+    def test_timeout_killpg_process_lookup(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(run_muse.os, "killpg",
+                                   side_effect=ProcessLookupError):
+                result = run_muse.run_process(
+                    ["sh", "-c", "sleep 0.3"], Path(td),
+                    dict(os.environ), Path(td) / "out.log", timeout=0.1)
+            self.assertTrue(result["timed_out"])
+
+
 class IndexHtmlTest(unittest.TestCase):
     """Static contract for the single-file results page."""
 
