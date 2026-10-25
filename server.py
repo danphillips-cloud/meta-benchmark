@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 25
+VERSION = 26
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -167,9 +167,13 @@ def read_logs(run_id=None):
         "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
         "last_output_tokens": (r.get("calls") or [{}])[-1].get("output_tokens"),
     } for r in reversed(runs)]
-    # With no explicit pick, open on the newest completed run so the
-    # page does not land on a running, failed, or interrupted run.
+    # With no explicit pick, follow a run in progress so it can be
+    # watched live. Otherwise open on the newest completed run, not a
+    # failed or interrupted one. Stale "running" entries were already
+    # marked interrupted above, so they can't take over.
     selected = next((r for r in runs if r.get("run_id") == run_id), None) \
+        or next((r for r in reversed(runs) if r.get("status") == "running"),
+                None) \
         or next((r for r in reversed(runs) if r.get("status") == "completed"),
                 None) \
         or (runs[-1] if runs else {})
