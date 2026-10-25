@@ -1,10 +1,8 @@
 # meta-benchmark
 
-A local benchmark tool for Muse Code.
+A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was Muse's own overhead. One command, runs locally, nothing to install. It tells you which part is slow before you guess.
 
-When a Muse run feels slow, the cause could be the model, the size of the context, or local work between calls. I built this to measure each one instead of guessing.
-
-It runs prompts through Muse or Claude Code and records every model call. A local web page shows model time, local overhead, and tokens for each run.
+You can also compare models on the same prompt: two Meta models, or Meta against Claude.
 
 ## Requirements
 
