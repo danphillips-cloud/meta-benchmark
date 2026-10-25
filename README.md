@@ -1,10 +1,10 @@
 # meta-benchmark
 
-A local benchmark tool for Muse Code.
+A stopwatch for AI coding agents.
 
-When a Muse run feels slow, the cause could be the model, the size of the context, or local work between calls. I built this to measure each one instead of guessing.
+I built it because a Muse run was slow and I wanted to know why. Each run splits into the model's thinking time and the agent's own overhead, with tokens for every call. One command, runs locally, nothing to install.
 
-It runs prompts through Muse or Claude Code and records every model call. A local web page shows model time, local overhead, and tokens for each run.
+It can also run the same prompt on two models, or through Muse and Claude Code, to compare them.
 
 ## Requirements
 
