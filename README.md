@@ -1,6 +1,8 @@
 # meta-benchmark
 
-A stopwatch for AI coding agents. Give it a prompt and it runs it through Muse or Claude Code, on Meta's or Anthropic's models, then shows where the time went: how long the model spent thinking, and how much was the agent's own overhead. One command, runs locally, nothing to install. It tells you which part is slow before you guess.
+A stopwatch for AI coding agents. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was the agent's own overhead. One command, runs locally, nothing to install. It tells you which part is slow before you guess.
+
+You can also compare models on the same prompt: two Meta models, or Meta against Claude.
 
 ## Requirements
 
