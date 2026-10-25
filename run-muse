@@ -261,14 +261,22 @@ def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None):
             threading.Thread(target=writer, daemon=True).start()
         try:
             exit_code = proc.wait(timeout=timeout)
+            wall_ms = round((time.monotonic() - started) * 1000)
         except subprocess.TimeoutExpired:
             timed_out = True
-            os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 exit_code = proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 exit_code = proc.wait()
+            wall_ms = round((time.monotonic() - started) * 1000)
         except KeyboardInterrupt:
             interrupted = True
             try:
@@ -278,11 +286,15 @@ def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None):
             try:
                 exit_code = proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 exit_code = proc.wait()
+            wall_ms = round((time.monotonic() - started) * 1000)
         read_thread.join(timeout=5)
     return {
-        "wall_ms": round((time.monotonic() - started) * 1000),
+        "wall_ms": wall_ms,
         "exit_code": exit_code, "timed_out": timed_out,
         "interrupted": interrupted, "lines": lines,
     }
