@@ -752,5 +752,30 @@ class DefaultTimeoutTest(unittest.TestCase):
                                    "run_muse_exec", timeout=42), (42, 42))
 
 
+class IndexHtmlTest(unittest.TestCase):
+    """Static contract for the single-file results page."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = (Path(__file__).parent / "index.html").read_text()
+
+    def test_three_way_compare_hooks_present(self):
+        # One prompt run 3 ways (a comparison set) gets a median table plus
+        # a round-by-leg matrix; manual compare takes two extra sessions.
+        # Dashboard shell: sidebar views persisted in localStorage, a
+        # removable selected-run chip, recent-runs chart, medians panel.
+        for marker in ("roundMatrix", "compareSelect2", "renderCompareSet",
+                       "callChart", "renderCallChart", "recentRunsChart",
+                       "renderRecentRuns", "medianList", "renderMedians",
+                       "data-view-panel", "muse-view", "selectedChip",
+                       "chipClear", "runList"):
+            self.assertIn(marker, self.html)
+
+    def test_missing_values_never_become_zero(self):
+        # A missing metric must render as –, never as 0 in a delta.
+        self.assertNotIn("?? 0) - (", self.html)
+        self.assertIn("medians over completed runs only", self.html)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
