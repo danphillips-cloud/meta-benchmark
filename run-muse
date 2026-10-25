@@ -104,6 +104,36 @@ def endpoint_key_name(model):
         else "ANTHROPIC_API_KEY"
 
 
+_harness_version_cache = {}
+
+
+def harness_version(provider):
+    """Harness version for this provider, read once per process.
+
+    Muse runs use `muse --version`, Claude Code runs use
+    `claude --version`, raw API runs store None. A failed version
+    command stores None instead of failing the run.
+    """
+    if provider == "anthropic":
+        return None
+    if provider in _harness_version_cache:
+        return _harness_version_cache[provider]
+    cmd = ["claude", "--version"] if provider == "claude-code" \
+        else ["muse", "--version"]
+    version = None
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=5)
+        if result.returncode == 0:
+            text = (result.stdout or "").strip()
+            if text:
+                version = text.splitlines()[0].strip() or None
+    except Exception:
+        version = None
+    _harness_version_cache[provider] = version
+    return version
+
+
 PAID_PROVIDERS = ("claude-code", "anthropic")
 
 
@@ -566,6 +596,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         if provider not in ("anthropic", "claude-code") else None
     context_mode = "bare" if provider == "claude-code" \
         else ("minimal" if minimal else "full")
+    version = harness_version(provider)
     running = {
         "at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id, "prompt": prompt,
@@ -574,6 +605,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
         "compare_mode": compare_mode,
+        "harness_version": version,
         "status": "running",
         "timeout_seconds": timeout, "command": None,
         "wall_ms": None, "exit_code": None, "reply": "",
@@ -619,6 +651,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
         "compare_mode": compare_mode,
+        "harness_version": version,
         "status": status, "timeout_seconds": timeout,
         "command": r["command"],
         "wall_ms": r["wall_ms"], "exit_code": r["exit_code"],

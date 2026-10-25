@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { buildRunsQuery, fmt, fmtDur, fmtDurParts, fmtMs, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters } from "../format.js";
-import { RecentRunsChart } from "../components/charts.jsx";
+import { buildRunsQuery, explainLines, fmt, fmtDur, fmtDurParts, fmtMs, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
+import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
 import { Chip, StatIcon, StatusPill } from "../components/widgets.jsx";
 import { copyText } from "../api.js";
@@ -122,6 +122,11 @@ export default function Overview({ data, onSelect, onGoto }) {
 
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
   const scope = overviewScope(data, shared);
+  const whatLines = explainLines({ wall_ms: wall, model_ms: modelTotal, provider: data.provider || sel.provider, events });
+  const baseline = usualBaseline(sel.run_id ? sel : null, data.sessions || []);
+  const usualWall = baseline && baseline.wall_ms != null ? " · usual " + fmtDur(baseline.wall_ms) : "";
+  const usualModel = baseline && baseline.model_ms != null ? " · usual " + fmtDur(baseline.model_ms) : "";
+  const usualOver = baseline && baseline.overhead_ms != null ? " · usual " + fmtDur(baseline.overhead_ms) : "";
 
   // Medians by provider/model, completed runs only.
   const groups = new Map();
@@ -159,6 +164,7 @@ export default function Overview({ data, onSelect, onGoto }) {
         <div id="runChips">
           <StatusPill status={data.status || sel.status} extra={elapsed} />
           {(data.provider || data.model) ? <Chip text={(data.provider || "?") + "/" + (data.model || "?")} cls="model" /> : null}
+          <Chip text={"version " + (sel.harness_version ?? data.harness_version ?? "–")} />
           {sel.context_mode ? <Chip text={sel.context_mode + " context"} /> : null}
           {sel.comparison_id ? <Chip text={"compare set " + sel.comparison_id + (sel.round ? " · round " + sel.round : "")} /> : null}
           {sel.at ? <Chip text={localTime(sel.at)} title={data.selected ? "Run " + data.selected : undefined} /> : null}
@@ -171,11 +177,11 @@ export default function Overview({ data, onSelect, onGoto }) {
       </section>
       <div className="stats">
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
-          detail={hasEvents ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–"} />
+          detail={(hasEvents ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
-          detail={data.provider === "claude-code" && modelTotal != null ? share(modelTotal) + " · reported API time" : share(modelTotal)} />
+          detail={(data.provider === "claude-code" && modelTotal != null ? share(modelTotal) + " · reported API time" : share(modelTotal)) + usualModel} />
         <StatCard label="Overhead" icon="overhead" hero value={overP[0]} unit={overP[1].trim()} title={overhead == null ? "" : fmtMs(overhead) + " ms"}
-          detail={share(overhead)} />
+          detail={share(overhead) + usualOver} />
         <div className="stat">
           <div className="statTop"><small>Input tokens</small><StatIcon kind="input" /></div>
           <div className="big"><span>{fmt(sel.input_tokens)}</span></div>
@@ -183,6 +189,19 @@ export default function Overview({ data, onSelect, onGoto }) {
         </div>
       </div>
       <p className="note" style={{ display: notes.length ? "" : "none" }}>{notes.join(" ")}</p>
+      {whatLines.length ? (
+        <section className="panel" aria-label="What happened" style={{ marginTop: 12 }}>
+          <div className="panelHead"><div><div className="pt">What happened</div><div className="ps">Recorded data only · no estimates</div></div></div>
+          <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 13.5 }}>
+            {whatLines.map((line, i) => <li key={i}>{line}</li>)}
+          </ul>
+        </section>
+      ) : null}
+      <section className="panel" aria-label="Per-call breakdown" style={{ marginTop: 12 }}>
+        <div className="panelHead"><div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div></div>
+        <PerCallChart events={events} provider={data.provider || sel.provider} />
+        {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span><span>line = input tokens</span></div> : null}
+      </section>
       <section className="panel" aria-label="Shared filters" style={{ marginTop: 12, padding: "12px 16px" }}>
         <div className="label" style={{ marginBottom: 8 }}>Filters · shared with Runs</div>
         <FilterBar state={shared} providers={providers} models={models} onChange={updateFilters} />
