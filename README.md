@@ -1,10 +1,6 @@
 # meta-benchmark
 
-A stopwatch for AI coding agents.
-
-I built it because a Muse run was slow and I wanted to know why. Each run splits into the model's thinking time and the agent's own overhead, with tokens for every call. One command, runs locally, nothing to install.
-
-It can also run the same prompt on two models, or through Muse and Claude Code, to compare them.
+A stopwatch for AI coding agents. Give it a prompt and it runs it through Muse or Claude Code, on Meta's or Anthropic's models, then shows where the time went: how long the model spent thinking, and how much was the agent's own overhead. One command, runs locally, nothing to install. It tells you which part is slow before you guess.
 
 ## Requirements
 
