@@ -10,7 +10,7 @@ Work in progress. I've tested it on macOS with Muse Code 1.4.13. Expect rough ed
 
 ## Requirements
 
-Python 3 and macOS or Linux. No packages to install. Muse Code. Claude Code runs also need the `claude` CLI.
+Python 3.9 or newer, on macOS or Linux. The `python3` that comes with macOS works. No packages to install. Muse Code. Claude Code runs also need the `claude` CLI.
 
 ## Quick start
 

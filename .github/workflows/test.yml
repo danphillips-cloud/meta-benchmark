@@ -8,11 +8,15 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # 3.9 is the oldest supported: it's what macOS ships.
+        python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - run: python3 test_tool.py
 
   frontend:
