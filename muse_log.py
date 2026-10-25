@@ -13,12 +13,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def sessions_dir():
+    return Path(os.environ.get("MUSE_SESSIONS_DIR")
+                or Path.home() / ".local/share/muse/sessions")
+
+
 def session_log_path(session_id):
     if not session_id:
         return None
-    base = Path(os.environ.get("MUSE_SESSIONS_DIR")
-                or Path.home() / ".local/share/muse/sessions")
-    files = list(base.glob(f"**/{session_id}/session.jsonl"))
+    files = list(sessions_dir().glob(f"**/{session_id}/session.jsonl"))
     return files[0] if files else None
 
 
@@ -49,6 +52,10 @@ def find_value(node, key):
     return None
 
 
+def _event_kind(e):
+    return ((e.get("payload") or {}).get("event") or {}).get("kind")
+
+
 def _records(path):
     for line in path.read_text(errors="replace").splitlines():
         try:
@@ -63,9 +70,8 @@ def _timeline_row(e, node):
     if not ts or not ptype:
         return None
     payload = e.get("payload") or {}
-    event = payload.get("event") or {}
     label = ptype
-    kind = event.get("kind") or payload.get("kind")
+    kind = _event_kind(e) or payload.get("kind")
     if kind:
         label += f" {kind}"
     return {
@@ -125,7 +131,7 @@ def read_records(path):
 def session_metadata(records):
     """Model, provider and harness version from the metadata record.
 
-    The version is the log's own `build` field (step 2). Falls back to
+    The version is the log's own `build` field. Falls back to
     the start-of-session intake record for the model when the metadata
     record lacks one. Values only — never workspace paths.
     """
@@ -153,36 +159,45 @@ _RETRYING = re.compile(r"retrying meta model stream in (\d+)ms \(attempt (\d+)/(
 
 
 def _status_message(e):
-    ev = (e.get("payload") or {}).get("event") or {}
-    if ev.get("kind") == "status":
+    if _event_kind(e) == "status":
+        ev = (e.get("payload") or {}).get("event") or {}
         return ev.get("message") or ""
     return ""
 
 
-def retry_infos(records):
-    """Per-call retry data from Muse's status events, in call order.
+def _fresh_retry():
+    return {"openings": [], "delays": [], "retries": 0}
 
-    `stalled_ms` is the time from attempt 1 opening to the final
-    attempt opening, minus the announced retry delays — the time the
-    connection sat stalled. It stays inside `duration_ms`; nothing
-    here changes model time. Calls with no status events get
-    retries 0 and stalled_ms None.
+
+def _stalled_ms(info):
+    if len(info["openings"]) < 2:
+        return None
+    return round(info["openings"][-1] - info["openings"][0]
+                 - sum(info["delays"]))
+
+
+def calls_from_records(records):
+    """Model calls (harvest shape) from already-parsed records.
+
+    Retries are built in the same loop: status events accumulate
+    until the record that carries the call's model_completed node,
+    so a retry can only attach to the call in its own record. A
+    record holding two nodes attaches the retry to the first node
+    only, so the retry is never counted twice. `stalled_ms` is the
+    time from attempt 1 opening to the final attempt opening, minus
+    the announced retry delays; it stays inside `duration_ms`.
+    Calls with no status events get retries 0 and stalled_ms None.
     """
-    infos = []
+    calls = []
     pending = None
-
-    def fresh():
-        return {"openings": [], "delays": [], "retries": 0}
-
     for e in records:
-        kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
+        kind = _event_kind(e)
         if kind == "model_request_configured":
-            pending = fresh()
-            continue
+            pending = _fresh_retry()
         msg = _status_message(e)
         if msg:
             if pending is None:
-                pending = fresh()
+                pending = _fresh_retry()
             opened = _OPENING.search(msg)
             if opened and e.get("recorded_at") is not None:
                 pending["openings"].append(e["recorded_at"] / 1000)
@@ -190,28 +205,13 @@ def retry_infos(records):
             if retry:
                 pending["retries"] += 1
                 pending["delays"].append(int(retry.group(1)))
+        nodes = list(find_model_completed(e))
+        if not nodes:
             continue
-        if kind == "model_completed":
-            info = pending or fresh()
-            stalled = None
-            if len(info["openings"]) >= 2:
-                stalled = round(info["openings"][-1] - info["openings"][0]
-                                - sum(info["delays"]))
-            infos.append({"retries": info["retries"],
-                          "stalled_ms": stalled})
-            pending = None
-    return infos
-
-
-def calls_from_records(records):
-    """Model calls (harvest shape) from already-parsed records."""
-    retries = retry_infos(records)
-    calls = []
-    for e in records:
-        for node in find_model_completed(e):
+        info = pending or _fresh_retry()
+        stalled = _stalled_ms(info)
+        for index, node in enumerate(nodes):
             usage = node["usage"]
-            info = retries[len(calls)] if len(calls) < len(retries) \
-                else {"retries": 0, "stalled_ms": None}
             calls.append({
                 "model": find_value(e, "model_id"),
                 "duration_ms": node.get("duration_ms"),
@@ -219,10 +219,17 @@ def calls_from_records(records):
                 "output_tokens": usage.get("output_tokens"),
                 "cached_tokens": usage.get("cached_tokens"),
                 "reasoning_tokens": usage.get("reasoning_tokens"),
-                "retries": info["retries"],
-                "stalled_ms": info["stalled_ms"],
+                "retries": info["retries"] if index == 0 else 0,
+                "stalled_ms": stalled if index == 0 else None,
             })
+        pending = None
     return calls
+
+
+def retry_infos(records):
+    """Per-call retry data, in call order (see calls_from_records)."""
+    return [{"retries": c["retries"], "stalled_ms": c["stalled_ms"]}
+            for c in calls_from_records(records)]
 
 
 def _paired_intervals(records, started_type, terminal_type, id_key):
@@ -312,7 +319,7 @@ def live_state(records):
     configured = completed = 0
     attempt = None
     for e in records:
-        kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
+        kind = _event_kind(e)
         if kind == "model_request_configured":
             configured += 1
             attempt = None
@@ -345,7 +352,7 @@ _ACTIVITY_TYPES = ("tool_batch.effect.terminal",
 
 
 def _is_activity(e):
-    kind = ((e.get("payload") or {}).get("event") or {}).get("kind")
+    kind = _event_kind(e)
     if kind in _ACTIVITY_KINDS:
         return True
     if e.get("payload_type") in _ACTIVITY_TYPES:
@@ -403,43 +410,27 @@ def split_turns(records):
     return turns
 
 
-def timeline_from_records(records):
-    rows = []
-    for e in records:
-        node = next(find_model_completed(e), None)
-        row = _timeline_row(e, node)
-        if row:
-            rows.append(row)
-    return _finish_timeline(rows)
-
-
 def newest_session_path():
-    base = Path(os.environ.get("MUSE_SESSIONS_DIR")
-                or Path.home() / ".local/share/muse/sessions")
-    files = list(base.glob("**/session.jsonl"))
+    files = list(sessions_dir().glob("**/session.jsonl"))
     if not files:
         return None
     return max(files, key=lambda p: p.stat().st_mtime)
 
 
-def live_calls_from_log(path):
-    """Calls and timeline from a log that may still be growing.
+def live_calls_from_records(records):
+    """Calls and timeline from parsed records of a growing log.
 
-    One call per record, from its last model_completed node, with the
-    model left as None (the live view labels calls from the run).
+    Calls come from calls_from_records, so a running run shows the
+    same calls (retry fields included) as the finished run.
     """
-    calls, timeline = [], []
-    for e in _records(path):
-        nodes = list(find_model_completed(e))
-        node = nodes[-1] if nodes else None
-        if node:
-            u = node["usage"]
-            calls.append({"model": None, "duration_ms": node.get("duration_ms"),
-                          "input_tokens": u.get("input_tokens"),
-                          "output_tokens": u.get("output_tokens"),
-                          "cached_tokens": u.get("cached_tokens"),
-                          "reasoning_tokens": u.get("reasoning_tokens")})
+    timeline = []
+    for e in records:
+        node = next(find_model_completed(e), None)
         row = _timeline_row(e, node)
         if row:
             timeline.append(row)
-    return calls, _finish_timeline(timeline)
+    return calls_from_records(records), _finish_timeline(timeline)
+
+
+def live_calls_from_log(path):
+    return live_calls_from_records(list(_records(path)))

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { fmtDur, fmtMs, legKey, localTime, median, shortText } from "../format.js";
+import { fastestOf, fmtDur, fmtMs, legKey, localTime, median, shortText } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
-import { StatusPill } from "../components/widgets.jsx";
+import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
 function CompareSet({ data, onSelect }) {
   const selected = (data.sessions || []).find((s) => s.run_id === data.selected);
@@ -27,17 +27,8 @@ function CompareSet({ data, onSelect }) {
   const wallMeds = legs.map((key) => {
     const done = byLeg.get(key).filter((s) => s.status === "completed");
     return { key, wall: median(done.map((s) => s.wall_ms)), ok: done.length };
-  }).filter((x) => x.ok > 0 && x.wall != null && x.wall > 0);
-  const fastestKeys = new Set();
-  let fastRatio = null;
-  if (wallMeds.length >= 2) {
-    const minWall = Math.min(...wallMeds.map((x) => x.wall));
-    const maxWall = Math.max(...wallMeds.map((x) => x.wall));
-    if (maxWall > minWall) {
-      fastRatio = maxWall / minWall;
-      wallMeds.filter((x) => x.wall === minWall).forEach((x) => fastestKeys.add(x.key));
-    }
-  }
+  }).filter((x) => x.ok > 0);
+  const { fastestKeys, fastRatio } = fastestOf(wallMeds);
   return (
     <section className="panel">
       <div className="panelHead"><div><div className="pt">{title}</div><div className="ps">{promptLine}</div></div></div>
@@ -63,10 +54,9 @@ function CompareSet({ data, onSelect }) {
                 medDur((s) => s.overhead_ms), medDur((s) => s.ttft_ms), med((s) => s.calls),
                 med((s) => s.input_tokens), med((s) => s.output_tokens), cost];
               return (
-                <tr key={key} className={"pickable" + (legKey(selected) === key ? " is-selected" : "")} tabIndex={0} role="button"
+                <tr key={key} className={"pickable" + (legKey(selected) === key ? " is-selected" : "")} role="button"
                   aria-label={"Open latest " + key + " run in this set"} title="Open this leg's latest run"
-                  onClick={() => { if (latest) onSelect(latest.run_id); }}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (latest) onSelect(latest.run_id); } }}>
+                  {...pickableProps(() => { if (latest) onSelect(latest.run_id); })}>
                   {cells.map((v, i) => (
                     <td key={i} className={i >= 2 ? "num" : undefined}>
                       {v}

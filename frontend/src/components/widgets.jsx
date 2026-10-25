@@ -1,8 +1,28 @@
-import React from "react";
+import React, { useState } from "react";
+import { STATUSES } from "../format.js";
+import { copyText } from "../api.js";
 
 export function StatusPill({ status, extra }) {
-  const known = ["completed", "failed", "interrupted", "timeout", "running", "needs_approval"].includes(status) ? status : "unknown";
+  const known = STATUSES.includes(status) ? status : "unknown";
   return <span className={"pill st-" + known}>{(status || "unknown") + (extra ? " · " + extra : "")}</span>;
+}
+
+export function CopyButton({ text, label, style }) {
+  const [copyStatus, setCopyStatus] = useState("");
+  return (
+    <>
+      <button className="btn" type="button" style={style} onClick={async () => { await copyText(text); setCopyStatus("Copied."); setTimeout(() => setCopyStatus(""), 2000); }}>{label}</button>
+      <span className="empty" style={{ marginLeft: 8 }}>{copyStatus}</span>
+    </>
+  );
+}
+
+export function pickableProps(onPick) {
+  return {
+    tabIndex: 0,
+    onClick: onPick,
+    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(); } },
+  };
 }
 
 export function Chip({ text, cls, title }) {

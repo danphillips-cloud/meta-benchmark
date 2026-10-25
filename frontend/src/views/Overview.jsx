@@ -1,10 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router";
-import { buildRunsQuery, explainLines, fmt, fmtDur, fmtDurParts, fmtMs, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
+import { DID_NOT_COMPLETE, buildRunsQuery, explainLines, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, legKey, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
-import { Chip, StatIcon, StatusPill } from "../components/widgets.jsx";
-import { copyText } from "../api.js";
+import { Chip, CopyButton, StatIcon, StatusPill } from "../components/widgets.jsx";
 
 function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
@@ -92,10 +91,8 @@ export default function Overview({ data, onSelect, onGoto }) {
   const runsState = parseRunsQuery(searchParams);
   const shared = parseSharedFilters(searchParams);
   const updateFilters = (patch) => setSearchParams(buildRunsQuery({ ...runsState, ...patch }), { replace: true });
-  const providers = [...new Set((data.sessions || []).map((s) => s.provider).filter(Boolean))].sort();
-  const models = [...new Set((data.sessions || []).map((s) => s.model).filter(Boolean))].sort();
+  const { providers, models } = filterOptions(data.sessions || []);
   const [replyExpanded, setReplyExpanded] = useState(false);
-  const [copyStatus, setCopyStatus] = useState("");
   const reply = data.reply || "";
   useEffect(() => { setReplyExpanded(false); }, [reply]);
 
@@ -105,22 +102,21 @@ export default function Overview({ data, onSelect, onGoto }) {
   const hasEvents = events.length > 0;
   const modelTotal = hasEvents ? (data.model_ms ?? wires.reduce((a, b) => a + b, 0)) : null;
   const wall = hasEvents ? data.wall_ms : null;
-  const overhead = (wall != null && modelTotal != null) ? Math.max(0, wall - modelTotal) : null;
   const share = (v) => (v != null && wall) ? Math.round(v / wall * 100) + "% of wall" : "–";
-  const wallP = fmtDurParts(wall), modelP = fmtDurParts(modelTotal), overP = fmtDurParts(overhead);
+  const wallP = fmtDurParts(wall), modelP = fmtDurParts(modelTotal);
   const inSum = events.reduce((a, e) => a + (e["gen_ai.usage.input_tokens"] ?? 0), 0);
   const cacheSum = events.reduce((a, e) => a + (e["gen_ai.usage.cached_tokens"] ?? 0), 0);
   const cacheShare = inSum ? Math.round(cacheSum / inSum * 100) + "% cached" : "cache –";
 
   const notes = [];
   if (data.provider === "claude-code")
-    notes.push("Claude Code does not report per-call time or per-call output tokens, so Wire, Slowest and last-call Output show –. Model total is the API time it reports for the whole run.");
+    notes.push("Claude Code does not report per-call time or per-call output tokens, so Model time per call, Slowest and last-call Output show –. Model total is the API time it reports for the whole run.");
   if (data.status === "running")
     notes.push("Run in progress — totals grow as calls land.");
-  if (["failed", "interrupted", "timeout"].includes(data.status || sel.status))
-    notes.push("This run did not complete. It stays in Runs, but it is excluded from all medians.");
-  if ((data.status || sel.status) === "needs_approval")
-    notes.push("This run was stopped because it waited for approval. It stays in Runs, but it is excluded from all medians.");
+  if (DID_NOT_COMPLETE.includes(data.status || sel.status))
+    notes.push((data.status || sel.status) === "needs_approval"
+      ? "This run was stopped because it waited for approval. It stays in Runs, but it is excluded from all medians."
+      : "This run did not complete. It stays in Runs, but it is excluded from all medians.");
 
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
   const scope = overviewScope(data, shared);
@@ -132,12 +128,11 @@ export default function Overview({ data, onSelect, onGoto }) {
   const baseline = usualBaseline(sel.run_id ? sel : null, data.sessions || []);
   const usualWall = baseline && baseline.wall_ms != null ? " · usual " + fmtDur(baseline.wall_ms) : "";
   const usualModel = baseline && baseline.model_ms != null ? " · usual " + fmtDur(baseline.model_ms) : "";
-  const usualOver = baseline && baseline.overhead_ms != null ? " · usual " + fmtDur(baseline.overhead_ms) : "";
 
   // Medians by provider/model, completed runs only.
   const groups = new Map();
   scope.runs.forEach((s) => {
-    const key = (s.provider || "?") + "/" + (s.model || "?");
+    const key = legKey(s);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
   });
@@ -149,17 +144,8 @@ export default function Overview({ data, onSelect, onGoto }) {
       over: median(runs.map((s) => s.overhead_ms)),
     };
   }).filter((r) => r.ok > 0).sort((a, b) => b.ok - a.ok || a.key.localeCompare(b.key));
-  const wallRows = rows.filter((r) => r.ok > 0 && r.wall != null && r.wall > 0);
-  const fastestKeys = new Set();
-  let fastRatio = null;
-  if (wallRows.length >= 2) {
-    const minWall = Math.min(...wallRows.map((r) => r.wall));
-    const maxWall = Math.max(...wallRows.map((r) => r.wall));
-    if (maxWall > minWall) {
-      fastRatio = maxWall / minWall;
-      wallRows.filter((r) => r.wall === minWall).forEach((r) => fastestKeys.add(r.key));
-    }
-  }
+  const wallRows = rows.filter((r) => r.ok > 0);
+  const { fastestKeys, fastRatio } = fastestOf(wallRows);
 
   const long = reply.length > 700;
   return (
@@ -232,13 +218,12 @@ export default function Overview({ data, onSelect, onGoto }) {
           </section>
           <section className="panel">
             <div className="panelHead"><div><div className="pt">Reply</div><div className="ps">{reply ? fmt(reply.length) + " characters" : "No reply recorded"}</div></div>
-              {reply ? <button className="btn" type="button" style={{ marginLeft: "auto", flex: "none" }} onClick={async () => { await copyText(reply); setCopyStatus("Copied."); setTimeout(() => setCopyStatus(""), 2000); }}>Copy reply</button> : null}
+              {reply ? <span style={{ marginLeft: "auto", flex: "none" }}><CopyButton text={reply} label="Copy reply" /></span> : null}
             </div>
             {reply
               ? <div className={"reply" + (long && !replyExpanded ? " collapsed" : "")} dangerouslySetInnerHTML={{ __html: replyHtml(reply) }} />
               : <div className="reply"><p className="emptyReply">No reply recorded for this run.</p></div>}
             {long ? <button className="btn" style={{ marginTop: 8 }} onClick={() => setReplyExpanded(!replyExpanded)}>{replyExpanded ? "Show less" : "Show full reply"}</button> : null}
-            <span className="empty" style={{ marginLeft: 8 }}>{copyStatus}</span>
           </section>
         </div>
         <div className="colStack">

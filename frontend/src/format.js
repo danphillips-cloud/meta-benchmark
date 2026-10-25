@@ -47,6 +47,33 @@ export function median(values) {
 
 export const legKey = (s) => (s.provider || "?") + "/" + (s.model || "?");
 
+export const STATUSES = ["completed", "running", "failed", "interrupted", "timeout", "needs_approval"];
+export const DID_NOT_COMPLETE = STATUSES.filter((s) => s !== "completed" && s !== "running");
+
+// Fastest group(s) by median wall time. Rows carry {key, wall};
+// returns the tied-fastest keys and the slowest/fastest ratio, or
+// no keys and a null ratio when fewer than two groups have a wall
+// time or all walls are equal.
+export function fastestOf(rows) {
+  const valid = (rows || []).filter((r) => r.wall != null && r.wall > 0);
+  if (valid.length < 2) return { fastestKeys: new Set(), fastRatio: null };
+  const minWall = Math.min(...valid.map((r) => r.wall));
+  const maxWall = Math.max(...valid.map((r) => r.wall));
+  if (maxWall <= minWall) return { fastestKeys: new Set(), fastRatio: null };
+  return {
+    fastestKeys: new Set(valid.filter((r) => r.wall === minWall).map((r) => r.key)),
+    fastRatio: maxWall / minWall,
+  };
+}
+
+export function filterOptions(sessions) {
+  const all = sessions || [];
+  return {
+    providers: [...new Set(all.map((s) => s.provider).filter(Boolean))].sort(),
+    models: [...new Set(all.map((s) => s.model).filter(Boolean))].sort(),
+  };
+}
+
 // Medians and the Recent runs chart scope to the selected run's compare
 // set, or to every run sharing its prompt, or to all runs.
 export function scopedRuns(d) {
@@ -62,7 +89,7 @@ export function scopedRuns(d) {
   return { runs, label: "This prompt · " + runs.length + (runs.length === 1 ? " run" : " runs") };
 }
 
-// --- Runs table state (Step 5) -------------------------------------
+// --- Runs table state ----------------------------------------------
 // Filters and sort for /runs live in the URL query string so a filtered
 // view is linkable and survives refresh. These pure helpers own the
 // mapping both ways, plus filtering and honest sorting (missing values
@@ -109,7 +136,7 @@ export function buildRunsQuery({ q, provider, model, status, mode, version, sort
   return p;
 }
 
-// --- Shared filters (Part D step 7) --------------------------------
+// --- Shared filters -------------------------------------------------
 // One filter state (provider, model, prompt text, date range) lives in
 // the URL query and is read by the Overview chart, the medians panel
 // and the Runs table. Status/mode stay Runs-only extras on top of it.
@@ -177,7 +204,7 @@ export function filterSessions(sessions, f) {
     inDateRange(s.at, f.from || "", f.to || ""));
 }
 
-// --- Chart data (Part D step 6) ------------------------------------
+// --- Chart data ------------------------------------------------------
 // Stacked bars in seconds. Honesty: a run with no reported model time
 // contributes overhead only; the split is never estimated. A run with
 // no wall time draws nothing and its tooltip says "not reported".
@@ -199,7 +226,7 @@ export function chartDatum(s, selectedId) {
     provider: s.provider || "?", model: s.model || "?",
     prompt: s.prompt || "",
     isSelected: Boolean(selectedId) && s.run_id === selectedId,
-    greyed: s.status !== "completed" && s.status !== "running",
+    greyed: DID_NOT_COMPLETE.includes(s.status) || !STATUSES.includes(s.status),
   };
 }
 
@@ -232,7 +259,7 @@ export function compareSessions(a, b, sort, dir) {
   return dir === "desc" ? -cmp : cmp;
 }
 
-// --- Diagnose a slow run (Part E steps 3-5) -----------------------
+// --- Diagnose a slow run -------------------------------------------
 // All helpers are pure and built only from recorded data. A line or
 // series point appears only when its underlying data exists; nothing
 // is estimated. `events` is the server shape (newest first, wire_ms

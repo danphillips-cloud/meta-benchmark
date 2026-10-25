@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 28
+VERSION = 29
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -59,43 +59,6 @@ def _is_stale_running(run):
     return age > (run.get("timeout_seconds") or 1800) + 300
 
 
-def discover_running(runs):
-    """Runs started by an older launcher: folder + prompt, no index entry."""
-    indexed = {r.get("run_id") for r in runs}
-    found = []
-    if not INDEX.parent.is_dir():
-        return found
-    for d in sorted(INDEX.parent.iterdir()):
-        if not d.is_dir() or d.name in indexed:
-            continue
-        prompt_file = d / "prompt.md"
-        events_file = d / "events.jsonl"
-        if not prompt_file.is_file() or not events_file.is_file():
-            continue
-        session_id = None
-        for line in events_file.read_text(errors="replace").splitlines()[:200]:
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            stream = e.get("stream") or {}
-            if stream.get("kind") == "session":
-                session_id = stream.get("id")
-                break
-        at = datetime.fromtimestamp(d.stat().st_mtime, timezone.utc).isoformat()
-        found.append({
-            "run_id": d.name,
-            "at": at,
-            "prompt": prompt_file.read_text(errors="replace").strip(),
-            "model": None, "provider": "meta", "session_id": session_id,
-            "context_mode": "full", "comparison_id": None,
-            "status": "interrupted" if _is_stale_running({"at": at}) else "running",
-            "wall_ms": None, "exit_code": None,
-            "reply": "", "calls": [], "metrics_unavailable": False,
-            "error": None})
-    return found
-
-
 def _run_model_ms(run):
     """Sum of per-call durations, or the harness-reported API total
     when calls carry none (Claude Code reports no per-call time)."""
@@ -106,28 +69,29 @@ def _run_model_ms(run):
     return run.get("api_ms") or 0
 
 
-def _run_split(run):
+def _run_split(run, records=None):
     """Stored time split, or one computed from the session log.
 
     Buckets with a missing event pair stay None (shown as –), never
     estimated. Only Muse sessions have the underlying events.
+    `records` lets the caller pass an already-read log.
     """
+    model_ms = _run_model_ms(run)
+    empty = {"model_ms": model_ms, "tool_ms": None,
+             "approval_ms": None, "muse_ms": None}
     if run.get("tool_ms") is not None or run.get("approval_ms") is not None \
             or run.get("muse_ms") is not None:
-        return {"model_ms": _run_model_ms(run),
-                "tool_ms": run.get("tool_ms"),
+        return {"model_ms": model_ms, "tool_ms": run.get("tool_ms"),
                 "approval_ms": run.get("approval_ms"),
                 "muse_ms": run.get("muse_ms")}
     if not run.get("session_id"):
-        return {"model_ms": _run_model_ms(run), "tool_ms": None,
-                "approval_ms": None, "muse_ms": None}
-    path = live_session_log(run["session_id"])
-    if not path:
-        return {"model_ms": _run_model_ms(run), "tool_ms": None,
-                "approval_ms": None, "muse_ms": None}
-    records = muse_log.read_records(path)
-    wall = run.get("wall_ms")
-    return muse_log.time_split(records, wall, _run_model_ms(run))
+        return empty
+    if records is None:
+        path = live_session_log(run["session_id"])
+        if not path:
+            return empty
+        records = muse_log.read_records(path)
+    return muse_log.time_split(records, run.get("wall_ms"), model_ms)
 
 
 def _run_tokens(run, key):
@@ -138,7 +102,8 @@ def _run_tokens(run, key):
     return sum(c.get(key) or 0 for c in (run.get("calls") or []))
 
 
-def read_logs(run_id=None):
+def load_runs():
+    """Index entries: deduped, stale running fixed, live calls filled."""
     runs = []
     if INDEX.is_file():
         for line in INDEX.read_text(errors="replace").splitlines():
@@ -163,7 +128,6 @@ def read_logs(run_id=None):
             r["status"] = "interrupted"
         fixed.append(r)
     runs = fixed
-    runs.extend(discover_running(runs))
     # Grouped rows should agree with the live stats for running runs.
     enriched = []
     for r in runs:
@@ -173,8 +137,12 @@ def read_logs(run_id=None):
                 r = dict(r)
                 r["calls"] = live
         enriched.append(r)
-    runs = enriched
-    sessions = [{
+    return enriched
+
+
+def session_row(r):
+    model_ms = _run_model_ms(r)
+    return {
         "run_id": r.get("run_id"), "at": r.get("at"),
         "prompt": r.get("prompt"), "model": r.get("model"),
         "wall_ms": r.get("wall_ms"), "calls": len(r.get("calls") or []),
@@ -184,25 +152,34 @@ def read_logs(run_id=None):
         "harness_version": r.get("harness_version"),
         "cost_usd": r.get("cost_usd"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
-        "model_ms": _run_model_ms(r),
-        "overhead_ms": max(0, (r.get("wall_ms") or 0) - _run_model_ms(r)),
+        "model_ms": model_ms,
+        "overhead_ms": max(0, (r.get("wall_ms") or 0) - model_ms),
         "input_tokens": _run_tokens(r, "input_tokens"),
         "output_tokens": _run_tokens(r, "output_tokens"),
         "tool_ms": r.get("tool_ms"), "approval_ms": r.get("approval_ms"),
         "muse_ms": r.get("muse_ms"),
         "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
         "last_output_tokens": (r.get("calls") or [{}])[-1].get("output_tokens"),
-    } for r in reversed(runs)]
+    }
+
+
+def pick_selected(runs, run_id):
     # With no explicit pick, follow a run in progress so it can be
     # watched live. Otherwise open on the newest completed run, not a
     # failed or interrupted one. Stale "running" entries were already
-    # marked interrupted above, so they can't take over.
-    selected = next((r for r in runs if r.get("run_id") == run_id), None) \
+    # marked interrupted in load_runs, so they can't take over.
+    return next((r for r in runs if r.get("run_id") == run_id), None) \
         or next((r for r in reversed(runs) if r.get("status") == "running"),
                 None) \
         or next((r for r in reversed(runs) if r.get("status") == "completed"),
                 None) \
         or (runs[-1] if runs else {})
+
+
+def read_logs(run_id=None):
+    runs = load_runs()
+    sessions = [session_row(r) for r in reversed(runs)]
+    selected = pick_selected(runs, run_id)
     live_timeline = []
     if selected.get("status") == "running" and selected.get("session_id"):
         live, live_timeline = live_calls(selected["session_id"])
@@ -216,6 +193,13 @@ def read_logs(run_id=None):
             elapsed_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         except Exception:
             elapsed_ms = None
+    # The selected run's session log is read once here; the retry
+    # merge, live state and time split below all use these records.
+    selected_records = None
+    if selected.get("session_id"):
+        log_path = live_session_log(selected["session_id"])
+        if log_path:
+            selected_records = muse_log.read_records(log_path)
     events, errors = [], []
     for call in selected.get("calls") or []:
         events.append({
@@ -234,14 +218,15 @@ def read_logs(run_id=None):
         })
     # Retry data lives in the session log, not in old run summaries:
     # merge it per call (call order) whenever the log is available.
-    if selected.get("session_id"):
-        _log = live_session_log(selected["session_id"])
-        if _log:
-            _infos = muse_log.retry_infos(muse_log.read_records(_log))
-            for _i, _info in enumerate(_infos):
-                if _i < len(events):
-                    events[_i]["retries"] = _info["retries"]
-                    events[_i]["stalled_ms"] = _info["stalled_ms"]
+    # Kept after the live-calls change: dropping it would lose the
+    # retry on older runs whose stored calls carry no retry fields
+    # (e.g. 20261025-100503-bc9687, 1 retry, 181 s stalled).
+    if selected_records is not None:
+        infos = muse_log.retry_infos(selected_records)
+        for index, info in enumerate(infos):
+            if index < len(events):
+                events[index]["retries"] = info["retries"]
+                events[index]["stalled_ms"] = info["stalled_ms"]
     events.reverse()
     if selected.get("error") or selected.get("exit_code") not in (0, None):
         errors.append({"at": selected.get("at"), "operation": selected.get("run_id"),
@@ -268,10 +253,8 @@ def read_logs(run_id=None):
                        "operation": selected.get("run_id"),
                        "error_type": "model metrics unavailable for this run"})
     live_state = None
-    if selected.get("status") == "running" and selected.get("session_id"):
-        log_path = live_session_log(selected["session_id"])
-        if log_path:
-            live_state = muse_log.live_state_from_log(log_path)
+    if selected.get("status") == "running" and selected_records is not None:
+        live_state = muse_log.live_state(selected_records)
     return {
         "version": VERSION,
         "sessions": sessions,
@@ -289,7 +272,8 @@ def read_logs(run_id=None):
         "elapsed_ms": elapsed_ms,
         "live_state": live_state,
         "time_split": _run_split(
-            dict(selected, wall_ms=selected.get("wall_ms") or elapsed_ms)),
+            dict(selected, wall_ms=selected.get("wall_ms") or elapsed_ms),
+            records=selected_records),
         "events": events, "timeline": timeline, "errors": errors[-3:],
     }
 
