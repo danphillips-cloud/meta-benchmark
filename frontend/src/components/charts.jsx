@@ -1,8 +1,8 @@
 import React from "react";
 import {
-  Bar, BarChart, Brush, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, Brush, CartesianGrid, Cell, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
-import { chartData, fmt, fmtDur, fmtDurExact, fmtSec, localTime, overviewScope, shortText, showBrush } from "../format.js";
+import { chartData, fmt, fmtDur, fmtDurExact, fmtSec, localTime, overviewScope, perCallSeries, shortText, showBrush } from "../format.js";
 
 function ChartTip({ active, payload }) {
   if (!active || !payload || !payload.length) return null;
@@ -61,6 +61,49 @@ export function RunsBarChart({ runs, selected, onSelect }) {
 export function RecentRunsChart({ data, onSelect, scope }) {
   const sc = scope || overviewScope(data, null);
   return <RunsBarChart runs={sc.runs} selected={data.selected} onSelect={onSelect} />;
+}
+
+function PerCallTip({ active, payload }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className="chartTip">
+      <div className="chartTipTitle">{"Call " + d.call}</div>
+      <div>{"Model: " + (d.model_ms == null ? "not reported" : fmtSec(d.model_ms))}</div>
+      <div>{"Input: " + fmt(d.input_tokens) + " tokens"}</div>
+      <div>{"Cached: " + fmt(d.cached_tokens) + " tokens"}</div>
+    </div>
+  );
+}
+
+export function PerCallChart({ events, provider }) {
+  if (provider === "claude-code") {
+    return <p className="note">Claude Code doesn't report per-call time</p>;
+  }
+  const series = perCallSeries(events, provider);
+  if (!series.length) return <div className="empty" style={{ minHeight: 80 }}>No calls yet.</div>;
+  const data = series.map((d) => ({
+    ...d,
+    label: String(d.call),
+    model_s: d.model_ms == null ? 0 : d.model_ms / 1000,
+  }));
+  return (
+    <div style={{ width: "100%", height: 220 }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
+          <CartesianGrid stroke="var(--line)" strokeDasharray="3 3" vertical={false} />
+          <XAxis dataKey="label" tick={{ fontSize: 11, fill: "var(--muted)" }} tickLine={false} axisLine={{ stroke: "var(--line)" }} label={{ value: "call", position: "insideBottom", offset: -2, fontSize: 11, fill: "var(--muted)" }} />
+          <YAxis yAxisId="time" tick={{ fontSize: 11, fill: "var(--muted)" }} tickLine={false} axisLine={false} width={52}
+            tickFormatter={(v) => Number(v).toFixed(v >= 10 ? 0 : 1) + "s"} />
+          <YAxis yAxisId="tokens" orientation="right" tick={{ fontSize: 11, fill: "var(--muted)" }} tickLine={false} axisLine={false} width={52}
+            tickFormatter={(v) => fmt(v)} />
+          <Tooltip content={<PerCallTip />} cursor={{ fill: "var(--chip)", opacity: 0.5 }} />
+          <Bar yAxisId="time" dataKey="model_s" name="Model time" fill="var(--barmodel)" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+          <Line yAxisId="tokens" type="monotone" dataKey="input_tokens" name="Input tokens" stroke="var(--ink)" strokeWidth={2} dot={{ r: 3 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
 }
 
 export function CallChart({ events }) {

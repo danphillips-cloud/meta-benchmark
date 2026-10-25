@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useSearchParams,
 } from "react-router";
-import { FILTER_KEYS, activeFilterChips, dataSignature, localTime, parseRunsQuery, shortText } from "./format.js";
+import { FILTER_KEYS, activeFilterChips, dataSignature, parseRunsQuery } from "./format.js";
 import { deleteRun, download, fetchLogs } from "./api.js";
 import { MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
 import Overview from "./views/Overview.jsx";
@@ -143,9 +143,6 @@ function AppShell() {
   const compareData = compareRep ? { ...data, selected: compareRep.run_id } : data;
   const selSession = sessions.find((s) => s.run_id === data.selected) || {};
   const view = activeView(location.pathname);
-  const chipText = data.selected
-    ? (selSession.at ? localTime(selSession.at).slice(11) + " · " : "") + shortText(data.prompt || "Selected run", 34)
-    : "";
   const goto = (name) => {
     if (name === "runs") navigate("/runs" + qs);
     else if (name === "compare") navigate((selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare") + qs);
@@ -177,14 +174,6 @@ function AppShell() {
     <>
       <header className="topbar">
         <span className="pageTitle">meta-benchmark</span>
-        {data.selected ? (
-          <span className="runChip">
-            <span className={"dot " + (data.status || selSession.status || "")}></span>
-            <button className="chipText" type="button" title={(data.prompt || "Selected run") + " · " + ((data.provider || "?") + "/" + (data.model || "?"))}
-              onClick={() => navigate("/runs/" + encodeURIComponent(data.selected) + qs)}>{chipText}</button>
-            <button className="chipX" type="button" aria-label="Clear selected run" title="Clear selected run" onClick={() => navigate("/" + qs)}>×</button>
-          </span>
-        ) : null}
         {filterChips.length ? (
           <span className="filterChips" aria-label="Active filters">
             <span className="filterChipsLabel">Filters</span>

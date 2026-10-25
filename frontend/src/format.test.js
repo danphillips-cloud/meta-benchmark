@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  activeFilterChips, buildRunsQuery, chartData, compareSessions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  median, overviewScope, parseRunsQuery, parseSharedFilters, runMode, showBrush,
+  activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
+  median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, runMode, showBrush, usualBaseline,
 } from "./format.js";
 
 const S = (over) => ({
@@ -26,9 +26,9 @@ test("runMode defaults single runs to 'single'", () => {
 
 test("parseRunsQuery defaults and validation", () => {
   assert.deepEqual(parseRunsQuery(new URLSearchParams("")),
-    { q: "", provider: "", model: "", status: "", mode: "", sort: "at", dir: "desc", from: "", to: "" });
+    { q: "", provider: "", model: "", status: "", mode: "", version: "", sort: "at", dir: "desc", from: "", to: "" });
   assert.deepEqual(parseRunsQuery(new URLSearchParams("q=hi&provider=meta&sort=wall_ms&dir=asc")),
-    { q: "hi", provider: "meta", model: "", status: "", mode: "", sort: "wall_ms", dir: "asc", from: "", to: "" });
+    { q: "hi", provider: "meta", model: "", status: "", mode: "", version: "", sort: "wall_ms", dir: "asc", from: "", to: "" });
   // Unknown sort/dir fall back to the safe default, never crash.
   assert.equal(parseRunsQuery(new URLSearchParams("sort=bogus&dir=sideways")).sort, "at");
   assert.equal(parseRunsQuery(new URLSearchParams("sort=bogus&dir=sideways")).dir, "desc");
@@ -36,10 +36,10 @@ test("parseRunsQuery defaults and validation", () => {
 });
 
 test("buildRunsQuery round-trips through parseRunsQuery", () => {
-  const state = { q: "hi there", provider: "meta", model: "m1", status: "failed", mode: "claude", sort: "wall_ms", dir: "asc", from: "2026-01-01", to: "2026-01-31" };
+  const state = { q: "hi there", provider: "meta", model: "m1", status: "failed", mode: "claude", version: "1.0", sort: "wall_ms", dir: "asc", from: "2026-01-01", to: "2026-01-31" };
   assert.deepEqual(parseRunsQuery(buildRunsQuery(state)), state);
   // Defaults stay out of the URL so the plain /runs link is clean.
-  assert.equal(buildRunsQuery({ q: "", provider: "", model: "", status: "", mode: "", sort: "at", dir: "desc" }).toString(), "");
+  assert.equal(buildRunsQuery({ q: "", provider: "", model: "", status: "", mode: "", version: "", sort: "at", dir: "desc" }).toString(), "");
   // A non-date string in the URL is dropped, never trusted.
   assert.equal(parseRunsQuery(new URLSearchParams("to=nope")).to, "");
 });
@@ -128,4 +128,138 @@ test("chartData: stacked seconds, no model time is overhead only, never estimate
   assert.equal(d[0].wall_ms, null); assert.equal(d[0].model_s, 0); assert.equal(d[0].greyed, true);
   assert.equal(fmtSec(2500), "2.500 s"); assert.equal(fmtSec(null), "–");
   assert.equal(showBrush(12), false); assert.equal(showBrush(13), true);
+});
+
+// --- Part E: diagnose a slow run ------------------------------------
+// Events use the server shape (newest first). E() builds one event.
+const E = (wire, input, cached, output) => ({
+  "wire_ms": wire,
+  "gen_ai.usage.input_tokens": input,
+  "gen_ai.usage.cached_tokens": cached,
+  "gen_ai.usage.output_tokens": output,
+});
+
+test("explainLines: all four lines from recorded data, model dominated", () => {
+  // Newest first: call3, call2, call1.
+  const events = [E(2000, 3000, 2500, 10), E(5000, 2000, 1000, 10), E(3000, 1000, 0, 10)];
+  const lines = explainLines({ wall_ms: 12000, model_ms: 10000, provider: "meta", events });
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /Model time was 10\.0 s of 12\.0 s wall \(83%\)\. Model dominated\./);
+  assert.match(lines[1], /Input tokens: 1,000 on call 1 → 3,000 on call 3 \(\+2,000\)\./);
+  assert.match(lines[2], /Slowest call was #2 at 5\.0 s with 2,000 input tokens\./);
+  assert.match(lines[3], /Cache covered 3,500 of 6,000 input tokens \(58%\)\./);
+});
+
+test("explainLines: overhead dominated wording", () => {
+  const lines = explainLines({ wall_ms: 10000, model_ms: 2000, provider: "meta", events: [E(2000, 100, 0, 1)] });
+  assert.match(lines[0], /Overhead dominated\./);
+});
+
+test("explainLines: each line appears only when its data exists", () => {
+  // No wall/model: no share line.
+  assert.deepEqual(explainLines({ wall_ms: null, model_ms: null, provider: "meta", events: [] }), []);
+  // Single call: no growth line, but slowest + share still show.
+  const single = explainLines({ wall_ms: 3000, model_ms: 3000, provider: "meta", events: [E(3000, 500, null, 5)] });
+  assert.equal(single.length, 2);
+  assert.ok(!single.some((l) => l.startsWith("Input tokens")));
+  assert.ok(!single.some((l) => l.startsWith("Cache covered")));
+  // Missing input on an end call: no growth line.
+  const noInput = explainLines({ wall_ms: 8000, model_ms: 8000, provider: "meta", events: [E(4000, null, null, 1), E(4000, 100, null, 1)] });
+  assert.ok(!noInput.some((l) => l.startsWith("Input tokens")));
+  // No cache data at all: no cache line.
+  const noCache = explainLines({ wall_ms: 8000, model_ms: 8000, provider: "meta", events: [E(4000, 200, null, 1), E(4000, 100, null, 1)] });
+  assert.ok(!noCache.some((l) => l.startsWith("Cache")));
+  // No per-call time: no slowest line.
+  const noWire = explainLines({ wall_ms: 8000, model_ms: 5000, provider: "meta", events: [E(null, 200, 100, 1), E(null, 100, 50, 1)] });
+  assert.ok(!noWire.some((l) => l.startsWith("Slowest")));
+});
+
+test("explainLines: Claude Code runs skip the slowest-call line", () => {
+  const events = [E(null, 3000, 2500, null), E(null, 1000, 0, null)];
+  const lines = explainLines({ wall_ms: 5000, model_ms: 4000, provider: "claude-code", events });
+  assert.ok(!lines.some((l) => l.startsWith("Slowest")));
+  // Share, growth and cache lines still come from recorded totals.
+  assert.ok(lines.some((l) => l.startsWith("Model time was")));
+  assert.ok(lines.some((l) => l.startsWith("Input tokens")));
+  assert.ok(lines.some((l) => l.startsWith("Cache covered")));
+  // Even if a wire value were present, Claude Code never shows slowest.
+  const withWire = explainLines({ wall_ms: 5000, model_ms: 4000, provider: "claude-code", events: [E(9000, 100, 0, 1)] });
+  assert.ok(!withWire.some((l) => l.startsWith("Slowest")));
+});
+
+test("usualBaseline: same prompt, provider and model, at least 3 earlier completed", () => {
+  const sel = S({ run_id: "sel", at: "2026-01-10T00:00:00+00:00", prompt: "hi", provider: "meta", model: "m1", wall_ms: 18500 });
+  const earlier = (id, at, wall) => S({ run_id: id, at, prompt: "hi", provider: "meta", model: "m1", wall_ms: wall, model_ms: wall - 100, overhead_ms: 100 });
+  const sessions = [
+    sel,
+    earlier("e3", "2026-01-03T00:00:00+00:00", 14000),
+    earlier("e2", "2026-01-02T00:00:00+00:00", 12000),
+    earlier("e1", "2026-01-01T00:00:00+00:00", 10000),
+  ];
+  const base = usualBaseline(sel, sessions);
+  assert.equal(base.count, 3);
+  assert.equal(base.wall_ms, 12000);
+  // Only 2 earlier runs: hidden.
+  assert.equal(usualBaseline(sel, sessions.slice(0, 3)), null);
+  // Different prompt never counts, even with 3 runs.
+  const otherPrompt = sessions.map((s) => s.run_id === "sel" ? s : { ...s, prompt: "other" });
+  assert.equal(usualBaseline(sel, otherPrompt), null);
+  // Different provider or model never counts.
+  const otherProvider = sessions.map((s) => s.run_id === "sel" ? s : { ...s, provider: "claude-code" });
+  assert.equal(usualBaseline(sel, otherProvider), null);
+  const otherModel = sessions.map((s) => s.run_id === "sel" ? s : { ...s, model: "other" });
+  assert.equal(usualBaseline(sel, otherModel), null);
+  // Failed/interrupted and later runs never count.
+  const mixed = [
+    sel,
+    earlier("ok1", "2026-01-01T00:00:00+00:00", 10000),
+    earlier("ok2", "2026-01-02T00:00:00+00:00", 10000),
+    { ...earlier("bad", "2026-01-03T00:00:00+00:00", 10000), status: "failed" },
+    earlier("later", "2026-01-20T00:00:00+00:00", 10000),
+  ];
+  assert.equal(usualBaseline(sel, mixed), null);
+  // The selected run itself never counts.
+  assert.equal(usualBaseline(sel, [sel, sel, sel, sel]), null);
+  assert.equal(usualBaseline(null, sessions), null);
+});
+
+test("perCallSeries: oldest-first model time and input tokens, Muse only", () => {
+  const events = [E(2000, 3000, 2500, 10), E(5000, 2000, 1000, 10), E(3000, 1000, 0, 10)];
+  assert.deepEqual(perCallSeries(events, "meta"), [
+    { call: 1, model_ms: 3000, input_tokens: 1000, cached_tokens: 0, output_tokens: 10 },
+    { call: 2, model_ms: 5000, input_tokens: 2000, cached_tokens: 1000, output_tokens: 10 },
+    { call: 3, model_ms: 2000, input_tokens: 3000, cached_tokens: 2500, output_tokens: 10 },
+  ]);
+  assert.deepEqual(perCallSeries(events, "claude-code"), []);
+  assert.deepEqual(perCallSeries([], "meta"), []);
+  // Missing values stay null, never 0.
+  assert.deepEqual(perCallSeries([E(null, null, null, null)], "meta"),
+    [{ call: 1, model_ms: null, input_tokens: null, cached_tokens: null, output_tokens: null }]);
+});
+
+test("version filter: filterSessions and chips honour harness_version", () => {
+  const rows = [
+    S({ run_id: "a", harness_version: "Muse Code 1.4.13" }),
+    S({ run_id: "b", harness_version: "2.1.310 (Claude Code)" }),
+    S({ run_id: "c", harness_version: null }),
+  ];
+  const none = { q: "", provider: "", model: "", status: "", mode: "", version: "" };
+  assert.equal(filterSessions(rows, none).length, 3);
+  assert.deepEqual(filterSessions(rows, { ...none, version: "Muse Code 1.4.13" }).map((s) => s.run_id), ["a"]);
+  assert.deepEqual(activeFilterChips({ provider: "", model: "", q: "", from: "", to: "", status: "", mode: "", version: "1.0" }).map((c) => c.key), ["version"]);
+  const sorted = [rows[1], rows[2], rows[0]].sort((x, y) => compareSessions(x, y, "harness_version", "asc")).map((s) => s.run_id);
+  assert.deepEqual(sorted, ["b", "a", "c"]);
+});
+
+test("explainLines: a near-even split is not called domination", () => {
+  const lines = explainLines({ wall_ms: 18500, model_ms: 9400, provider: "meta", events: [] });
+  assert.match(lines[0], /\(51%\)\. Model and overhead were about even\./);
+});
+
+test("usualBaseline: never compares across context modes", () => {
+  const base = { prompt: "p", provider: "meta", model: "m", status: "completed", wall_ms: 1000 };
+  const earlier = [1, 2, 3].map((i) => ({ ...base, run_id: "e" + i, at: "2026-01-0" + i, context_mode: "full" }));
+  const sel = { ...base, run_id: "sel", at: "2026-01-09", context_mode: "minimal" };
+  assert.equal(usualBaseline(sel, earlier), null);
+  assert.equal(usualBaseline({ ...sel, context_mode: "full" }, earlier).count, 3);
 });

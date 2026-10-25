@@ -825,6 +825,110 @@ class RunProcessTest(unittest.TestCase):
             self.assertTrue(result["timed_out"])
 
 
+class HarnessVersionTest(unittest.TestCase):
+    def setUp(self):
+        run_muse._harness_version_cache.clear()
+
+    def tearDown(self):
+        run_muse._harness_version_cache.clear()
+
+    def _fake_run(self, stdout, returncode=0):
+        def fake(cmd, capture_output=True, text=True, timeout=None):
+            fake.calls.append(list(cmd))
+            result = mock.Mock()
+            result.stdout = stdout
+            result.stderr = ""
+            result.returncode = returncode
+            return result
+        fake.calls = []
+        return fake
+
+    def test_muse_and_claude_versions_read_once_per_process(self):
+        fake = self._fake_run("Muse Code 1.4.13 (1.4.13-R6996.1)\n")
+        with mock.patch.object(run_muse.subprocess, "run", fake):
+            self.assertEqual(run_muse.harness_version("meta"),
+                             "Muse Code 1.4.13 (1.4.13-R6996.1)")
+            self.assertEqual(run_muse.harness_version("meta"),
+                             "Muse Code 1.4.13 (1.4.13-R6996.1)")
+        self.assertEqual(fake.calls, [["muse", "--version"]])
+        run_muse._harness_version_cache.clear()
+        fake2 = self._fake_run("2.1.310 (Claude Code)\n")
+        with mock.patch.object(run_muse.subprocess, "run", fake2):
+            self.assertEqual(run_muse.harness_version("claude-code"),
+                             "2.1.310 (Claude Code)")
+            self.assertEqual(run_muse.harness_version("claude-code"),
+                             "2.1.310 (Claude Code)")
+        self.assertEqual(fake2.calls, [["claude", "--version"]])
+
+    def test_raw_api_stores_null_without_calling_a_command(self):
+        fake = self._fake_run("should not be used")
+        with mock.patch.object(run_muse.subprocess, "run", fake):
+            self.assertIsNone(run_muse.harness_version("anthropic"))
+        self.assertEqual(fake.calls, [])
+
+    def test_failed_version_command_stores_null_and_never_raises(self):
+        fake = self._fake_run("", returncode=1)
+        with mock.patch.object(run_muse.subprocess, "run", fake):
+            self.assertIsNone(run_muse.harness_version("meta"))
+        run_muse._harness_version_cache.clear()
+        with mock.patch.object(run_muse.subprocess, "run",
+                               side_effect=OSError("missing binary")):
+            self.assertIsNone(run_muse.harness_version("meta"))
+        run_muse._harness_version_cache.clear()
+        with mock.patch.object(run_muse.subprocess, "run",
+                               side_effect=Exception("boom")):
+            self.assertIsNone(run_muse.harness_version("claude-code"))
+
+    def test_run_records_harness_version_and_server_passes_it(self):
+        fake = self._fake_run("Muse Code 9.9.9\n")
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs, old_fn = run_muse.RUNS, run_muse.run_muse_exec
+            run_muse.RUNS = runs
+            run_muse.run_muse_exec = lambda *a, **k: \
+                (_ for _ in ()).throw(KeyboardInterrupt())
+            try:
+                with mock.patch.object(run_muse.subprocess, "run", fake):
+                    report = run_muse.run_prompt(
+                        "hi", provider="meta", model="muse-wonder-1.0")
+            finally:
+                run_muse.RUNS, run_muse.run_muse_exec = old_runs, old_fn
+            self.assertEqual(report["harness_version"], "Muse Code 9.9.9")
+            entries = [json.loads(l) for l in
+                       (runs / "index.jsonl").read_text().splitlines()]
+            by_id = {e["run_id"]: e for e in entries}
+            self.assertEqual(by_id[report["run_id"]]["harness_version"],
+                             "Muse Code 9.9.9")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs(report["run_id"])
+            finally:
+                server.INDEX = old
+            picked = next(s for s in data["sessions"]
+                          if s["run_id"] == report["run_id"])
+            self.assertEqual(picked["harness_version"], "Muse Code 9.9.9")
+            self.assertEqual(data["harness_version"], "Muse Code 9.9.9")
+
+    def test_old_runs_without_version_read_as_null(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-old").mkdir(parents=True)
+            run = {"run_id": "run-old", "at": "2026-01-01T00:00:00+00:00",
+                   "prompt": "hi", "model": "m", "provider": "meta",
+                   "exit_code": 0, "error": None, "reply": "ok",
+                   "wall_ms": 100, "calls": []}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs()
+            finally:
+                server.INDEX = old
+            self.assertIsNone(data["sessions"][0]["harness_version"])
+            self.assertIsNone(data["harness_version"])
+
+
 class IndexHtmlTest(unittest.TestCase):
     """Static contract for the React results page (web/ shell + src)."""
 
@@ -846,16 +950,27 @@ class IndexHtmlTest(unittest.TestCase):
         # One prompt run 3 ways (a comparison set) gets a median table plus
         # a round-by-leg matrix; manual compare takes two extra sessions.
         # Dashboard shell: URL routes own the selected run, sidebar links
-        # follow the URL, a removable selected-run chip, the TanStack runs
-        # table, recent-runs chart, medians panel.
+        # follow the URL, the TanStack runs table, recent-runs chart,
+        # medians panel.
         for marker in ("compareSelect2", "CompareSet", "CallChart",
                        "RecentRunsChart", "Medians by provider/model",
                        "data-view-panel", "BrowserRouter", "/runs/:id",
-                       "Run not found", "runChip", "runsTable",
+                       "Run not found", "runsTable",
                        "useTable", "createSortedRowModel", "RUNS_PAGE_SIZE"):
             self.assertIn(marker, self.src)
         self.assertNotIn("useLegacyTable", self.src)
         self.assertNotIn("@tanstack/react-table/legacy", self.src)
+
+    def test_part_e_diagnose_hooks_present(self):
+        # Selected-run chip removed from the top bar; filter chips stay.
+        self.assertNotIn('className="runChip"', self.src)
+        self.assertNotIn("chipX", self.src)
+        self.assertIn("filterChips", self.src)
+        for marker in ("What happened", "PerCallChart",
+                       "explainLines", "usualBaseline", "perCallSeries",
+                       "harness_version", "versionFilter",
+                       "Claude Code doesn't report per-call time"):
+            self.assertIn(marker, self.src)
 
     def test_missing_values_never_become_zero(self):
         # A missing metric must render as –, never as 0 in a delta.

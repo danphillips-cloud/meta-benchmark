@@ -36,7 +36,8 @@ export function summaryText(data) {
 const HEADERS = [
   ["at", "Time", false], ["prompt", "Prompt", false],
   ["provider_model", "Provider/Model", false], ["mode", "Mode", false],
-  ["status", "Status", false], ["calls", "Calls", true],
+  ["status", "Status", false], ["harness_version", "Version", false],
+  ["calls", "Calls", true],
   ["wall_ms", "Wall", true], ["model_ms", "Model", true],
   ["overhead_ms", "Overhead", true],
 ];
@@ -56,6 +57,7 @@ const SORT_ACCESSOR = {
   provider_model: (s) => legKey(s),
   mode: (s) => runMode(s),
   status: (s) => s.status || undefined,
+  harness_version: (s) => s.harness_version || undefined,
   calls: (s) => (s.calls == null ? undefined : s.calls),
   wall_ms: (s) => (s.wall_ms == null ? undefined : s.wall_ms),
   model_ms: (s) => (s.model_ms == null ? undefined : s.model_ms),
@@ -71,6 +73,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
   const providers = [...new Set(all.map((s) => s.provider).filter(Boolean))].sort();
   const models = [...new Set(all.map((s) => s.model).filter(Boolean))].sort();
   const modes = [...new Set(all.map((s) => runMode(s)))].sort();
+  const versions = [...new Set(all.map((s) => s.harness_version).filter(Boolean))].sort();
 
   const update = (patch) => {
     setPageIndex(0);
@@ -96,6 +99,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
       }
       if (columnId === "status") return s.status === value;
       if (columnId === "mode") return runMode(s) === value;
+      if (columnId === "harness_version") return s.harness_version === value;
       if (columnId === "at") {
         const v = value || {};
         return inDateRange(s.at, v.from || "", v.to || "");
@@ -109,6 +113,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
       if (id === "provider_model") return (s.provider || "?") + "/" + (s.model || "?");
       if (id === "mode") return runMode(s);
       if (id === "status") return <StatusPill status={s.status} />;
+      if (id === "harness_version") return s.harness_version || "–";
       if (id === "calls") return fmt(s.calls);
       return fmtDur(s[id]);
     },
@@ -121,9 +126,10 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
     if (state.provider || state.model) f.push({ id: "provider_model", value: { provider: state.provider, model: state.model } });
     if (state.status) f.push({ id: "status", value: state.status });
     if (state.mode) f.push({ id: "mode", value: state.mode });
+    if (state.version) f.push({ id: "harness_version", value: state.version });
     if (state.from || state.to) f.push({ id: "at", value: { from: state.from, to: state.to } });
     return f;
-  }, [state.q, state.provider, state.model, state.status, state.mode, state.from, state.to]);
+  }, [state.q, state.provider, state.model, state.status, state.mode, state.version, state.from, state.to]);
 
   const sorting = useMemo(() => [{ id: state.sort, desc: state.dir === "desc" }], [state.sort, state.dir]);
 
@@ -145,12 +151,13 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
     },
     onColumnFiltersChange: (up) => {
       const next = typeof up === "function" ? up(columnFilters) : up;
-      const patch = { q: "", provider: "", model: "", status: "", mode: "", from: "", to: "" };
+      const patch = { q: "", provider: "", model: "", status: "", mode: "", version: "", from: "", to: "" };
       (next || []).forEach((f) => {
         if (f.id === "prompt") patch.q = String(f.value || "");
         else if (f.id === "provider_model") { patch.provider = (f.value && f.value.provider) || ""; patch.model = (f.value && f.value.model) || ""; }
         else if (f.id === "status") patch.status = String(f.value || "");
         else if (f.id === "mode") patch.mode = String(f.value || "");
+        else if (f.id === "harness_version") patch.version = String(f.value || "");
         else if (f.id === "at") { patch.from = (f.value && f.value.from) || ""; patch.to = (f.value && f.value.to) || ""; }
       });
       update(patch);
@@ -187,6 +194,11 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
           <select id="modeFilter" value={state.mode} onChange={(e) => update({ mode: e.target.value })}>
             <option value="">All</option>
             {modes.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <label htmlFor="versionFilter">Version</label>
+          <select id="versionFilter" value={state.version} onChange={(e) => update({ version: e.target.value })}>
+            <option value="">All</option>
+            {versions.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         </>
       )} />
