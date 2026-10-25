@@ -25,13 +25,19 @@ The results page opens at http://127.0.0.1:8765 (or your `PORT`). Type a prompt 
 
 If another app already has that port, the launcher says so and the run carries on without the page. Use another port with `PORT=8766 ./run-muse`.
 
-## Usage
+### First runs
+
+Three free runs that show what the page does. They use your Muse subscription, no keys.
 
 ```sh
-./run-muse "write a python script that counts lines in a file, then run it on itself"
-./run-muse --minimal "what is 2+2"                # repeatable context
-./run-muse --watch                                # time your own Muse session, read-only
+./run-muse --minimal "what is 2+2"                  # one model call
+./run-muse --minimal --compare meta "what is 2+2"   # two Meta models side by side
+./run-muse --minimal "write a python script that counts lines in a file, then run it on itself"
 ```
+
+The last one makes several model calls and runs tools, so the time split shows model, tools and Muse time.
+
+## Usage
 
 | Mode | Command |
 |---|---|
@@ -40,9 +46,13 @@ If another app already has that port, the launcher says so and the run carries o
 | Meta vs Claude | `./run-muse --compare claude` |
 | Custom | `./run-muse --compare custom` |
 
-Single and Meta vs Meta use the Muse subscription. Meta vs Claude uses API keys and is billed per token. Custom is paid by default too. Its default legs use Claude Code.
+Single and Meta vs Meta use your Muse subscription. Meta vs Claude bills your API keys per token. So does Custom by default, because its default legs use Claude Code.
+
+Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) before it starts, and stops after 5 minutes. Claude Code runs print nothing until they finish, so a quiet terminal doesn't mean it's stuck ([#28](https://github.com/danphillips-cloud/meta-benchmark/issues/28)).
 
 `--compare meta --repeat N` runs N rounds, alternating the order each round.
+
+`./run-muse --watch` times your own interactive Muse session, read-only. Run Muse normally in another terminal.
 
 `--minimal` drops reminders and personal context so runs repeat cleanly. It doesn't make the prompt much smaller: Muse's own system prompt is ~27k tokens either way.
 
