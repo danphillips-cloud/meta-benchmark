@@ -4,6 +4,7 @@ muse-runs/
 .docs/
 generated_images/
 __pycache__/
+frontend/node_modules/
 .env
 *.pyc
 .DS_Store

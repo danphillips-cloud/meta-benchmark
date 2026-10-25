@@ -20,8 +20,11 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 23
+VERSION = 24
 INDEX = HERE / "muse-runs" / "index.jsonl"
+WEB_INDEX = HERE / "web" / "index.html"
+WEB_APP = HERE / "web" / "app.js"
+WEB_CSS = HERE / "web" / "style.css"
 _SESSION_LOG_CACHE = {}
 
 
@@ -291,20 +294,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, path, ctype):
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self.send_error(404)
+            return
+        self._send(200, body, ctype)
+
     def do_GET(self):
         if not self._is_local_request():
             self.send_error(403)
             return
         parsed = urlparse(self.path)
-        if parsed.path in ("/", "/index.html"):
-            self._send(200, (HERE / "index.html").read_bytes(),
-                       "text/html; charset=utf-8")
-        elif parsed.path == "/api/logs":
+        if parsed.path == "/api/logs":
             run_id = (parse_qs(parsed.query).get("run") or [None])[0]
             self._send(200, json.dumps(read_logs(run_id)).encode(),
                        "application/json")
-        else:
+        elif parsed.path == "/app.js":
+            self._send_file(WEB_APP, "text/javascript; charset=utf-8")
+        elif parsed.path == "/style.css":
+            self._send_file(WEB_CSS, "text/css; charset=utf-8")
+        elif parsed.path.startswith("/api/"):
             self.send_error(404)
+        else:
+            # /, /index.html, and every deep link (e.g. /runs/<id>) load
+            # the app shell; the client router picks the view.
+            self._send_file(WEB_INDEX, "text/html; charset=utf-8")
 
     def do_POST(self):
         if not self._is_local_request():

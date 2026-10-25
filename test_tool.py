@@ -154,6 +154,59 @@ class HostCheckTest(unittest.TestCase):
             server.PORT = old_port
 
 
+class StaticFilesTest(unittest.TestCase):
+    def test_static_files_and_spa_fallback(self):
+        import http.client
+        import threading
+        from http.server import HTTPServer
+        old_port = server.PORT
+        httpd = HTTPServer(("127.0.0.1", 0), server.Handler)
+        server.PORT = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            def get(path, headers=None):
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", server.PORT, timeout=5)
+                conn.request("GET", path, headers=headers or
+                             {"Host": f"127.0.0.1:{server.PORT}"})
+                resp = conn.getresponse()
+                body = resp.read()
+                ctype = resp.getheader("Content-Type") or ""
+                conn.close()
+                return resp.status, ctype, body
+            shell = (HERE / "web" / "index.html").read_bytes()
+            for path in ("/", "/index.html", "/runs/20260101-abc",
+                         "/compare/set1", "/timeline/run-a",
+                         "/some/deep/link"):
+                status, ctype, body = get(path)
+                self.assertEqual(status, 200, path)
+                self.assertIn("text/html", ctype, path)
+                self.assertEqual(body, shell, path)
+            status, ctype, body = get("/app.js")
+            self.assertEqual(status, 200)
+            self.assertIn("javascript", ctype)
+            self.assertEqual(body, (HERE / "web" / "app.js").read_bytes())
+            self.assertTrue(body)
+            status, ctype, body = get("/style.css")
+            self.assertEqual(status, 200)
+            self.assertIn("text/css", ctype)
+            self.assertEqual(body, (HERE / "web" / "style.css").read_bytes())
+            self.assertTrue(body)
+            status, ctype, body = get("/api/logs")
+            self.assertEqual(status, 200)
+            self.assertIn("application/json", ctype)
+            self.assertIn(b'"sessions"', body)
+            status, _, _ = get("/api/nope")
+            self.assertEqual(status, 404)
+            status, _, _ = get("/app.js", {"Host": "evil.example"})
+            self.assertEqual(status, 403)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            server.PORT = old_port
+
+
 class StaleRunningTest(unittest.TestCase):
     def test_old_running_without_report_is_not_running(self):
         with tempfile.TemporaryDirectory() as td:
@@ -773,28 +826,37 @@ class RunProcessTest(unittest.TestCase):
 
 
 class IndexHtmlTest(unittest.TestCase):
-    """Static contract for the single-file results page."""
+    """Static contract for the React results page (web/ shell + src)."""
 
     @classmethod
     def setUpClass(cls):
-        cls.html = (Path(__file__).parent / "index.html").read_text()
+        here = Path(__file__).parent
+        cls.html = (here / "web" / "index.html").read_text()
+        src = here / "frontend" / "src"
+        cls.src = "\n".join(
+            p.read_text() for p in sorted(src.rglob("*.jsx"))) + "\n" + \
+            "\n".join(p.read_text() for p in sorted(src.rglob("*.js")))
+
+    def test_shell_loads_bundle_and_styles(self):
+        self.assertIn('id="root"', self.html)
+        self.assertIn("/app.js", self.html)
+        self.assertIn("/style.css", self.html)
 
     def test_three_way_compare_hooks_present(self):
         # One prompt run 3 ways (a comparison set) gets a median table plus
         # a round-by-leg matrix; manual compare takes two extra sessions.
         # Dashboard shell: sidebar views persisted in localStorage, a
         # removable selected-run chip, recent-runs chart, medians panel.
-        for marker in ("roundMatrix", "compareSelect2", "renderCompareSet",
-                       "callChart", "renderCallChart", "recentRunsChart",
-                       "renderRecentRuns", "medianList", "renderMedians",
-                       "data-view-panel", "muse-view", "selectedChip",
-                       "chipClear", "runList"):
-            self.assertIn(marker, self.html)
+        for marker in ("compareSelect2", "CompareSet", "CallChart",
+                       "RecentRunsChart", "Medians by provider/model",
+                       "data-view-panel", "muse-view", "runChip",
+                       "runList", "round"):
+            self.assertIn(marker, self.src)
 
     def test_missing_values_never_become_zero(self):
         # A missing metric must render as –, never as 0 in a delta.
-        self.assertNotIn("?? 0) - (", self.html)
-        self.assertIn("medians over completed runs only", self.html)
+        self.assertNotIn("?? 0) - (", self.src)
+        self.assertIn("medians over completed runs only", self.src)
 
 
 if __name__ == "__main__":
