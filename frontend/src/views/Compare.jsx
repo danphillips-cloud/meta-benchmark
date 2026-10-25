@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { fmtDur, fmtMs, legKey, localTime, median, shortText } from "../format.js";
+import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill } from "../components/widgets.jsx";
 
 function CompareSet({ data, onSelect }) {
@@ -40,7 +41,9 @@ function CompareSet({ data, onSelect }) {
   return (
     <section className="panel">
       <div className="panelHead"><div><div className="pt">{title}</div><div className="ps">{promptLine}</div></div></div>
-      <div className="tableWrap">
+      <RunsBarChart runs={inSet} selected={data.selected} onSelect={onSelect} />
+      <div className="legend"><span><span className="sw swModel"></span>model time</span><span><span className="sw swOver"></span>overhead</span><span>outlined = selected run</span></div>
+      <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
           <thead><tr><th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th><th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th><th className="num">Out</th><th className="num">Cost</th></tr></thead>
           <tbody>

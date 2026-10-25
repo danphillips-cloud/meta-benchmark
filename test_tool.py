@@ -852,8 +852,10 @@ class IndexHtmlTest(unittest.TestCase):
                        "RecentRunsChart", "Medians by provider/model",
                        "data-view-panel", "BrowserRouter", "/runs/:id",
                        "Run not found", "runChip", "runsTable",
-                       "useLegacyTable", "RUNS_PAGE_SIZE"):
+                       "useTable", "createSortedRowModel", "RUNS_PAGE_SIZE"):
             self.assertIn(marker, self.src)
+        self.assertNotIn("useLegacyTable", self.src)
+        self.assertNotIn("@tanstack/react-table/legacy", self.src)
 
     def test_missing_values_never_become_zero(self):
         # A missing metric must render as –, never as 0 in a delta.

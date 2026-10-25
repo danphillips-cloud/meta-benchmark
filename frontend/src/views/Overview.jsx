@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { fmt, fmtDur, fmtDurParts, fmtMs, localTime, median, scopedRuns } from "../format.js";
+import { useSearchParams } from "react-router";
+import { buildRunsQuery, fmt, fmtDur, fmtDurParts, fmtMs, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters } from "../format.js";
 import { RecentRunsChart } from "../components/charts.jsx";
+import { FilterBar } from "../components/filters.jsx";
 import { Chip, StatIcon, StatusPill } from "../components/widgets.jsx";
 import { copyText } from "../api.js";
 
@@ -86,6 +88,12 @@ function StatCard({ label, icon, value, unit, detail, title, hero }) {
 }
 
 export default function Overview({ data, onSelect, onGoto }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const runsState = parseRunsQuery(searchParams);
+  const shared = parseSharedFilters(searchParams);
+  const updateFilters = (patch) => setSearchParams(buildRunsQuery({ ...runsState, ...patch }), { replace: true });
+  const providers = [...new Set((data.sessions || []).map((s) => s.provider).filter(Boolean))].sort();
+  const models = [...new Set((data.sessions || []).map((s) => s.model).filter(Boolean))].sort();
   const [replyExpanded, setReplyExpanded] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const reply = data.reply || "";
@@ -113,7 +121,7 @@ export default function Overview({ data, onSelect, onGoto }) {
     notes.push("This run did not complete. It stays in Runs, but it is excluded from all medians.");
 
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
-  const scope = scopedRuns(data);
+  const scope = overviewScope(data, shared);
 
   // Medians by provider/model, completed runs only.
   const groups = new Map();
@@ -175,11 +183,15 @@ export default function Overview({ data, onSelect, onGoto }) {
         </div>
       </div>
       <p className="note" style={{ display: notes.length ? "" : "none" }}>{notes.join(" ")}</p>
+      <section className="panel" aria-label="Shared filters" style={{ marginTop: 12, padding: "12px 16px" }}>
+        <div className="label" style={{ marginBottom: 8 }}>Filters · shared with Runs</div>
+        <FilterBar state={shared} providers={providers} models={models} onChange={updateFilters} />
+      </section>
       <div className="panelGrid">
         <div className="colStack">
           <section className="panel">
             <div className="panelHead"><div><div className="pt">Recent runs</div><div className="ps">{"Model time vs overhead, per run · " + scope.label}</div></div><button className="viewAll" type="button" onClick={() => onGoto("runs")}>View all →</button></div>
-            <RecentRunsChart data={data} onSelect={onSelect} />
+            <RecentRunsChart data={data} onSelect={onSelect} scope={scope} />
             <div className="legend"><span><span className="sw swModel"></span>model time</span><span><span className="sw swOver"></span>overhead</span><span>outlined = selected run</span></div>
           </section>
           <section className="panel">
