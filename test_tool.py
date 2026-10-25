@@ -978,5 +978,35 @@ class IndexHtmlTest(unittest.TestCase):
         self.assertIn("medians over completed runs only", self.src)
 
 
+class DefaultSelectionTest(unittest.TestCase):
+    def _selected(self, entries):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            runs.mkdir()
+            (runs / "index.jsonl").write_text(
+                "".join(json.dumps(e) + "\n" for e in entries))
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                return server.read_logs()["selected"]
+            finally:
+                server.INDEX = old
+
+    def test_run_in_progress_is_selected_so_it_can_be_watched(self):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        done = {"run_id": "done", "status": "completed", "at": now}
+        live = {"run_id": "live", "status": "running", "at": now,
+                "timeout_seconds": 1800}
+        self.assertEqual(self._selected([done, live]), "live")
+
+    def test_stale_running_run_does_not_take_over(self):
+        done = {"run_id": "done", "status": "completed",
+                "at": "2020-01-02T00:00:00+00:00"}
+        stale = {"run_id": "stale", "status": "running",
+                 "at": "2020-01-03T00:00:00+00:00", "timeout_seconds": 60}
+        self.assertEqual(self._selected([done, stale]), "done")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
