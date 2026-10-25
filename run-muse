@@ -5,7 +5,7 @@ Usage:
   ./run-muse                     interactive prompt loop
   ./run-muse "Say hi"            single prompt run
   ./run-muse --compare meta "Say hi"  same prompt across a mode's models
-  ./run-muse --minimal "Say hi"  controlled context (repeatable tests)
+  ./run-muse --minimal "Say hi"  repeatable context
 
 Starts the log UI in the background if needed, runs each prompt, and
 appends the result to muse-runs/ for the UI to display. Meta runs use
@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -189,6 +190,20 @@ def ui_up():
     return fetch_ui_logs() is not None
 
 
+def _port_accepts():
+    """True when something accepts a TCP connection on the UI port."""
+    try:
+        with socket.create_connection(("127.0.0.1", PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _port_in_use_message():
+    return (f"Port {PORT} is in use by another app. "
+            f"Set PORT to another port, e.g. PORT={PORT + 1} ./run-muse")
+
+
 def start_ui():
     RUNS.mkdir(exist_ok=True)
     log = open(RUNS / "server.log", "ab")
@@ -240,6 +255,20 @@ def _pid_cwd(pid):
     return ""
 
 
+# Set when another app holds PORT, so no UI line points at it.
+_ui_blocked = False
+
+
+def ui_enabled():
+    return not os.environ.get("RUN_MUSE_NO_UI") and not _ui_blocked
+
+
+def _block_ui():
+    global _ui_blocked
+    _ui_blocked = True
+    print(_port_in_use_message(), file=sys.stderr)
+
+
 def restart_ui():
     for pid in _pids_on_port(PORT):
         cmdline = _pid_cmdline(pid)
@@ -249,8 +278,9 @@ def restart_ui():
         if is_ours:
             subprocess.run(["kill", pid], capture_output=True)
         else:
-            print(f"Port {PORT} is held by another process (pid {pid}), "
-                  "not the Muse UI. Leaving it alone.", file=sys.stderr)
+            # A process we did not start is never signalled. Name the
+            # clash and leave it alone.
+            _block_ui()
             return
     for _ in range(20):
         if not ui_up():
@@ -265,6 +295,11 @@ def ensure_ui():
     logs = fetch_ui_logs()
     opened = False
     if logs is None:
+        # No answer from our server. If something else is listening on
+        # the port, it is not ours to start over or open a tab on.
+        if _port_accepts():
+            _block_ui()
+            return
         start_ui()
         opened = True
     elif logs.get("version") != ui_version():
@@ -273,6 +308,7 @@ def ensure_ui():
         opened = True
     # Only open a tab when we actually started or updated the server.
     # If the page is already up, the user already has it in a tab.
+    opened = opened and ui_enabled()
     if opened and sys.platform == "darwin":
         subprocess.run(["open", UI_URL], capture_output=True)
     elif opened and sys.platform.startswith("linux") and shutil.which("xdg-open"):
@@ -714,6 +750,13 @@ def run_status(r):
     return "completed"
 
 
+def _ui_suffix():
+    """A trailing UI pointer, or nothing when the UI is off."""
+    if not ui_enabled():
+        return ""
+    return f" UI: {UI_URL}"
+
+
 def print_summary(report, r, run_dir):
     status = report["status"]
     label = f"{report['provider']}/{report['model']}"
@@ -723,18 +766,21 @@ def print_summary(report, r, run_dir):
     else:
         durations = [c["duration_ms"] for c in r["calls"]
                      if c.get("duration_ms") is not None]
-        model_ms = sum(durations) if durations else (r.get("api_ms") or 0)
+        model_ms = sum(durations) if durations else r.get("api_ms")
+        model_text = "–" if model_ms is None else f"{model_ms} ms"
         totals = r.get("totals") or {}
         in_tok = totals.get("input_tokens") if totals else \
             sum(c["input_tokens"] or 0 for c in r["calls"])
         out_tok = totals.get("output_tokens") if totals else \
             sum(c["output_tokens"] or 0 for c in r["calls"])
-        print(f"[{label}] wall {r['wall_ms']} ms · model {model_ms} ms · "
+        print(f"[{label}] wall {r['wall_ms']} ms · model {model_text} · "
               f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s) · {status}")
     if r["reply"]:
         print(r["reply"][:500])
+        if len(r["reply"]) > 500:
+            print(f"… (full reply: muse-runs/{report['run_id']}/report.json)")
     if status == "needs_approval":
-        print(f"WARNING: stopped — waiting for approval: "
+        print(f"WARNING: stopped. Waiting for approval: "
               f"{r.get('needs_approval')}. The run was stopped at once "
               f"instead of waiting. Partial files are in "
               f"{run_dir / 'workspace'}")
@@ -746,8 +792,12 @@ def print_summary(report, r, run_dir):
         print(f"Interrupted. The run was stopped and recorded. "
               f"Partial files are in {run_dir / 'workspace'}")
     elif report["error"]:
+        # Stdout is block-buffered when piped and stderr is not, so
+        # flush first or "error:" lands above "Paid run:".
+        sys.stdout.flush()
         print("error:", report["error"], file=sys.stderr)
-    print(f"UI: {UI_URL}  (run {report['run_id']})")
+    if ui_enabled():
+        print(f"UI: {UI_URL}  (run {report['run_id']})")
 
 
 def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
@@ -896,7 +946,7 @@ def run_watch(session_arg=None):
         return
     print(f"Watching session {session_id} read-only. "
           f"Run Muse normally in another terminal; Ctrl+C stops "
-          f"watching. UI: {UI_URL}", flush=True)
+          f"watching.{_ui_suffix()}", flush=True)
     recorded = set()
     try:
         while True:
@@ -971,17 +1021,37 @@ def describe_mode(mode):
     return f"Mode: {mode_label(mode)} ({models})"
 
 
+def exit_code_for(status):
+    if status == "completed":
+        return 0
+    if status == "interrupted":
+        return 130
+    return 1
+
+
 def run_compare(prompt, mode, minimal, timeout, repeat):
     comparison_id = uuid.uuid4().hex[:8]
     models = compare_models_for(mode)
     print(f"Comparing {len(models)} model(s), {repeat} round(s), "
           f"set {comparison_id}")
+    statuses = []
     for round_no, order in compare_schedule(models, repeat):
         for provider, model in order:
-            run_prompt(prompt, provider=provider, model=model,
-                       minimal=minimal, timeout=timeout,
-                       comparison_id=comparison_id,
-                       compare_round=round_no, compare_mode=mode)
+            report = run_prompt(prompt, provider=provider, model=model,
+                                minimal=minimal, timeout=timeout,
+                                comparison_id=comparison_id,
+                                compare_round=round_no, compare_mode=mode)
+            statuses.append(report["status"])
+    done = sum(1 for status in statuses if status == "completed")
+    closing = f"Compare set {comparison_id} done: {done} completed of {len(statuses)}."
+    if ui_enabled():
+        closing += f" UI: {UI_URL}compare/{comparison_id}"
+    print(closing)
+    if "interrupted" in statuses:
+        return 130
+    if any(status != "completed" for status in statuses):
+        return 1
+    return 0
 
 
 def handle_command(line, state):
@@ -1002,7 +1072,8 @@ def handle_command(line, state):
                 "Commands: /mode, /mode single|meta|claude|custom, "
                 "/help, /quit\n"
                 "Modes: single (one run), meta (Meta vs Meta), "
-                "claude (Meta vs Claude), custom (COMPARE_MODELS)"}
+                "claude (Meta vs Claude), custom (COMPARE_MODELS)\n"
+                "Ctrl+C stops a run and records it as interrupted."}
     if text == "/mode":
         return {"action": "message", "mode": mode,
                 "text": describe_mode(mode)}
@@ -1035,12 +1106,15 @@ def compare_schedule(models, repeat):
 
 
 def main():
+    # A launcher started in the background of a non-interactive shell
+    # inherits SIGINT as ignored, so kill -INT would never land.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     parser = argparse.ArgumentParser(prog="run-muse")
     parser.add_argument("prompt", nargs="*", help="prompt text")
     parser.add_argument("--provider", default=DEFAULT_PROVIDER)
     parser.add_argument("--model", default=None)
     parser.add_argument("--minimal", action="store_true",
-                        help="controlled context: no reminders, no foreign context")
+                        help="repeatable context: no reminders, no foreign context")
     parser.add_argument("--timeout", type=int, default=None,
                         help="per-run timeout in seconds (default 1800, "
                              "300 for claude-code and anthropic)")
@@ -1067,23 +1141,23 @@ def main():
     ensure_ui()
     if args.watch is not None:
         run_watch(args.watch or None)
-        return
+        return 0
     prompt = " ".join(args.prompt).strip()
     if prompt and mode is not None:
-        run_compare(prompt, mode, args.minimal, args.timeout, repeat)
-        return
+        return run_compare(prompt, mode, args.minimal, args.timeout, repeat)
     if prompt:
-        run_prompt(prompt, provider=args.provider, model=args.model,
-                   minimal=args.minimal, timeout=args.timeout)
-        return
+        report = run_prompt(prompt, provider=args.provider,
+                            model=args.model, minimal=args.minimal,
+                            timeout=args.timeout)
+        return exit_code_for(report["status"])
     state = {"mode": mode or "single"}
     if state["mode"] == "single":
         context = "minimal" if args.minimal else "full"
         print(f"Model: {args.provider}/{args.model} ({context} context). "
-              f"Type a prompt, /quit to exit. UI: {UI_URL}")
+              f"Type a prompt, /quit to exit.{_ui_suffix()}")
     else:
         print(f"{describe_mode(state['mode'])}. Type a prompt, "
-              f"/mode to switch, /quit to exit. UI: {UI_URL}")
+              f"/mode to switch, /quit to exit.{_ui_suffix()}")
     while True:
         prompt_str = "muse> " if state["mode"] == "single" \
             else f"muse[{state['mode']}]> "
@@ -1111,7 +1185,8 @@ def main():
                             args.minimal, args.timeout, repeat)
         except KeyboardInterrupt:
             print("\nInterrupted.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

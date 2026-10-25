@@ -100,7 +100,7 @@ export default function Overview({ data, onSelect, onGoto }) {
   const events = data.events || [];
   const wires = events.map((e) => e["wire_ms"]).filter((v) => v != null);
   const hasEvents = events.length > 0;
-  const modelTotal = hasEvents ? (data.model_ms ?? wires.reduce((a, b) => a + b, 0)) : null;
+  const modelTotal = hasEvents ? (data.model_ms ?? (wires.length ? wires.reduce((a, b) => a + b, 0) : null)) : null;
   const wall = hasEvents ? data.wall_ms : null;
   const share = (v) => (v != null && wall) ? Math.round(v / wall * 100) + "% of wall" : "–";
   const wallP = fmtDurParts(wall), modelP = fmtDurParts(modelTotal);
@@ -112,7 +112,7 @@ export default function Overview({ data, onSelect, onGoto }) {
   if (data.provider === "claude-code")
     notes.push("Claude Code does not report per-call time or per-call output tokens, so Model time per call, Slowest and last-call Output show –. Model total is the API time it reports for the whole run.");
   if (data.status === "running")
-    notes.push("Run in progress — totals grow as calls land.");
+    notes.push("Run in progress. Totals grow as calls land.");
   if (DID_NOT_COMPLETE.includes(data.status || sel.status))
     notes.push((data.status || sel.status) === "needs_approval"
       ? "This run was stopped because it waited for approval. It stays in Runs, but it is excluded from all medians."
@@ -163,7 +163,7 @@ export default function Overview({ data, onSelect, onGoto }) {
         </div>
         <div id="error" role="alert" style={{ display: (data.errors && data.errors.length) ? "block" : "none" }}>
           {(data.errors && data.errors.length)
-            ? "Latest session error: " + data.errors.map((e) => (e.operation || "call") + " — " + (e.error_type || "failed")).join("; ")
+            ? "Latest session error: " + data.errors.map((e) => (e.operation || "call") + ": " + (e.error_type || "failed")).join("; ")
             : ""}
         </div>
       </section>

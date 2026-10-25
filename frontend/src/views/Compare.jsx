@@ -22,7 +22,7 @@ function CompareSet({ data, onSelect }) {
     + " · " + rounds.length + (rounds.length === 1 ? " round" : " rounds");
   const prompts = [...new Set(inSet.map((s) => s.prompt || ""))];
   const promptLine = prompts.length === 1
-    ? "Same prompt for every leg: “" + shortText(prompts[0], 140) + "” — run each way in the terminal with ./run-muse --compare …; this panel lines the legs up side by side."
+    ? "Same prompt for every leg: “" + shortText(prompts[0], 140) + "”. Run each way in the terminal with ./run-muse --compare …; this panel lines the legs up side by side."
     : "Heads up: legs in this set do not all share one prompt, so treat side-by-side times with care.";
   const wallMeds = legs.map((key) => {
     const done = byLeg.get(key).filter((s) => s.status === "completed");

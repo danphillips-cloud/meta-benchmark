@@ -2,7 +2,7 @@
 
 <img src="docs/overview.png" width="720" alt="Overview: wall time split into model, tools, approval wait and Muse, with a plain-words summary">
 
-A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was Muse's own overhead. One command, runs locally, nothing to install. It tells you which part is slow before you guess.
+A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was Muse's own overhead. One command, runs locally, nothing to install beyond Muse Code. It tells you which part is slow before you guess.
 
 You can also compare models on the same prompt: two Meta models, or Meta against Claude.
 
@@ -21,13 +21,15 @@ muse login    # first time only
 ./run-muse
 ```
 
-The results page opens at http://127.0.0.1:8765. Type a prompt at `muse>` and press Enter. Each prompt is one run. The reply prints with a summary line: wall time, model time and tokens.
+The results page opens at http://127.0.0.1:8765 (or your `PORT`). Type a prompt at `muse>` and press Enter. Each prompt is one run. The reply prints with a summary line: wall time, model time and tokens.
+
+If another app already has that port, the launcher says so and the run carries on without the page. Use another port with `PORT=8766 ./run-muse`.
 
 ## Usage
 
 ```sh
 ./run-muse "write a python script that counts lines in a file, then run it on itself"
-./run-muse --minimal "what is 2+2"                # controlled context
+./run-muse --minimal "what is 2+2"                # repeatable context
 ./run-muse --watch                                # time your own Muse session, read-only
 ```
 
@@ -38,9 +40,23 @@ The results page opens at http://127.0.0.1:8765. Type a prompt at `muse>` and pr
 | Meta vs Claude | `./run-muse --compare claude` |
 | Custom | `./run-muse --compare custom` |
 
-Single and Meta vs Meta use the Muse subscription. Meta vs Claude uses API keys and is billed per token.
+Single and Meta vs Meta use the Muse subscription. Meta vs Claude uses API keys and is billed per token. Custom is paid by default too. Its default legs use Claude Code.
+
+`--compare meta --repeat N` runs N rounds, alternating the order each round.
+
+`--minimal` drops reminders and personal context so runs repeat cleanly. It doesn't make the prompt much smaller: Muse's own system prompt is ~27k tokens either way.
 
 In the prompt loop, `/mode meta`, `/mode claude` and `/mode single` switch mode, and the prompt shows it, for example `muse[meta]>`. `/help` lists commands. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
+
+### Providers
+
+| `--provider` | Runs |
+|---|---|
+| `meta` (default) | Muse Code |
+| `claude-code` | Claude Code headless, `--bare` |
+| `anthropic` | One raw Messages API call |
+
+For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anything else goes to Anthropic. Meta's API serves `muse-wonder-1.0`.
 
 ### API keys
 
@@ -71,27 +87,21 @@ The page refreshes every 2 seconds and follows a run in progress, so model calls
 
 Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
 
-## Advanced
-
-| `--provider` | Runs |
-|---|---|
-| `meta` (default) | Muse Code |
-| `claude-code` | Claude Code headless, `--bare` |
-| `anthropic` | One raw Messages API call |
-
-For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anything else goes to Anthropic. Meta's API serves `muse-wonder-1.0`.
-
-`--compare meta --repeat N` runs N rounds, alternating the order each round.
+## Configuration
 
 | Variable | Default | What it does |
 |---|---|---|
 | `MODEL_API_KEY` | unset | Key for `muse-*` models on Meta's API |
 | `ANTHROPIC_API_KEY` | unset | Key for Claude models |
+| `MUSE_MODEL` | `muse-wonder-full-1.0` | Default model for single runs |
+| `MUSE_PROVIDER` | `meta` | Default provider for single runs |
 | `COMPARE_META` | `meta:muse-wonder-full-1.0,meta:muse-wonder-1.0` | Pairs for `--compare meta` |
 | `COMPARE_CLAUDE` | `claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare claude` |
 | `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare custom` |
 | `BENCH_CLAUDE_MODEL` | `claude-sonnet-5-5` | Default model for `claude-code` and `anthropic` |
 | `META_BASE_URL` | `https://api.meta.ai` | Meta API endpoint |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API endpoint |
+| `MUSE_SESSIONS_DIR` | `~/.local/share/muse/sessions` | Where Muse writes session logs |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for `anthropic` runs |
 | `PORT` | `8765` | Results page port |
 | `RUN_MUSE_NO_UI` | unset | `1` skips the web page |

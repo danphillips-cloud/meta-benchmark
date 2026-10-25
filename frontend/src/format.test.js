@@ -295,6 +295,17 @@ test("liveStateText: banner wording for every live state", () => {
   assert.equal(liveStateText({ state: "ended", tool: null }), "Ended");
 });
 
+test("no invented zeros: null model time stays null and medians skip it", () => {
+  assert.equal(median([null, null]), null);
+  assert.equal(median([null, 0, 10]), 5);
+  assert.equal(median([0]), 0);
+  const d = chartData([S({ run_id: "x", wall_ms: 900, model_ms: null, overhead_ms: null })], null);
+  assert.equal(d[0].model_ms, null);
+  assert.equal(fmtSec(d[0].model_ms), "–");
+  const zero = chartData([S({ run_id: "y", wall_ms: 900, model_ms: 0, overhead_ms: 900 })], null);
+  assert.equal(zero[0].model_ms, 0);
+});
+
 test("fastestOf: tied fastest keys and ratio, nothing when it cannot say", () => {
   const rows = [
     { key: "a", wall: 100 }, { key: "b", wall: 300 }, { key: "c", wall: null },
