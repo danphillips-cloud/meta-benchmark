@@ -197,3 +197,37 @@
   input[type="date"] { padding:7px 9px; font:inherit; font-size:13px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); }
   .runsTable tr.dim td { color:var(--faint); }
   .pagerRow { display:flex; gap:10px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+  .replayClock { font-size:34px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.1; }
+  .replayClockOf { font-size:14px; font-weight:550; color:var(--faint); letter-spacing:0; }
+  .replayState { margin-top:8px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--pre); font-size:13.5px; font-weight:600; line-height:1.5; }
+  .replayRuler { position:relative; height:58px; margin-top:14px; border:1px solid var(--line); border-radius:8px; background:var(--card); cursor:pointer; overflow:hidden; }
+  .replayModelBar { position:absolute; top:10px; height:14px; min-width:3px; border-radius:3px; background:var(--barmodel); opacity:.28; }
+  .replayModelBar.flying { opacity:.65; }
+  .replayModelBar.done { opacity:1; }
+  .replayTick { position:absolute; bottom:10px; width:2px; height:12px; margin-left:-1px; border-radius:1px; background:var(--faint); opacity:.5; }
+  .replayTick.kind-model { height:16px; background:var(--barmodel); }
+  .replayTick.kind-tool { background:var(--barover); }
+  .replayTick.kind-approval { background:var(--barstalled); }
+  .replayTick.done { opacity:1; }
+  .replayPlayhead { position:absolute; top:0; bottom:0; width:2px; margin-left:-1px; background:var(--ink); pointer-events:none; }
+  .replayTransport { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:12px; }
+  .replayPlay { min-width:96px; font-weight:650; color:var(--onaccent); background:var(--accent); border-color:var(--accent); }
+  .replayPlay:hover { background:var(--accent); }
+  .replayPlay:disabled { opacity:.5; cursor:default; }
+  .replaySpeed { display:inline-flex; gap:6px; align-items:center; font-size:12.5px; font-weight:600; color:var(--muted); }
+  .replayKeys { font-size:12px; color:var(--faint); }
+  .replayScrub { width:100%; margin-top:10px; accent-color:var(--accent); }
+  .replaySteps { display:flex; flex-direction:column; max-height:430px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; }
+  .replayStep { display:flex; gap:10px; align-items:center; width:100%; text-align:left; font:inherit; font-size:13px; color:var(--faint); background:none; border:none; border-bottom:1px solid var(--line2); padding:8px 12px; cursor:pointer; }
+  .replayStep:last-child { border-bottom:none; }
+  .replayStep:hover { background:var(--pre); }
+  .replayStep.done { color:var(--ink); }
+  .replayStep.current { background:var(--selected); font-weight:650; }
+  .replayStepAt { flex:none; width:84px; font-variant-numeric:tabular-nums; font-weight:650; }
+  .replayStepDot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--faint); }
+  .replayStepDot.kind-model { background:var(--barmodel); }
+  .replayStepDot.kind-tool { background:var(--barover); }
+  .replayStepDot.kind-approval { background:var(--barstalled); }
+  .replayStepLabel { min-width:0; overflow-wrap:anywhere; }
+  .replayStepMeta { margin-left:auto; flex:none; font-size:11.5px; color:var(--faint); font-variant-numeric:tabular-nums; }
+  @media (max-width:640px){ .replayClock{font-size:27px;} .replayStepAt{width:64px;} .replayStepMeta{display:none;} }
