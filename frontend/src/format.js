@@ -485,6 +485,136 @@ export function replayAt(series, offsetMs) {
   };
 }
 
+// --- Context X-ray ----------------------------------------------------
+// Pure maths over recorded lane byte counts. Bytes stay bytes and are
+// never converted to tokens. Raw groups fold by lane name. A folded
+// lane with zero bytes stays out of the bars but its raw groups are
+// counted. A lane absent from a step is null there, not an invented
+// zero. Omitted groups make that step partial, flagged as such.
+
+const XRAY_LANE_NAMES = {
+  system_base: "System prompt",
+  context: "Run context",
+  history: "Conversation so far",
+  tool_result: "Tool results",
+  tool_specs: "Tool definitions",
+  provider_options: "Provider options",
+};
+
+export function xrayLaneName(lane) {
+  if (!lane) return "–";
+  return XRAY_LANE_NAMES[lane] || lane;
+}
+
+export function xraySeries(xray) {
+  const traces = xray || [];
+  const steps = traces.map((t, i) => {
+    const folded = new Map();
+    let zeroGroups = 0;
+    (t.lanes || []).forEach((g) => {
+      if (g.bytes === 0) zeroGroups += 1;
+      const key = g.lane || "–";
+      if (!folded.has(key)) folded.set(key, { lane: key, bytes: 0, groups: [] });
+      folded.get(key).bytes += g.bytes || 0;
+      folded.get(key).groups.push(g);
+    });
+    return {
+      call: i + 1,
+      step: t.step ?? null,
+      total_bytes: t.total_bytes ?? null,
+      user_bytes: t.user_bytes ?? null,
+      omitted_groups: t.omitted_groups ?? null,
+      omitted_bytes: t.omitted_bytes ?? null,
+      partial: Boolean(t.omitted_groups || t.omitted_bytes),
+      zero_groups: zeroGroups,
+      lanes: [...folded.values()].filter((l) => l.bytes > 0),
+      folded,
+    };
+  });
+  const laneOrder = [];
+  steps.forEach((s) => s.lanes.forEach((l) => {
+    if (!laneOrder.includes(l.lane)) laneOrder.push(l.lane);
+  }));
+  steps.forEach((s) => {
+    s.byLane = {};
+    laneOrder.forEach((lane) => {
+      const hit = s.folded.get(lane);
+      s.byLane[lane] = hit ? hit.bytes : null;
+    });
+    delete s.folded;
+  });
+  return { steps, laneOrder };
+}
+
+export function xrayFirstLanes(series, count) {
+  const first = series && series.steps && series.steps[0];
+  if (!first) return [];
+  return [...first.lanes].sort((a, b) => b.bytes - a.bytes).slice(0, count || 2);
+}
+
+export function xrayHeadline(series) {
+  const first = series && series.steps && series.steps[0];
+  if (!first) return null;
+  const total = first.total_bytes ?? null;
+  const user = first.user_bytes ?? null;
+  return {
+    total_bytes: total,
+    user_bytes: user,
+    user_pct: total && user != null ? Math.round((user / total) * 10000) / 100 : null,
+  };
+}
+
+export function xrayLines(series) {
+  const lines = [];
+  const steps = (series && series.steps) || [];
+  if (steps.length < 2) {
+    steps.forEach((s) => {
+      if (s.partial) lines.push(partialLine(s));
+    });
+    return lines;
+  }
+  const first = steps[0];
+  const last = steps[steps.length - 1];
+  if (first.total_bytes != null && last.total_bytes != null
+      && first.total_bytes !== last.total_bytes) {
+    const diff = last.total_bytes - first.total_bytes;
+    lines.push("Request size " + (diff > 0 ? "grew" : "shrank")
+      + " from " + fmt(first.total_bytes) + " to " + fmt(last.total_bytes)
+      + " bytes across " + steps.length + " calls ("
+      + (diff > 0 ? "+" : "") + fmt(diff) + " bytes).");
+  }
+  (series.laneOrder || []).forEach((lane) => {
+    const values = steps.map((s) => s.byLane[lane]);
+    const name = xrayLaneName(lane);
+    if (values.every((v) => v != null && v === values[0])) {
+      lines.push(name + " held at " + fmt(values[0]) + " bytes on every call.");
+      return;
+    }
+    const a = values[0];
+    const b = values[values.length - 1];
+    if (a != null && b != null && a !== b) {
+      lines.push(name + (b > a ? " grew from " : " shrank from ")
+        + fmt(a) + " to " + fmt(b) + " bytes.");
+    }
+  });
+  steps.forEach((s) => {
+    if (s.partial) lines.push(partialLine(s));
+  });
+  return lines;
+}
+
+function partialLine(step) {
+  const groups = step.omitted_groups;
+  const groupText = groups != null
+    ? fmt(groups) + (groups === 1 ? " lane group was" : " lane groups were") + " omitted from the breakdown."
+    : "Some lane groups were omitted from the breakdown.";
+  const bytesText = step.omitted_bytes != null
+    ? " Omitted lanes cover " + fmt(step.omitted_bytes) + " recorded bytes."
+    : "";
+  return "Call " + step.call + " breakdown is partial. " + groupText + bytesText
+    + " The recorded total still stands.";
+}
+
 export function dataSignature(d) {
   return JSON.stringify([d.selected, d.status,
     (d.sessions || []).map((s) => [s.run_id, s.status, s.wall_ms, s.calls]),

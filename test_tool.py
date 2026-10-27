@@ -1190,6 +1190,63 @@ class VisibilityTest(unittest.TestCase):
             log.live_state(self._records("session-approval.jsonl")),
             {"state": "waiting for approval", "tool": "FakeTool"})
 
+    def test_input_traces_lanes_steps_and_omitted(self):
+        traces = run_muse.muse_log.input_traces(
+            self._records("session-xray.jsonl"))
+        self.assertEqual([t["step"] for t in traces], [0, 1])
+        self.assertEqual(traces[0]["total_bytes"], 1000)
+        self.assertEqual(traces[0]["user_bytes"], 10)
+        self.assertEqual(traces[0]["omitted_groups"], 0)
+        self.assertEqual(traces[0]["lanes"][0], {
+            "lane": "system_base", "source": "fake_default",
+            "wire": "option:fake.instructions", "bytes": 600,
+            "lane_count": 1})
+        # Zero-byte groups stay in the data. The view decides display.
+        self.assertEqual(traces[0]["lanes"][3]["bytes"], 0)
+        self.assertEqual(traces[1]["omitted_groups"], 1)
+        self.assertEqual(traces[1]["omitted_bytes"], 50)
+        self.assertEqual(traces[1]["lanes"][2]["lane_count"], 3)
+
+    def test_input_traces_absent_means_empty_never_invented(self):
+        self.assertEqual(run_muse.muse_log.input_traces(
+            self._records("session-turns.jsonl")), [])
+        self.assertEqual(run_muse.muse_log.input_traces([]), [])
+
+    def test_server_xray_field_from_session_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-xray").mkdir(parents=True)
+            sess = Path(td) / "sessions" / "fake-session-xray"
+            sess.mkdir(parents=True)
+            (sess / "session.jsonl").write_text(
+                (HERE / "fixtures" / "session-xray.jsonl").read_text())
+            run = {"run_id": "run-xray",
+                   "at": datetime.now(timezone.utc).isoformat(),
+                   "prompt": "fake prompt", "model": "fake-model-1",
+                   "provider": "meta", "session_id": "fake-session-xray",
+                   "context_mode": "full", "comparison_id": None,
+                   "status": "completed", "timeout_seconds": 1800,
+                   "wall_ms": 10000, "exit_code": 0, "reply": "ok",
+                   "calls": [], "metrics_unavailable": False,
+                   "error": None}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old_index = server.INDEX
+            old_env = os.environ.get("MUSE_SESSIONS_DIR")
+            server.INDEX = runs / "index.jsonl"
+            server._SESSION_LOG_CACHE.clear()
+            os.environ["MUSE_SESSIONS_DIR"] = str(Path(td) / "sessions")
+            try:
+                data = server.read_logs("run-xray")
+            finally:
+                server.INDEX = old_index
+                server._SESSION_LOG_CACHE.clear()
+                if old_env is None:
+                    os.environ.pop("MUSE_SESSIONS_DIR", None)
+                else:
+                    os.environ["MUSE_SESSIONS_DIR"] = old_env
+            self.assertEqual([t["total_bytes"] for t in data["xray"]],
+                             [1000, 1250])
+
     def test_watch_callback_stops_run_at_once(self):
         with tempfile.TemporaryDirectory() as td:
             result = run_muse.run_process(
