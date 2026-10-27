@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline,
+  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -433,4 +433,68 @@ test("replaySeries: no timed model rows means no landings, steps still replay", 
   assert.deepEqual(s.points.map((p) => p.offset_ms), [0, 1000]);
   assert.deepEqual(s.landings, []);
   assert.equal(replayAt(s, 1000).input_tokens, null);
+});
+
+const LANE = (lane, bytes, wire = "w", lane_count = 1) => ({ lane, source: "s", wire, bytes, lane_count });
+const TRACE = (step, total, user, lanes, og = 0, ob = 0) => ({
+  step, total_bytes: total, user_bytes: user, omitted_groups: og, omitted_bytes: ob, lanes,
+});
+const XRAY = [
+  TRACE(0, 1000, 10, [LANE("system_base", 600), LANE("context", 390), LANE("history", 10), LANE("provider_options", 0, "option:a"), LANE("provider_options", 0, "option:b")]),
+  TRACE(1, 1250, 10, [LANE("system_base", 600), LANE("context", 390), LANE("history", 200, "w", 3), LANE("tool_result", 10)], 1, 50),
+];
+
+test("xrayLaneName: friendly names, raw fallback, dash for missing", () => {
+  assert.equal(xrayLaneName("system_base"), "System prompt");
+  assert.equal(xrayLaneName("history"), "Conversation so far");
+  assert.equal(xrayLaneName("future_lane"), "future_lane");
+  assert.equal(xrayLaneName(null), "–");
+});
+
+test("xraySeries: lanes group by name, zero groups counted, widths in bytes", () => {
+  const s = xraySeries(XRAY);
+  assert.deepEqual(s.steps.map((t) => t.total_bytes), [1000, 1250]);
+  assert.deepEqual(s.laneOrder, ["system_base", "context", "history", "tool_result"]);
+  // Duplicate provider_options groups merge into one zero lane, kept out
+  // of the bars but counted as raw zero groups.
+  assert.equal(s.steps[0].zero_groups, 2);
+  assert.ok(!s.steps[0].lanes.some((l) => l.lane === "provider_options"));
+  assert.deepEqual(s.steps[0].lanes.map((l) => [l.lane, l.bytes]),
+    [["system_base", 600], ["context", 390], ["history", 10]]);
+  assert.equal(s.steps[1].partial, true);
+  assert.equal(s.steps[0].partial, false);
+  // A lane with bytes in one step and none recorded in another is null
+  // there, so the table can show a dash instead of an invented 0.
+  assert.equal(s.steps[0].byLane.tool_result, null);
+  assert.equal(s.steps[1].byLane.tool_result, 10);
+  assert.deepEqual(xraySeries([]), { steps: [], laneOrder: [] });
+  assert.deepEqual(xraySeries(null).steps, []);
+});
+
+test("xrayHeadline and xrayLines: first-call story from recorded bytes only", () => {
+  const s = xraySeries(XRAY);
+  const head = xrayHeadline(s);
+  assert.equal(head.total_bytes, 1000);
+  assert.equal(head.user_bytes, 10);
+  assert.equal(head.user_pct, 1);
+  const lines = xrayLines(s);
+  assert.ok(lines.some((l) => l === "Request size grew from 1,000 to 1,250 bytes across 2 calls (+250 bytes)."));
+  assert.ok(lines.some((l) => l === "Conversation so far grew from 10 to 200 bytes."));
+  assert.ok(lines.some((l) => l === "System prompt held at 600 bytes on every call."));
+  assert.ok(lines.some((l) => l.includes("partial")));
+  // Nothing recorded, nothing said.
+  assert.equal(xrayHeadline(xraySeries([])), null);
+  assert.deepEqual(xrayLines(xraySeries([])), []);
+  const missing = xrayHeadline(xraySeries([TRACE(0, null, null, [])]));
+  assert.deepEqual(missing, { total_bytes: null, user_bytes: null, user_pct: null });
+});
+
+test("xrayFirstLanes: biggest recorded lanes first, works without a system lane", () => {
+  assert.deepEqual(xrayFirstLanes(xraySeries(XRAY), 2).map((l) => l.lane),
+    ["system_base", "context"]);
+  // Echo-style trace: no system_base recorded at all.
+  const echo = xraySeries([TRACE(0, 39327, 9, [LANE("context", 39318), LANE("history", 9)])]);
+  assert.deepEqual(xrayFirstLanes(echo, 2).map((l) => [l.lane, l.bytes]),
+    [["context", 39318], ["history", 9]]);
+  assert.deepEqual(xrayFirstLanes(xraySeries([]), 2), []);
 });

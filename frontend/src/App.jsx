@@ -11,6 +11,7 @@ import Runs from "./views/Runs.jsx";
 import Compare from "./views/Compare.jsx";
 import Timeline from "./views/Timeline.jsx";
 import Replay from "./views/Replay.jsx";
+import Xray from "./views/Xray.jsx";
 
 const EMPTY = { sessions: [], events: [], timeline: [], errors: [] };
 
@@ -38,6 +39,7 @@ function activeView(pathname) {
   if (pathname.startsWith("/compare")) return "compare";
   if (pathname.startsWith("/timeline")) return "timeline";
   if (pathname.startsWith("/replay")) return "replay";
+  if (pathname.startsWith("/xray")) return "xray";
   return "overview";
 }
 
@@ -70,8 +72,9 @@ function AppShell() {
   const runDetail = matchPath("/runs/:id", location.pathname);
   const timelineDetail = matchPath("/timeline/:id", location.pathname);
   const replayDetail = matchPath("/replay/:id", location.pathname);
+  const xrayDetail = matchPath("/xray/:id", location.pathname);
   const compareDetail = matchPath("/compare/:setId", location.pathname);
-  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || (replayDetail && replayDetail.params.id) || "";
+  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || (replayDetail && replayDetail.params.id) || (xrayDetail && xrayDetail.params.id) || "";
   const compareSetId = (compareDetail && compareDetail.params.setId) || "";
   const routeRunRef = useRef(routeRunId);
   routeRunRef.current = routeRunId;
@@ -148,6 +151,7 @@ function AppShell() {
   const goto = (name) => {
     if (name === "runs") navigate("/runs" + qs);
     else if (name === "replay") navigate((data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay") + qs);
+    else if (name === "xray") navigate((data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray") + qs);
     else if (name === "compare") navigate((selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare") + qs);
     else navigate("/" + qs);
   };
@@ -173,6 +177,7 @@ function AppShell() {
     ["compare", "Compare", selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare"],
     ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
     ["replay", "Replay", data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay"],
+    ["xray", "X-ray", data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray"],
   ];
   return (
     <>
@@ -226,6 +231,8 @@ function AppShell() {
             <Route path="/timeline" element={<Timeline data={data} />} />
             <Route path="/replay/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Replay data={data} />} />
             <Route path="/replay" element={<Replay data={data} />} />
+            <Route path="/xray/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Xray data={data} />} />
+            <Route path="/xray" element={<Xray data={data} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <details className="helpBox">
@@ -238,6 +245,7 @@ function AppShell() {
                 <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only; every round stays visible in the matrix.</li>
                 <li>Timeline middle column is time to the next step, not step cost.</li>
                 <li><strong>Replay</strong> plays the selected run back at its recorded step times. Counters count only calls that had landed by the playhead. Model bar starts are derived from recorded model time. Steps with no recorded time stay off the ruler.</li>
+                <li><strong>X-ray</strong> shows what Muse sent on each model call, lane by lane, in recorded bytes. Bytes are not tokens and are never converted. The token table under the bars is a separate unit. A partial note means the log omitted some lane groups for that call.</li>
               </ul>
               <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 test_tool.py</code> tests</p>
               <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>

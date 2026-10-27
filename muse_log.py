@@ -434,3 +434,39 @@ def live_calls_from_records(records):
 
 def live_calls_from_log(path):
     return live_calls_from_records(list(_records(path)))
+
+
+def _lane_value(node):
+    return (node or {}).get("value")
+
+
+def input_traces(records):
+    """Per-step request lane bytes from model_input_trace_recorded.
+
+    Pure. Byte counts only, exactly as recorded: lane aggregates
+    carry no message text and bytes are never converted to tokens.
+    Omitted group and byte counts pass through untouched so callers
+    can say when a breakdown is partial. No traces, empty list.
+    """
+    traces = []
+    for e in records or []:
+        if _event_kind(e) != "model_input_trace_recorded":
+            continue
+        event = (e.get("payload") or {}).get("event") or {}
+        bounded = event.get("bounded") or {}
+        lanes = [{
+            "lane": _lane_value(a.get("logical_lane")),
+            "source": _lane_value(a.get("source")),
+            "wire": _lane_value(a.get("provider_wire_destination")),
+            "bytes": a.get("byte_count"),
+            "lane_count": a.get("lane_count"),
+        } for a in bounded.get("aggregates") or []]
+        traces.append({
+            "step": event.get("model_step"),
+            "total_bytes": bounded.get("total_lane_bytes"),
+            "user_bytes": bounded.get("current_user_message_bytes"),
+            "omitted_groups": bounded.get("omitted_aggregate_group_count"),
+            "omitted_bytes": bounded.get("omitted_aggregate_lane_bytes"),
+            "lanes": lanes,
+        })
+    return traces

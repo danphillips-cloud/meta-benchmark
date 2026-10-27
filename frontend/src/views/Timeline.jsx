@@ -23,7 +23,7 @@ export default function Timeline({ data }) {
     <section data-view-panel="timeline">
       <div className="viewHead"><span className="hint">{data.selected ? shortText(data.prompt || data.selected, 60) + " · " + ((data.provider || "?") + "/" + (data.model || "?")) : ""}</span></div>
       <section className="panel">
-        <div className="panelHead"><div><div className="pt">Per-call model time</div><div className="ps">oldest → newest · stalled time shown on retried calls</div></div>{data.selected ? <Link className="viewAll" to={"/replay/" + encodeURIComponent(data.selected)}>Replay this run →</Link> : null}</div>
+        <div className="panelHead"><div><div className="pt">Per-call model time</div><div className="ps">oldest → newest · stalled time shown on retried calls</div></div>{data.selected ? <span style={{ display: "flex", gap: 14, marginLeft: "auto", flex: "none" }}><Link className="viewAll" to={"/replay/" + encodeURIComponent(data.selected)}>Replay this run →</Link><Link className="viewAll" to={"/xray/" + encodeURIComponent(data.selected)}>X-ray this run →</Link></span> : null}</div>
         {showChart ? <PerCallChart events={events} provider={data.provider} /> : null}
         {!showChart ? <p className="note">{data.provider === "claude-code" ? "Claude Code does not report per-call time, so there is no per-call chart for this run. Its model total (reported API time) is on Overview." : "No model calls yet."}</p> : null}
         <div className="statlets">
