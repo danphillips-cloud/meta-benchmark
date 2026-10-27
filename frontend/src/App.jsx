@@ -10,6 +10,7 @@ import Overview from "./views/Overview.jsx";
 import Runs from "./views/Runs.jsx";
 import Compare from "./views/Compare.jsx";
 import Timeline from "./views/Timeline.jsx";
+import Replay from "./views/Replay.jsx";
 
 const EMPTY = { sessions: [], events: [], timeline: [], errors: [] };
 
@@ -36,6 +37,7 @@ function activeView(pathname) {
   if (pathname.startsWith("/runs/")) return "overview";
   if (pathname.startsWith("/compare")) return "compare";
   if (pathname.startsWith("/timeline")) return "timeline";
+  if (pathname.startsWith("/replay")) return "replay";
   return "overview";
 }
 
@@ -67,8 +69,9 @@ function AppShell() {
 
   const runDetail = matchPath("/runs/:id", location.pathname);
   const timelineDetail = matchPath("/timeline/:id", location.pathname);
+  const replayDetail = matchPath("/replay/:id", location.pathname);
   const compareDetail = matchPath("/compare/:setId", location.pathname);
-  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || "";
+  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || (replayDetail && replayDetail.params.id) || "";
   const compareSetId = (compareDetail && compareDetail.params.setId) || "";
   const routeRunRef = useRef(routeRunId);
   routeRunRef.current = routeRunId;
@@ -144,6 +147,7 @@ function AppShell() {
   const view = activeView(location.pathname);
   const goto = (name) => {
     if (name === "runs") navigate("/runs" + qs);
+    else if (name === "replay") navigate((data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay") + qs);
     else if (name === "compare") navigate((selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare") + qs);
     else navigate("/" + qs);
   };
@@ -168,6 +172,7 @@ function AppShell() {
     ["runs", "Runs", "/runs"],
     ["compare", "Compare", selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare"],
     ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
+    ["replay", "Replay", data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay"],
   ];
   return (
     <>
@@ -219,6 +224,8 @@ function AppShell() {
             <Route path="/compare" element={<Compare data={data} onSelect={selectRun} />} />
             <Route path="/timeline/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Timeline data={data} />} />
             <Route path="/timeline" element={<Timeline data={data} />} />
+            <Route path="/replay/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Replay data={data} />} />
+            <Route path="/replay" element={<Replay data={data} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <details className="helpBox">
@@ -230,6 +237,7 @@ function AppShell() {
                 <li><strong>–</strong> means the harness did not report it. It is never estimated, and no chart is drawn for it. Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.</li>
                 <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only; every round stays visible in the matrix.</li>
                 <li>Timeline middle column is time to the next step, not step cost.</li>
+                <li><strong>Replay</strong> plays the selected run back at its recorded step times. Counters count only calls that had landed by the playhead. Model bar starts are derived from recorded model time. Steps with no recorded time stay off the ruler.</li>
               </ul>
               <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 test_tool.py</code> tests</p>
               <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>

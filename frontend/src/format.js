@@ -374,6 +374,117 @@ export function perCallSeries(events, provider) {
   }));
 }
 
+// --- Replay ---------------------------------------------------------
+// Pure playback maths over recorded timeline rows. Offsets come from
+// each row's recorded timestamp. A row with no usable time is kept in
+// `untimed` and never placed on the ruler. Counters at an offset sum
+// only calls whose landing row is at or before that offset, and a
+// landed call with a missing value makes that total null, not a
+// part sum. A model bar start is derived: landing time minus the
+// recorded model time. The view labels it as derived.
+
+export function replayLabel(operation) {
+  const op = String(operation || "");
+  if (!op) return "–";
+  if (op.includes("model_completed")) return "Model call landed";
+  if (op.includes("model_request_configured")) return "Model call started";
+  if (op.includes("user_intent.accepted")) return "Prompt accepted";
+  if (op.includes("tool_batch.effect.started")) return "Tool started";
+  if (op.includes("tool_batch.effect.terminal")) return "Tool finished";
+  if (op.includes("approval_wait.effect.started")) return "Approval wait started";
+  if (op.includes("approval_wait.effect.terminal")) return "Approval wait ended";
+  if (op.includes("assistant_message_committed")) return "Reply committed";
+  if (op.includes("session.end") || op.includes("session_end")) return "Session ended";
+  return op;
+}
+
+function replayKind(operation, wireMs) {
+  const op = String(operation || "");
+  if (op.includes("model_completed") || wireMs != null) return "model";
+  if (op.includes("approval")) return "approval";
+  if (op.includes("tool")) return "tool";
+  return "step";
+}
+
+export function replaySeries(timeline, events) {
+  const rows = timeline || [];
+  const timed = [];
+  const untimed = [];
+  rows.forEach((row, i) => {
+    const atMs = row && row.at ? Date.parse(row.at) : NaN;
+    const point = {
+      index: i,
+      at: (row && row.at) || null,
+      operation: (row && row.operation) ?? null,
+      label: replayLabel(row && row.operation),
+      kind: replayKind(row && row.operation, row && row["wire_ms"]),
+      wire_ms: (row && row["wire_ms"]) ?? null,
+      duration_ms: (row && row.duration_ms) ?? null,
+    };
+    if (Number.isFinite(atMs)) timed.push({ ...point, atMs });
+    else untimed.push(point);
+  });
+  timed.sort((a, b) => a.atMs - b.atMs || a.index - b.index);
+  const t0 = timed.length ? timed[0].atMs : null;
+  const points = timed.map((p) => {
+    const offset_ms = p.atMs - t0;
+    const { atMs, ...rest } = p;
+    return {
+      ...rest,
+      offset_ms,
+      model_start_ms: p.wire_ms != null ? offset_ms - p.wire_ms : null,
+    };
+  });
+  const chrono = [...(events || [])].reverse();
+  const landings = [];
+  points.filter((p) => p.kind === "model").forEach((p, k) => {
+    const ev = chrono[k] || {};
+    landings.push({
+      call: k + 1,
+      offset_ms: p.offset_ms,
+      model_ms: ev["wire_ms"] ?? p.wire_ms,
+      model_start_ms: p.model_start_ms,
+      input_tokens: ev["gen_ai.usage.input_tokens"] ?? null,
+      output_tokens: ev["gen_ai.usage.output_tokens"] ?? null,
+      cached_tokens: ev["gen_ai.usage.cached_tokens"] ?? null,
+      retries: ev["retries"] || 0,
+      stalled_ms: ev["stalled_ms"] ?? null,
+    });
+  });
+  return {
+    points,
+    untimed,
+    landings,
+    span_ms: points.length ? points[points.length - 1].offset_ms : 0,
+    start_at: points.length ? points[0].at : null,
+    end_at: points.length ? points[points.length - 1].at : null,
+  };
+}
+
+export function replayAt(series, offsetMs) {
+  const s = series || { points: [], landings: [], span_ms: 0 };
+  const t = Math.max(0, Math.min(offsetMs || 0, s.span_ms || 0));
+  const landed = (s.landings || []).filter((l) => l.offset_ms <= t);
+  const total = (key) => {
+    if (!landed.length || landed.some((l) => l[key] == null)) return null;
+    return landed.reduce((a, l) => a + l[key], 0);
+  };
+  const passed = (s.points || []).filter((p) => p.offset_ms <= t);
+  const flying = (s.landings || []).find(
+    (l) => l.model_start_ms != null && t >= l.model_start_ms && t < l.offset_ms);
+  return {
+    offset_ms: t,
+    calls_landed: landed.length,
+    input_tokens: total("input_tokens"),
+    output_tokens: total("output_tokens"),
+    model_ms: total("model_ms"),
+    in_flight_call: flying ? flying.call : null,
+    current: passed.length ? passed[passed.length - 1] : null,
+    next: (s.points || []).find((p) => p.offset_ms > t) || null,
+    passed_count: passed.length,
+  };
+}
+
 export function dataSignature(d) {
   return JSON.stringify([d.selected, d.status,
     (d.sessions || []).map((s) => [s.run_id, s.status, s.wall_ms, s.calls]),

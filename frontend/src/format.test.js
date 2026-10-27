@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, runMode, showBrush, usualBaseline,
+  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline,
 } from "./format.js";
 
 const S = (over) => ({
@@ -346,4 +346,91 @@ test("usualBaseline: never compares across context modes", () => {
   const sel = { ...base, run_id: "sel", at: "2026-01-09", context_mode: "minimal" };
   assert.equal(usualBaseline(sel, earlier), null);
   assert.equal(usualBaseline({ ...sel, context_mode: "full" }, earlier).count, 3);
+});
+
+const T = (at, operation, wire_ms = null, duration_ms = null) => ({ at, operation, wire_ms, duration_ms });
+
+const REPLAY_TIMELINE = [
+  T("2026-01-01T00:00:00.000Z", "runtime.user_intent.accepted accepted"),
+  T("2026-01-01T00:00:05.000Z", "runtime.session model_completed", 4000, 100),
+  T(null, "system init"),
+  T("2026-01-01T00:00:08.000Z", "tool_batch.effect.started tool_batch_effect"),
+  T("2026-01-01T00:00:10.000Z", "runtime.session model_completed", 1500, 0),
+];
+
+// Newest first, as the server sends events. Call 1 retried and stalled.
+const REPLAY_EVENTS = [
+  { ...E(1500, 200, 50, 20), retries: 0, stalled_ms: null },
+  { ...E(4000, 100, 0, 10), retries: 1, stalled_ms: 3000 },
+];
+
+test("replayLabel: friendly names for known steps, raw text otherwise", () => {
+  assert.equal(replayLabel("runtime.session model_completed"), "Model call landed");
+  assert.equal(replayLabel("runtime.user_intent.accepted accepted"), "Prompt accepted");
+  assert.equal(replayLabel("tool_batch.effect.started tool_batch_effect"), "Tool started");
+  assert.equal(replayLabel("tool_batch.effect.terminal tool_batch_effect"), "Tool finished");
+  assert.equal(replayLabel("approval_wait.effect.started x"), "Approval wait started");
+  assert.equal(replayLabel("approval_wait.effect.terminal x"), "Approval wait ended");
+  assert.equal(replayLabel("weird new thing"), "weird new thing");
+  assert.equal(replayLabel(null), "–");
+});
+
+test("replaySeries: timed points get real offsets, untimed rows stay off the ruler", () => {
+  const s = replaySeries(REPLAY_TIMELINE, REPLAY_EVENTS);
+  assert.equal(s.span_ms, 10000);
+  assert.deepEqual(s.points.map((p) => p.offset_ms), [0, 5000, 8000, 10000]);
+  assert.deepEqual(s.points.map((p) => p.kind), ["step", "model", "tool", "model"]);
+  assert.equal(s.untimed.length, 1);
+  assert.equal(s.untimed[0].operation, "system init");
+  // A model bar start is its landing time minus its recorded model time.
+  assert.equal(s.points[1].model_start_ms, 1000);
+  assert.equal(s.points[3].model_start_ms, 8500);
+  assert.equal(s.points[0].model_start_ms, null);
+  // Landings pair model rows with calls in order, retry fields included.
+  assert.deepEqual(s.landings.map((l) => [l.call, l.offset_ms, l.input_tokens, l.retries, l.stalled_ms]),
+    [[1, 5000, 100, 1, 3000], [2, 10000, 200, 0, null]]);
+  assert.deepEqual(replaySeries([], []), { points: [], untimed: [], landings: [], span_ms: 0, start_at: null, end_at: null });
+  assert.deepEqual(replaySeries(null, null).points, []);
+});
+
+test("replayAt: counters only count calls that had landed by then", () => {
+  const s = replaySeries(REPLAY_TIMELINE, REPLAY_EVENTS);
+  const before = replayAt(s, 2000);
+  assert.equal(before.calls_landed, 0);
+  assert.equal(before.input_tokens, null);
+  assert.equal(before.model_ms, null);
+  assert.equal(before.in_flight_call, 1);
+  assert.equal(before.current.label, "Prompt accepted");
+  assert.equal(before.next.offset_ms, 5000);
+  const mid = replayAt(s, 5000);
+  assert.equal(mid.calls_landed, 1);
+  assert.equal(mid.input_tokens, 100);
+  assert.equal(mid.output_tokens, 10);
+  assert.equal(mid.model_ms, 4000);
+  assert.equal(mid.in_flight_call, null);
+  const end = replayAt(s, 999999);
+  assert.equal(end.offset_ms, 10000);
+  assert.equal(end.calls_landed, 2);
+  assert.equal(end.input_tokens, 300);
+  assert.equal(end.model_ms, 5500);
+  assert.equal(end.next, null);
+  // A landed call with a missing value makes that total a dash, not a part sum.
+  const missing = replaySeries(REPLAY_TIMELINE, [
+    { ...E(1500, 200, 50, 20), retries: 0, stalled_ms: null },
+    { ...E(null, null, null, null), retries: 0, stalled_ms: null },
+  ]);
+  assert.equal(replayAt(missing, 10000).input_tokens, null);
+  assert.equal(replayAt(missing, 10000).calls_landed, 2);
+});
+
+test("replaySeries: no timed model rows means no landings, steps still replay", () => {
+  const tl = [
+    T(null, "system init", null, 2745),
+    T("2026-01-01T00:00:03.000Z", "assistant", null, 421),
+    T("2026-01-01T00:00:04.000Z", "user", null, 1212),
+  ];
+  const s = replaySeries(tl, [E(null, 1632, 0, null)]);
+  assert.deepEqual(s.points.map((p) => p.offset_ms), [0, 1000]);
+  assert.deepEqual(s.landings, []);
+  assert.equal(replayAt(s, 1000).input_tokens, null);
 });

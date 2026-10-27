@@ -38,6 +38,7 @@ export function NavIcon({ view }) {
   if (view === "overview") return (<svg className="navIcon" {...svgProps}><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>);
   if (view === "runs") return (<svg className="navIcon" {...svgProps}><path d="M9 6h11" /><path d="M9 12h11" /><path d="M9 18h11" /><path d="M4 6h.01" /><path d="M4 12h.01" /><path d="M4 18h.01" /></svg>);
   if (view === "compare") return (<svg className="navIcon" {...svgProps}><path d="M3 20h18" /><rect x="5" y="11" width="5" height="9" /><rect x="14" y="4" width="5" height="16" /></svg>);
+  if (view === "replay") return (<svg className="navIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><path d="M10 8.2 15.5 12 10 15.8Z" /></svg>);
   return (<svg className="navIcon" {...svgProps}><path d="M3 12h4l2-5 4 10 2-5h6" /></svg>);
 }
 

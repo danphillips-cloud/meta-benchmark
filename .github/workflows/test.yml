@@ -7,7 +7,8 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which has no Python 3.9.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         # 3.9 is the oldest supported: it's what macOS ships.
@@ -20,7 +21,7 @@ jobs:
       - run: python3 test_tool.py
 
   frontend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

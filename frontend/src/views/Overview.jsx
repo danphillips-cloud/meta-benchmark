@@ -201,7 +201,7 @@ export default function Overview({ data, onSelect, onGoto }) {
         </section>
       ) : null}
       <section className="panel" aria-label="Per-call breakdown" style={{ marginTop: 12 }}>
-        <div className="panelHead"><div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div></div>
+        <div className="panelHead"><div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div><button className="viewAll" type="button" onClick={() => onGoto("replay")}>Replay this run →</button></div>
         <PerCallChart events={events} provider={data.provider || sel.provider} />
         {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span>{retryTotal > 0 ? <span><span className="sw swStalled"></span>stalled</span> : null}<span>line = input tokens</span></div> : null}
       </section>
