@@ -805,6 +805,8 @@ const DIAG_FIXED_MIN_TOKENS = 20000;
 const DIAG_USUAL_MIN_PCT = 25;
 const DIAG_USUAL_MIN_MS = 2000;
 const DIAG_MAX_FINDINGS = 6;
+const DIAG_TOOL_MIN_MS = 1000;
+const DIAG_TOOL_MIN_SHARE = 0.05;
 
 const DIAG_BUCKET_LABELS = {
   model: "model time",
@@ -812,6 +814,30 @@ const DIAG_BUCKET_LABELS = {
   approval: "approval wait",
   muse: "Muse overhead",
 };
+
+export function toolTotals(intervalsData) {
+  const list = (intervalsData && intervalsData.intervals)
+    || (Array.isArray(intervalsData) ? intervalsData : []);
+  const byName = new Map();
+  list.filter((iv) => iv.kind === "tool").forEach((iv) => {
+    const name = iv.name || "unnamed tool";
+    if (!byName.has(name)) {
+      byName.set(name, {
+        name, total_ms: 0, wait_ms: 0, calls: 0,
+        slowest_ms: null, slowest_start_at: null,
+      });
+    }
+    const g = byName.get(name);
+    g.total_ms += iv.duration_ms || 0;
+    g.wait_ms += iv.wait_ms || 0;
+    g.calls += 1;
+    if (g.slowest_ms == null || (iv.duration_ms || 0) > g.slowest_ms) {
+      g.slowest_ms = iv.duration_ms ?? null;
+      g.slowest_start_at = iv.start_at || null;
+    }
+  });
+  return [...byName.values()].sort((a, b) => b.total_ms - a.total_ms);
+}
 
 export function parseReplayStart(value, spanMs) {
   const span = spanMs || 0;
@@ -821,7 +847,7 @@ export function parseReplayStart(value, spanMs) {
   return Math.min(n, span);
 }
 
-export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeline, baseline } = {}) {
+export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeline, baseline, intervals } = {}) {
   const wall = wall_ms ?? null;
   const chrono = [...(events || [])].reverse();
   const series = replaySeries(timeline, events);
@@ -869,12 +895,41 @@ export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeli
     }
   });
 
+  const intervalList = (intervals && intervals.intervals) || [];
+  const intervalOffset = (startAt) => {
+    if (!startAt || !series.start_at) return null;
+    const off = Date.parse(startAt) - Date.parse(series.start_at);
+    return Number.isFinite(off) ? Math.max(0, off) : null;
+  };
+  const topTool = toolTotals(intervals)[0] || null;
+  if (topTool && wall && topTool.total_ms >= DIAG_TOOL_MIN_MS
+      && topTool.total_ms / wall >= DIAG_TOOL_MIN_SHARE) {
+    withMs.push({
+      kind: "slowest-tool", ms: topTool.total_ms, call: null,
+      replay_offset_ms: intervalOffset(topTool.slowest_start_at),
+      text: topTool.name + " took " + fmtDur(topTool.total_ms)
+        + " across " + topTool.calls + (topTool.calls === 1 ? " call" : " calls")
+        + " (" + shareOf(topTool.total_ms) + "% of wall)."
+        + (topTool.calls > 1 && topTool.slowest_ms != null
+          ? " Slowest single " + topTool.name + " ran " + fmtDur(topTool.slowest_ms) + "."
+          : "")
+        + (topTool.wait_ms > 0
+          ? " Approval wait inside those calls adds up to " + fmtDur(topTool.wait_ms) + "."
+          : ""),
+    });
+  }
+
   if (split && split.approval_ms != null && split.approval_ms >= DIAG_APPROVAL_MIN_MS) {
     const firstApproval = series.points.find((p) => p.kind === "approval");
+    const approvalNames = [...new Set(intervalList
+      .filter((iv) => iv.kind === "approval" && iv.name)
+      .map((iv) => iv.name))];
+    const approvalLabel = approvalNames.length === 1
+      ? "Approval wait for " + approvalNames[0] : "Approval wait";
     withMs.push({
       kind: "approval", ms: split.approval_ms, call: null,
       replay_offset_ms: firstApproval ? firstApproval.offset_ms : null,
-      text: "Approval wait took " + fmtDur(split.approval_ms)
+      text: approvalLabel + " took " + fmtDur(split.approval_ms)
         + (shareOf(split.approval_ms) != null
           ? " (" + shareOf(split.approval_ms) + "% of wall)." : "."),
     });
@@ -965,7 +1020,18 @@ export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeli
 
   withMs.sort((a, b) => b.ms - a.ms);
   const findings = [...withMs, ...withoutMs].slice(0, DIAG_MAX_FINDINGS);
-  return { buckets, verdict, findings };
+  const unclosed = [
+    ...((intervals && intervals.unclosed_tools) || []),
+    ...((intervals && intervals.unclosed_approvals) || []),
+  ];
+  const unclosedNames = [...new Set(unclosed)];
+  const partial_note = unclosedNames.length
+    ? "Tool picture is partial: " + unclosedNames.join(", ")
+      + " started but never recorded a finish, so "
+      + (unclosedNames.length === 1 ? "it is" : "they are")
+      + " not counted or drawn."
+    : null;
+  return { buckets, verdict, findings, partial_note };
 }
 
 export function dataSignature(d) {

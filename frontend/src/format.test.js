@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, runMode, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -656,6 +656,65 @@ test("diagnoseRun: Claude Code runs thin out without invented call detail", () =
   assert.deepEqual(d.findings, []);
   assert.deepEqual(diagnoseRun({}).findings, []);
   assert.equal(diagnoseRun({}).verdict, null);
+});
+
+const IV = (kind, name, start, dur, wait = 0) => ({
+  kind, name,
+  start_at: "2026-01-01T00:00:" + String(start).padStart(2, "0") + ".000Z",
+  end_at: "2026-01-01T00:00:" + String(start + Math.round(dur / 1000)).padStart(2, "0") + ".000Z",
+  duration_ms: dur, wait_ms: wait,
+});
+const TOOLS = {
+  intervals: [
+    IV("tool", "bash", 5, 20000, 12000),
+    IV("tool", "bash", 30, 21000, 0),
+    IV("tool", "read_file", 55, 500),
+    IV("approval", "bash", 6, 12000),
+  ],
+  unclosed_tools: [], unclosed_approvals: [],
+};
+
+test("toolTotals: groups by recorded name, slowest single kept", () => {
+  const totals = toolTotals(TOOLS);
+  assert.equal(totals[0].name, "bash");
+  assert.equal(totals[0].total_ms, 41000);
+  assert.equal(totals[0].calls, 2);
+  assert.equal(totals[0].wait_ms, 12000);
+  assert.equal(totals[0].slowest_ms, 21000);
+  assert.deepEqual(toolTotals(null), []);
+  assert.deepEqual(toolTotals({ intervals: [] }), []);
+});
+
+test("diagnoseRun: slowest tool named over threshold, silent under it", () => {
+  const base = {
+    wall_ms: 100000, model_ms: 50000, provider: "meta",
+    events: [E(50000, 1000, 0, 10)],
+    split: { model_ms: 50000, tool_ms: 29000, approval_ms: 12000, muse_ms: 9000 },
+    timeline: DIAG_TL, baseline: null,
+  };
+  const d = diagnoseRun({ ...base, intervals: TOOLS });
+  const tool = d.findings.find((f) => f.kind === "slowest-tool");
+  assert.ok(tool);
+  assert.match(tool.text, /^bash took /);
+  assert.match(tool.text, /across 2 calls \(41% of wall\)/);
+  assert.match(tool.text, /Approval wait inside those calls adds up to/);
+  // Evidence starts at the slowest single call, 30 s after step one.
+  assert.equal(tool.replay_offset_ms, 30000);
+  // The approval finding names its tool now that intervals carry it.
+  const appr = d.findings.find((f) => f.kind === "approval");
+  assert.match(appr.text, /^Approval wait for bash took /);
+  const quiet = diagnoseRun({ ...base, intervals: {
+    intervals: [IV("tool", "bash", 5, 900)], unclosed_tools: [], unclosed_approvals: [],
+  } });
+  assert.ok(!quiet.findings.some((f) => f.kind === "slowest-tool"));
+});
+
+test("diagnoseRun: unclosed intervals become a partial note, never a finding", () => {
+  const d = diagnoseRun({ ...DIAG(), intervals: {
+    intervals: [], unclosed_tools: ["bash"], unclosed_approvals: [],
+  } });
+  assert.match(d.partial_note, /bash started but never recorded a finish/);
+  assert.equal(diagnoseRun(DIAG()).partial_note, null);
 });
 
 test("parseReplayStart: numeric offsets clamp, junk becomes zero", () => {

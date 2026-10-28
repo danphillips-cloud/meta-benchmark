@@ -1374,6 +1374,74 @@ class VisibilityTest(unittest.TestCase):
             self.assertEqual([t["total_bytes"] for t in data["xray"]],
                              [1000, 1250])
 
+    def test_tool_intervals_named_nested_and_timed(self):
+        out = run_muse.muse_log.tool_intervals(
+            self._records("session-turns.jsonl"))
+        self.assertEqual(out["unclosed_tools"], [])
+        self.assertEqual(out["unclosed_approvals"], [])
+        self.assertEqual(len(out["intervals"]), 2)
+        tool = next(i for i in out["intervals"] if i["kind"] == "tool")
+        appr = next(i for i in out["intervals"]
+                    if i["kind"] == "approval")
+        # Turn fixture: tool 5.3s -> 7.3s mark, approval nested
+        # 5.4s -> 5.9s. Full durations stay recorded, wait separated.
+        self.assertEqual(tool["name"], "FakeTool")
+        self.assertEqual(tool["duration_ms"], 2000)
+        self.assertEqual(tool["wait_ms"], 500)
+        self.assertEqual(appr["name"], "FakeTool")
+        self.assertEqual(appr["duration_ms"], 500)
+        self.assertEqual(appr["wait_ms"], 0)
+        self.assertLess(tool["start_at"], appr["start_at"])
+        self.assertLess(appr["end_at"], tool["end_at"])
+
+    def test_tool_intervals_unclosed_never_get_durations(self):
+        out = run_muse.muse_log.tool_intervals(
+            self._records("session-missing-pair.jsonl"))
+        self.assertEqual(out["intervals"], [])
+        self.assertEqual(out["unclosed_tools"], ["FakeTool"])
+        out = run_muse.muse_log.tool_intervals(
+            self._records("session-approval.jsonl"))
+        self.assertEqual(out["unclosed_tools"], ["FakeTool"])
+        self.assertEqual(out["unclosed_approvals"], ["FakeTool"])
+        empty = {"intervals": [], "unclosed_tools": [],
+                 "unclosed_approvals": []}
+        self.assertEqual(run_muse.muse_log.tool_intervals([]), empty)
+
+    def test_server_intervals_field_from_session_log(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-tools").mkdir(parents=True)
+            sess = Path(td) / "sessions" / "fake-session-tools"
+            sess.mkdir(parents=True)
+            (sess / "session.jsonl").write_text(
+                (HERE / "fixtures" / "session-turns.jsonl").read_text())
+            run = {"run_id": "run-tools",
+                   "at": datetime.now(timezone.utc).isoformat(),
+                   "prompt": "fake prompt", "model": "fake-model-1",
+                   "provider": "meta", "session_id": "fake-session-tools",
+                   "context_mode": "full", "comparison_id": None,
+                   "status": "completed", "timeout_seconds": 1800,
+                   "wall_ms": 10000, "exit_code": 0, "reply": "ok",
+                   "calls": [], "metrics_unavailable": False,
+                   "error": None}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old_index = server.INDEX
+            old_env = os.environ.get("MUSE_SESSIONS_DIR")
+            server.INDEX = runs / "index.jsonl"
+            server._SESSION_LOG_CACHE.clear()
+            os.environ["MUSE_SESSIONS_DIR"] = str(Path(td) / "sessions")
+            try:
+                data = server.read_logs("run-tools")
+            finally:
+                server.INDEX = old_index
+                server._SESSION_LOG_CACHE.clear()
+                if old_env is None:
+                    os.environ.pop("MUSE_SESSIONS_DIR", None)
+                else:
+                    os.environ["MUSE_SESSIONS_DIR"] = old_env
+            kinds = sorted(i["kind"] for i in data["intervals"]["intervals"])
+            self.assertEqual(kinds, ["approval", "tool"])
+
     def test_watch_callback_stops_run_at_once(self):
         with tempfile.TemporaryDirectory() as td:
             result = run_muse.run_process(
