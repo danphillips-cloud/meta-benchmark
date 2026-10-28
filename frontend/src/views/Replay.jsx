@@ -1,10 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fmt, fmtDur, localTime, replayAt, replaySeries, shortText } from "../format.js";
+import { useSearchParams } from "react-router";
+import { fmt, fmtDur, localTime, parseReplayStart, replayAt, replaySeries, shortText } from "../format.js";
 
 const SPEEDS = [1, 4, 10, 20, 60];
 
 export default function Replay({ data }) {
   const runId = data.selected || "";
+  const [searchParams] = useSearchParams();
+  const startParamRef = useRef(null);
+  startParamRef.current = searchParams.get("t");
   // Snapshot the series per run. The 2 second poll swaps `data`, and
   // playback must not reset or stretch because a poll landed.
   const series = useMemo(
@@ -26,8 +30,10 @@ export default function Replay({ data }) {
 
   useEffect(() => {
     setPlaying(false);
-    seek(0);
-  }, [runId, seek]);
+    // A ?t= start offset (doctor evidence links) applies once per run.
+    seek(parseReplayStart(startParamRef.current, span));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
 
   useEffect(() => {
     if (!playing) return undefined;
