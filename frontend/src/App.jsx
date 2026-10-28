@@ -12,6 +12,7 @@ import Compare from "./views/Compare.jsx";
 import Timeline from "./views/Timeline.jsx";
 import Replay from "./views/Replay.jsx";
 import Xray from "./views/Xray.jsx";
+import Radar from "./views/Radar.jsx";
 
 const EMPTY = { sessions: [], events: [], timeline: [], errors: [] };
 
@@ -40,6 +41,7 @@ function activeView(pathname) {
   if (pathname.startsWith("/timeline")) return "timeline";
   if (pathname.startsWith("/replay")) return "replay";
   if (pathname.startsWith("/xray")) return "xray";
+  if (pathname.startsWith("/radar")) return "radar";
   return "overview";
 }
 
@@ -178,6 +180,7 @@ function AppShell() {
     ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
     ["replay", "Replay", data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay"],
     ["xray", "X-ray", data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray"],
+    ["radar", "Radar", "/radar"],
   ];
   return (
     <>
@@ -233,6 +236,7 @@ function AppShell() {
             <Route path="/replay" element={<Replay data={data} />} />
             <Route path="/xray/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Xray data={data} />} />
             <Route path="/xray" element={<Xray data={data} />} />
+            <Route path="/radar" element={<Radar data={data} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <details className="helpBox">
@@ -246,6 +250,7 @@ function AppShell() {
                 <li>Timeline middle column is time to the next step, not step cost.</li>
                 <li><strong>Replay</strong> plays the selected run back at its recorded step times. Counters count only calls that had landed by the playhead. Model bar starts are derived from recorded model time. Steps with no recorded time stay off the ruler.</li>
                 <li><strong>X-ray</strong> shows what Muse sent on each model call, lane by lane, in recorded bytes. Bytes are not tokens and are never converted. The token table under the bars is a separate unit. A partial note means the log omitted some lane groups for that call.</li>
+                <li><strong>Radar</strong> lines medians up by prompt and harness version. Run <code>./run-muse --suite</code> after a Muse update to fill a new column. A change figure needs at least two completed runs on both versions and is plain arithmetic on medians. The report buttons generate those same numbers as markdown.</li>
               </ul>
               <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 test_tool.py</code> tests</p>
               <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>

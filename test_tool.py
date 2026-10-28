@@ -1002,6 +1002,133 @@ def _completed(**overrides):
     return result
 
 
+class SuiteTest(unittest.TestCase):
+    def _write_suite(self, td, data):
+        path = Path(td) / "suite.json"
+        path.write_text(json.dumps(data) if not isinstance(data, str)
+                        else data)
+        return path
+
+    def test_load_suite_entries_and_defaults(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_suite(td, {"prompts": [
+                {"name": "sky", "prompt": "why blue",
+                 "minimal": True},
+                {"name": "tools", "prompt": "count lines",
+                 "provider": "meta", "model": "fake-m"},
+            ]})
+            entries = run_muse.load_suite(path)
+        self.assertEqual([e["name"] for e in entries], ["sky", "tools"])
+        self.assertEqual(entries[0]["provider"],
+                         run_muse.DEFAULT_PROVIDER)
+        self.assertIsNone(entries[0]["model"])
+        self.assertTrue(entries[0]["minimal"])
+        self.assertFalse(entries[1]["minimal"])
+        self.assertEqual(entries[1]["model"], "fake-m")
+
+    def test_load_suite_rejects_bad_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            cases = [
+                "{not json",
+                {"prompts": []},
+                {"prompts": [{"name": "x"}]},
+                {"prompts": [{"name": "x", "prompt": "a"},
+                             {"name": "x", "prompt": "b"}]},
+            ]
+            for data in cases:
+                with self.assertRaises(ValueError):
+                    run_muse.load_suite(self._write_suite(td, data))
+            with self.assertRaises(ValueError):
+                run_muse.load_suite(Path(td) / "missing.json")
+            with self.assertRaises(ValueError) as ctx:
+                run_muse.load_suite(self._write_suite(
+                    td, {"prompts": [{"name": "x", "prompt": "a"},
+                                     {"name": "x", "prompt": "b"}]}))
+            self.assertIn("duplicate", str(ctx.exception))
+
+    def test_run_records_suite_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs, old_fn = run_muse.RUNS, run_muse.run_anthropic
+            run_muse.RUNS = runs
+            run_muse.run_anthropic = lambda *a, **k: \
+                (_ for _ in ()).throw(KeyboardInterrupt())
+            try:
+                report = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m",
+                    suite_id="suite1", suite_prompt="sky")
+                single = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m")
+            finally:
+                run_muse.RUNS, run_muse.run_anthropic = old_runs, old_fn
+            self.assertEqual(report["suite_id"], "suite1")
+            self.assertEqual(report["suite_prompt"], "sky")
+            self.assertIsNone(single["suite_id"])
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs(report["run_id"])
+            finally:
+                server.INDEX = old
+            picked = next(s for s in data["sessions"]
+                          if s["run_id"] == report["run_id"])
+            self.assertEqual(picked["suite_id"], "suite1")
+            self.assertEqual(picked["suite_prompt"], "sky")
+
+    def test_run_suite_repeats_each_entry_and_reports_failure(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_suite(td, {"prompts": [
+                {"name": "a", "prompt": "pa"},
+                {"name": "b", "prompt": "pb", "minimal": True},
+            ]})
+            calls = []
+
+            def fake_run(prompt, **kwargs):
+                calls.append((prompt, kwargs))
+                status = "failed" if prompt == "pb" else "completed"
+                return {"status": status}
+
+            old = (run_muse.run_prompt, run_muse.RUNS,
+                   run_muse.harness_version)
+            run_muse.run_prompt = fake_run
+            run_muse.RUNS = Path(td) / "no-runs"
+            run_muse.harness_version = lambda p: "v-now"
+            try:
+                code = run_muse.run_suite(path, timeout=9, repeat=2)
+            finally:
+                (run_muse.run_prompt, run_muse.RUNS,
+                 run_muse.harness_version) = old
+        self.assertEqual(code, 1)
+        self.assertEqual([c[0] for c in calls], ["pa", "pb", "pa", "pb"])
+        self.assertTrue(all(c[1]["suite_id"] for c in calls))
+        self.assertEqual(len({c[1]["suite_id"] for c in calls}), 1)
+        self.assertEqual(calls[1][1]["suite_prompt"], "b")
+        self.assertTrue(calls[1][1]["minimal"])
+        self.assertFalse(calls[0][1]["minimal"])
+
+    def test_suite_version_notice_only_on_change(self):
+        self.assertIsNone(run_muse.suite_version_notice(
+            None, "v2", "meta"))
+        self.assertIsNone(run_muse.suite_version_notice(
+            "v1", "v1", "meta"))
+        self.assertIsNone(run_muse.suite_version_notice(
+            "v1", None, "meta"))
+        notice = run_muse.suite_version_notice("v1", "v2", "meta")
+        self.assertIn("was v1, now v2", notice)
+
+    def test_suite_flag_rejects_prompt_and_compare(self):
+        import contextlib
+        for argv in (["run-muse", "hi", "--suite"],
+                     ["run-muse", "--suite", "--compare", "meta"]):
+            err = io.StringIO()
+            with mock.patch.object(sys, "argv", argv):
+                with contextlib.redirect_stderr(err):
+                    with self.assertRaises(SystemExit) as ctx:
+                        run_muse.main()
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertIn("--suite takes no prompt", err.getvalue())
+
+
 class PaidNoticeTest(unittest.TestCase):
     def _run_with_ki(self, provider, model, fake_name):
         import contextlib

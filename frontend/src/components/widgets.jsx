@@ -40,6 +40,7 @@ export function NavIcon({ view }) {
   if (view === "compare") return (<svg className="navIcon" {...svgProps}><path d="M3 20h18" /><rect x="5" y="11" width="5" height="9" /><rect x="14" y="4" width="5" height="16" /></svg>);
   if (view === "replay") return (<svg className="navIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><path d="M10 8.2 15.5 12 10 15.8Z" /></svg>);
   if (view === "xray") return (<svg className="navIcon" {...svgProps}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 12h18" /><path d="M9 4v8" /><path d="M15 12v8" /></svg>);
+  if (view === "radar") return (<svg className="navIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12h.01" strokeWidth="2.6" /></svg>);
   return (<svg className="navIcon" {...svgProps}><path d="M3 12h4l2-5 4 10 2-5h6" /></svg>);
 }
 
