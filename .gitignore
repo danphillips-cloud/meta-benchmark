@@ -7,3 +7,6 @@ frontend/node_modules/
 .env
 *.pyc
 .DS_Store
+# Agent rules stay local.
+AGENTS.md
+CLAUDE.md
