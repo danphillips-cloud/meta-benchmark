@@ -298,6 +298,47 @@ def time_split(records, wall_ms, model_ms):
             "approval_ms": approval_ms, "muse_ms": muse_ms}
 
 
+def _ms_to_iso(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat()
+
+
+def tool_intervals(records):
+    """Named tool and approval intervals, exactly as recorded.
+
+    Pure. Closed intervals carry kind, name, ISO start and end and
+    duration. A tool interval also carries `wait_ms`, the approval
+    overlap inside it, from the same overlap maths `time_split`
+    uses. Full durations stay as recorded: callers decide how to
+    present the nesting. Started effects with no terminal come back
+    as names only, never with invented durations.
+    """
+    records = records or []
+    tool_iv, tool_open = _paired_intervals(
+        records, "tool_batch.effect.started",
+        "tool_batch.effect.terminal", "effect_id")
+    appr_iv, appr_open = _paired_intervals(
+        records, "approval_wait.effect.started",
+        "approval_wait.effect.terminal", "pending_action_id")
+    intervals = []
+    for start, end, name in tool_iv:
+        intervals.append({
+            "kind": "tool", "name": name,
+            "start_at": _ms_to_iso(start), "end_at": _ms_to_iso(end),
+            "duration_ms": end - start,
+            "wait_ms": _overlap_ms([(start, end, name)], appr_iv),
+        })
+    for start, end, name in appr_iv:
+        intervals.append({
+            "kind": "approval", "name": name,
+            "start_at": _ms_to_iso(start), "end_at": _ms_to_iso(end),
+            "duration_ms": end - start, "wait_ms": 0,
+        })
+    intervals.sort(key=lambda i: i["start_at"])
+    return {"intervals": intervals,
+            "unclosed_tools": tool_open,
+            "unclosed_approvals": appr_open}
+
+
 def live_state(records):
     """Current state of a live session, from its log records only.
 

@@ -132,7 +132,7 @@ export default function Overview({ data, onSelect, onGoto }) {
   const diag = !isRunning && hasEvents ? diagnoseRun({
     wall_ms: wall, model_ms: modelTotal,
     provider: data.provider || sel.provider, events, split,
-    timeline: data.timeline, baseline,
+    timeline: data.timeline, baseline, intervals: data.intervals,
   }) : null;
   const detailLines = whatLines.filter((line) =>
     !line.startsWith("Model time was") && !line.startsWith("Tools ran")
@@ -230,6 +230,7 @@ export default function Overview({ data, onSelect, onGoto }) {
           ) : (
             <p className="note">No recorded cause stands out. The slices above are the whole story the log tells.</p>
           )}
+          {diag.partial_note ? <p className="note">{diag.partial_note}</p> : null}
           {detailLines.length ? (
             <>
               <div className="label" style={{ marginTop: 12 }}>What happened</div>

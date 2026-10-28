@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 36
+VERSION = 37
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -263,6 +263,10 @@ def read_logs(run_id=None):
         live_state = muse_log.live_state(selected_records)
     xray = muse_log.input_traces(selected_records) \
         if selected_records is not None else []
+    intervals = muse_log.tool_intervals(selected_records) \
+        if selected_records is not None else {
+            "intervals": [], "unclosed_tools": [],
+            "unclosed_approvals": []}
     return {
         "version": VERSION,
         "sessions": sessions,
@@ -283,7 +287,7 @@ def read_logs(run_id=None):
             dict(selected, wall_ms=selected.get("wall_ms") or elapsed_ms),
             records=selected_records),
         "events": events, "timeline": timeline, "errors": errors[-3:],
-        "xray": xray,
+        "xray": xray, "intervals": intervals,
     }
 
 

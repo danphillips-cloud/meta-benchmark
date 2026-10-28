@@ -104,6 +104,20 @@ export default function Replay({ data }) {
   };
 
   const pct = (ms) => (span ? Math.max(0, Math.min(100, (ms / span) * 100)) : 0);
+  // Tool and approval segments share the series clock. Snapshot per
+  // run like the series, aligned through its recorded start time.
+  const toolSegs = useMemo(() => {
+    if (!series.start_at) return [];
+    const t0 = Date.parse(series.start_at);
+    return (((data.intervals || {}).intervals) || [])
+      .map((iv) => ({ ...iv, start_ms: Date.parse(iv.start_at) - t0 }))
+      .filter((iv) => Number.isFinite(iv.start_ms));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId]);
+  const unclosedNames = [
+    ...(((data.intervals || {}).unclosed_tools) || []),
+    ...(((data.intervals || {}).unclosed_approvals) || []),
+  ];
   const flight = at.in_flight_call
     ? series.landings.find((l) => l.call === at.in_flight_call) : null;
   const wallDiffers = data.wall_ms != null && span > 0
@@ -186,10 +200,33 @@ export default function Replay({ data }) {
           ))}
           <div className="replayPlayhead" style={{ left: pct(offset) + "%" }} />
         </div>
+        {toolSegs.length ? (
+          <div className="replayToolLane" role="presentation" title="Click to move the playhead" onClick={onRulerClick}>
+            {toolSegs.map((iv, i) => (
+              <div
+                key={"seg" + i}
+                className={"replayToolSeg kind-" + iv.kind + (iv.start_ms <= offset ? " done" : "")}
+                style={{ left: pct(Math.max(0, iv.start_ms)) + "%", width: Math.max(0.2, pct(iv.start_ms + (iv.duration_ms || 0)) - pct(Math.max(0, iv.start_ms))) + "%" }}
+                title={(iv.name || "unnamed tool") + " · " + fmtDur(iv.duration_ms)
+                  + " · started at " + fmtDur(iv.start_ms)
+                  + (iv.wait_ms ? " · includes " + fmtDur(iv.wait_ms) + " approval wait" : "")}
+              />
+            ))}
+            <div className="replayPlayhead" style={{ left: pct(offset) + "%" }} />
+          </div>
+        ) : null}
         <div className="legend">
           <span><span className="sw swModel"></span>model call. Bars end when the call landed. Bar starts are derived from recorded model time</span>
           <span>tick = one recorded step</span>
+          {toolSegs.length ? <span><span className="sw replayToolSw"></span>tool segment, named in its tooltip, widths true</span> : null}
+          {toolSegs.some((iv) => iv.kind === "approval") ? <span><span className="sw swStalled"></span>approval wait</span> : null}
         </div>
+        {unclosedNames.length ? (
+          <p className="note">
+            {[...new Set(unclosedNames)].join(", ") + " started but never recorded a finish and "
+              + (unclosedNames.length === 1 ? "is" : "are") + " not drawn on the tool lane."}
+          </p>
+        ) : null}
         <div className="replayTransport">
           <button className="btn replayPlay" type="button" onClick={togglePlay} disabled={!span} aria-label={playing ? "Pause replay" : "Play replay"}>
             {playing ? "Pause" : offset >= span && span ? "Play again" : "Play"}

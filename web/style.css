@@ -261,3 +261,8 @@
   .diagFindings { margin:14px 0 0; padding-left:22px; line-height:1.65; font-size:13.5px; }
   .diagFindings li { margin:5px 0; }
   @media (max-width:640px){ .diagBucketLabel{width:86px;} .diagBucketValue{width:96px;} }
+  .replayToolLane { position:relative; height:20px; margin-top:6px; border:1px solid var(--line); border-radius:6px; background:var(--card); cursor:pointer; overflow:hidden; }
+  .replayToolSeg { position:absolute; top:4px; height:10px; min-width:2px; border-radius:2px; background:var(--st-ok); opacity:.45; }
+  .replayToolSeg.kind-approval { background:var(--barstalled); }
+  .replayToolSeg.done { opacity:1; }
+  .replayToolSw { background:var(--st-ok); }
