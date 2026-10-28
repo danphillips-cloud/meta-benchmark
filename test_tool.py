@@ -1631,6 +1631,149 @@ class VisibilityTest(unittest.TestCase):
             self.assertIsNone(data["time_split"]["muse_ms"])
 
 
+class RetroTest(unittest.TestCase):
+    """Ambient retro: backfill closed turns from logs already on disk."""
+
+    def _setup(self, td, sessions, index_lines=()):
+        runs = Path(td) / "muse-runs"
+        runs.mkdir(parents=True)
+        if index_lines:
+            (runs / "index.jsonl").write_text(
+                "".join(json.dumps(e) + "\n" for e in index_lines))
+        sess_root = Path(td) / "sessions"
+        for sid, spec in sessions.items():
+            name, offset = spec if isinstance(spec, tuple) else (spec, 0)
+            lines = []
+            for line in (HERE / "fixtures" / name).read_text().splitlines():
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                if offset and rec.get("recorded_at"):
+                    rec["recorded_at"] += offset
+                lines.append(json.dumps(rec))
+            log = sess_root / sid / "session.jsonl"
+            log.parent.mkdir(parents=True)
+            log.write_text("\n".join(lines) + "\n")
+        return runs, sess_root
+
+    def _run_retro(self, runs, sess_root):
+        import contextlib
+        old_runs = run_muse.RUNS
+        old = os.environ.get("MUSE_SESSIONS_DIR")
+        run_muse.RUNS = runs
+        os.environ["MUSE_SESSIONS_DIR"] = str(sess_root)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                run_muse.run_retro()
+        finally:
+            run_muse.RUNS = old_runs
+            if old is None:
+                os.environ.pop("MUSE_SESSIONS_DIR", None)
+            else:
+                os.environ["MUSE_SESSIONS_DIR"] = old
+
+    def _index(self, runs):
+        path = runs / "index.jsonl"
+        if not path.is_file():
+            return []
+        return [json.loads(l) for l in path.read_text().splitlines()
+                if l.strip()]
+
+    def test_retro_imports_closed_turns_as_runs(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {"fake-1": "session-turns.jsonl"})
+            self._run_retro(runs, sess)
+            entries = self._index(runs)
+            self.assertEqual(len(entries), 2)
+            self.assertEqual([e["turn_index"] for e in entries], [1, 2])
+            self.assertEqual([e["prompt"] for e in entries],
+                             ["fake prompt one", "fake prompt two"])
+            for e in entries:
+                self.assertEqual(e["provider"], "muse-retro")
+                self.assertEqual(e["command"], "./run-muse --retro")
+                self.assertEqual(e["context_mode"], "interactive")
+                self.assertEqual(e["session_id"], "fake-1")
+                self.assertEqual(e["harness_version"], "0.0.0-test")
+                self.assertEqual(e["status"], "completed")
+            report = json.loads((runs / entries[0]["run_id"]
+                                 / "report.json").read_text())
+            self.assertTrue(report["timeline"])
+            self.assertTrue(all(t.get("at") for t in report["timeline"]))
+            self.assertNotIn("timeline", entries[0])
+            self.assertEqual(entries[0]["wall_ms"], 7300)
+            self.assertEqual(entries[0]["tool_ms"], 1500)
+            self.assertEqual(entries[0]["approval_ms"], 500)
+            self.assertEqual(entries[0]["muse_ms"], 300)
+
+    def test_retro_rerun_imports_nothing_new(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {"fake-1": "session-turns.jsonl"})
+            self._run_retro(runs, sess)
+            self._run_retro(runs, sess)
+            self.assertEqual(len(self._index(runs)), 2)
+
+    def test_retro_skips_launcher_owned_session_whole(self):
+        owned = {"run_id": "run-owned", "provider": "meta",
+                 "session_id": "fake-1", "status": "completed"}
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {"fake-1": "session-turns.jsonl"},
+                                     index_lines=[owned])
+            self._run_retro(runs, sess)
+            self.assertEqual(self._index(runs), [owned])
+
+    def test_retro_skips_only_the_watched_turn(self):
+        watched = {"run_id": "run-watched", "provider": "muse-watch",
+                   "session_id": "fake-1", "turn_index": 1,
+                   "status": "completed"}
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {"fake-1": "session-turns.jsonl"},
+                                     index_lines=[watched])
+            self._run_retro(runs, sess)
+            entries = self._index(runs)
+            self.assertEqual(len(entries), 2)
+            self.assertEqual(entries[1]["provider"], "muse-retro")
+            self.assertEqual(entries[1]["turn_index"], 2)
+
+    def test_retro_holds_back_open_and_turnless_sessions(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {
+                "fake-open": "session-approval.jsonl",
+                "fake-no-intent": "claude-code-stream.jsonl",
+            })
+            self._run_retro(runs, sess)
+            self.assertEqual(self._index(runs), [])
+
+    def test_retro_imports_oldest_session_first(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {
+                "a-newer": ("session-turns.jsonl", 10_000_000_000),
+                "z-older": "session-turns.jsonl",
+            })
+            self._run_retro(runs, sess)
+            self.assertEqual(
+                [e["session_id"] for e in self._index(runs)],
+                ["z-older", "z-older", "a-newer", "a-newer"])
+
+    def _main_error(self, argv):
+        import contextlib
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", argv):
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as ctx:
+                    run_muse.main()
+        self.assertEqual(ctx.exception.code, 2)
+        return err.getvalue()
+
+    def test_retro_takes_no_prompt_compare_or_suite(self):
+        err = self._main_error(["run-muse", "--retro", "hi"])
+        self.assertIn("--retro takes no prompt", err)
+        err = self._main_error(
+            ["run-muse", "--retro", "--compare", "meta", "hi"])
+        self.assertIn("--retro takes no prompt", err)
+        err = self._main_error(["run-muse", "--suite", "--retro"])
+        self.assertIn("--suite takes no prompt", err)
+
+
 class HarnessVersionTest(unittest.TestCase):
     def setUp(self):
         run_muse._harness_version_cache.clear()

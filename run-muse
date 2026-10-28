@@ -903,27 +903,30 @@ def _fmt_bucket(ms):
     return "–" if ms is None else f"{ms / 1000:.1f} s"
 
 
-def record_watch_turn(turn, session_id):
-    """Append one finished watched turn as a muse-watch run."""
+def record_watch_turn(turn, session_id, provider="muse-watch",
+                      command="./run-muse --watch", quiet=False):
+    """Append one finished interactive turn as a run."""
     run_id, run_dir = new_run_dir()
     (run_dir / "prompt.md").write_text(turn["prompt"])
     split = turn["split"]
     report = dict(BASE_REPORT)
     report.update({
         "at": turn["at"], "run_id": run_id, "prompt": turn["prompt"],
-        "model": turn["model"], "provider": "muse-watch",
+        "model": turn["model"], "provider": provider,
         "session_id": session_id, "context_mode": "interactive",
         "harness_version": turn["version"],
         "tool_ms": split["tool_ms"],
         "approval_ms": split["approval_ms"],
         "muse_ms": split["muse_ms"],
         "status": "completed",
-        "command": "./run-muse --watch",
+        "command": command,
         "wall_ms": turn["wall_ms"], "exit_code": 0,
-        "calls": turn["calls"],
+        "calls": turn["calls"], "timeline": turn.get("timeline") or [],
         "turn_index": turn["index"],
     })
     write_run(run_dir, report)
+    if quiet:
+        return report
     print(f"turn {turn['index']} · wall {_fmt_bucket(turn['wall_ms'])}"
           f" · model {_fmt_bucket(split['model_ms'])}"
           f" · tools {_fmt_bucket(split['tool_ms'])}"
@@ -975,6 +978,90 @@ def run_watch(session_arg=None):
                 recorded.add(turn["index"])
                 record_watch_turn(turn, session_id)
         print("\nStopped watching.", flush=True)
+
+
+_TURN_PROVIDERS = ("muse-watch", "muse-retro")
+
+
+def _index_entries():
+    index = RUNS / "index.jsonl"
+    entries = []
+    if index.is_file():
+        for line in index.read_text(errors="replace").splitlines():
+            try:
+                entries.append(json.loads(line))
+            except Exception:
+                continue
+    return entries
+
+
+def retro_plan(entries, sessions):
+    """(session_id, turn) pairs still missing from the index.
+
+    A session already recorded by the launcher (any provider other
+    than the turn importers) is skipped whole. Its turns are runs
+    with launcher-measured walls already. A turn recorded by watch
+    or an earlier retro run is skipped by (session_id, turn_index).
+    """
+    owned = {e.get("session_id") for e in entries
+             if e.get("session_id")
+             and e.get("provider") not in _TURN_PROVIDERS}
+    seen = {(e.get("session_id"), e.get("turn_index")) for e in entries
+            if e.get("provider") in _TURN_PROVIDERS
+            and e.get("session_id")}
+    plan = []
+    for session_id, turns in sessions:
+        if session_id in owned:
+            continue
+        for turn in turns:
+            if (session_id, turn["index"]) not in seen:
+                plan.append((session_id, turn))
+    return plan
+
+
+def run_retro():
+    """Record finished turns from every Muse session log on disk.
+
+    Read-only on the logs. Only closed turns import, the same rule
+    watch uses, so a session still running contributes nothing in
+    flight. Rerunning imports only turns closed since the last run.
+    """
+    files = sorted(muse_log.sessions_dir().glob("**/session.jsonl"))
+    if not files:
+        print("No Muse session logs found.", flush=True)
+        return
+    sessions = []
+    seen_ids = set()
+    for path in files:
+        session_id = path.parent.name
+        if session_id in seen_ids:
+            continue
+        seen_ids.add(session_id)
+        records = muse_log.read_records(path)
+        turns = muse_log.split_turns(records)
+        if not turns:
+            continue
+        first = min((e.get("recorded_at") or 0) for e in records)
+        sessions.append((first, session_id, turns))
+    sessions.sort(key=lambda s: (s[0], s[1]))
+    plan = retro_plan(_index_entries(),
+                      [(sid, turns) for _, sid, turns in sessions])
+    planned = {}
+    for session_id, _turn in plan:
+        planned[session_id] = planned.get(session_id, 0) + 1
+    candidates = sum(len(turns) for _, _, turns in sessions)
+    for _first, session_id, turns in sessions:
+        imported = planned.get(session_id, 0)
+        if imported:
+            print(f"session {session_id}: imported {imported} turn(s), "
+                  f"skipped {len(turns) - imported}", flush=True)
+    for session_id, turn in plan:
+        record_watch_turn(turn, session_id, provider="muse-retro",
+                          command="./run-muse --retro", quiet=True)
+    print(f"Retro done. Imported {len(plan)} turn(s) from "
+          f"{len(planned)} session(s). Skipped "
+          f"{candidates - len(plan)} turn(s) already recorded."
+          f"{_ui_suffix()}", flush=True)
 
 
 def parse_compare_models(text):
@@ -1246,6 +1333,9 @@ def main():
                         help="watch a Muse session read-only (newest "
                              "when no session id is given) and record "
                              "each finished turn")
+    parser.add_argument("--retro", action="store_true",
+                        help="record finished turns from every Muse "
+                             "session log already on disk")
     parser.add_argument("--suite", nargs="?", const=str(SUITE_DEFAULT),
                         default=None, metavar="FILE",
                         help="run the golden prompt suite (default file "
@@ -1256,10 +1346,13 @@ def main():
             and args.suite is None:
         parser.error("--repeat needs --compare or --suite")
     if args.suite is not None and (args.prompt or args.compare
-                                   or args.watch is not None):
-        parser.error("--suite takes no prompt, --compare or --watch")
+                                   or args.watch is not None or args.retro):
+        parser.error("--suite takes no prompt, --compare, --watch or --retro")
     if args.watch is not None and (args.prompt or args.compare):
         parser.error("--watch takes no prompt or --compare")
+    if args.retro and (args.prompt or args.compare
+                       or args.watch is not None):
+        parser.error("--retro takes no prompt, --compare or --watch")
     mode = args.compare
     args.model = args.model or default_model(args.provider)
     repeat = args.repeat if args.repeat is not None else 1
@@ -1276,6 +1369,9 @@ def main():
     ensure_ui()
     if args.watch is not None:
         run_watch(args.watch or None)
+        return 0
+    if args.retro:
+        run_retro()
         return 0
     prompt = " ".join(args.prompt).strip()
     if prompt and mode is not None:
