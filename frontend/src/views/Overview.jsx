@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, buildRunsQuery, diagnoseRun, explainLines, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, legKey, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
+import { DID_NOT_COMPLETE, buildRunsQuery, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, legKey, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts } from "../format.js";
+import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
 import { Chip, CopyButton, StatIcon, StatusPill } from "../components/widgets.jsx";
@@ -96,12 +97,7 @@ export default function Overview({ data, onSelect, onGoto }) {
   const reply = data.reply || "";
   useEffect(() => { setReplyExpanded(false); }, [reply]);
 
-  const sel = (data.sessions || []).find((s) => s.run_id === data.selected) || {};
-  const events = data.events || [];
-  const wires = events.map((e) => e["wire_ms"]).filter((v) => v != null);
-  const hasEvents = events.length > 0;
-  const modelTotal = hasEvents ? (data.model_ms ?? (wires.length ? wires.reduce((a, b) => a + b, 0) : null)) : null;
-  const wall = hasEvents ? data.wall_ms : null;
+  const { sel, events, hasEvents, modelTotal, wall, split, baseline, diag, whatLines, detailLines } = selectedRunFacts(data);
   const share = (v) => (v != null && wall) ? Math.round(v / wall * 100) + "% of wall" : "–";
   const wallP = fmtDurParts(wall), modelP = fmtDurParts(modelTotal);
   const inSum = events.reduce((a, e) => a + (e["gen_ai.usage.input_tokens"] ?? 0), 0);
@@ -120,23 +116,11 @@ export default function Overview({ data, onSelect, onGoto }) {
 
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
   const scope = overviewScope(data, shared);
-  const split = data.time_split || {};
   const retryTotal = events.reduce((a, e) => a + (e["retries"] || 0), 0);
   const stalledTotal = events.reduce((a, e) => a + (e["stalled_ms"] || 0), 0);
   const toolP = fmtDurParts(split.tool_ms ?? null), apprP = fmtDurParts(split.approval_ms ?? null), museP = fmtDurParts(split.muse_ms ?? null);
-  const whatLines = explainLines({ wall_ms: wall, model_ms: modelTotal, provider: data.provider || sel.provider, events, split });
-  const baseline = usualBaseline(sel.run_id ? sel : null, data.sessions || []);
   const usualWall = baseline && baseline.wall_ms != null ? " · usual " + fmtDur(baseline.wall_ms) : "";
   const usualModel = baseline && baseline.model_ms != null ? " · usual " + fmtDur(baseline.model_ms) : "";
-  const isRunning = (data.status || sel.status) === "running";
-  const diag = !isRunning && hasEvents ? diagnoseRun({
-    wall_ms: wall, model_ms: modelTotal,
-    provider: data.provider || sel.provider, events, split,
-    timeline: data.timeline, baseline, intervals: data.intervals,
-  }) : null;
-  const detailLines = whatLines.filter((line) =>
-    !line.startsWith("Model time was") && !line.startsWith("Tools ran")
-    && !line.startsWith("Waited") && !line.includes(" retried "));
 
   // Medians by provider/model, completed runs only.
   const groups = new Map();
@@ -175,6 +159,13 @@ export default function Overview({ data, onSelect, onGoto }) {
             ? "Latest session error: " + data.errors.map((e) => (e.operation || "call") + ": " + (e.error_type || "failed")).join("; ")
             : ""}
         </div>
+        {data.selected ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <CopyButton text={runCard(data)} label="Copy run card" />
+            <button className="btn" type="button" onClick={() => download("run-card-" + data.selected + ".md", runCard(data), "text/markdown")}>Download card</button>
+            <button className="btn" type="button" onClick={() => download("repro-pack-" + data.selected + ".md", reproPack(data), "text/markdown")}>Download repro pack</button>
+          </div>
+        ) : null}
       </section>
       {(data.status === "running" || sel.status === "running") && data.live_state ? (
         <div className={"liveBanner" + (data.live_state.state === "waiting for approval" ? " warn" : "")} role="status">

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, runMode, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -724,4 +724,190 @@ test("parseReplayStart: numeric offsets clamp, junk becomes zero", () => {
   assert.equal(parseReplayStart("abc", 10000), 0);
   assert.equal(parseReplayStart(null, 10000), 0);
   assert.equal(parseReplayStart("5000", 0), 0);
+});
+
+// --- Shareable run cards and repro packs -----------------------------
+// PAYLOAD mimics the /api/logs shape for the stall run. Events are
+// newest first, exactly as the server sends them.
+
+const PAYLOAD = (over) => ({
+  selected: "20261025-100503-bc9687",
+  sessions: [{
+    run_id: "20261025-100503-bc9687", at: "2026-10-25T14:05:03+00:00",
+    prompt: "what is 2+2", provider: "meta", model: "muse-wonder-full-1.0",
+    context_mode: "full", harness_version: "Muse Code 1.4.13 (1.4.13-R6996.1)",
+    status: "completed", calls: 1, wall_ms: 192586, model_ms: 188550,
+    input_tokens: 29037, output_tokens: 25,
+  }],
+  prompt: "what is 2+2", reply: "REPLY-TEXT-HERE", provider: "meta",
+  model: "muse-wonder-full-1.0",
+  harness_version: "Muse Code 1.4.13 (1.4.13-R6996.1)",
+  status: "completed", wall_ms: 192586, model_ms: 188550,
+  time_split: { model_ms: 188550, tool_ms: 0, approval_ms: 0, muse_ms: 4036 },
+  events: [{ ...E(188550, 29037, 0, 25), model: "muse-wonder-full-1.0", retries: 1, stalled_ms: 181140 }],
+  timeline: DIAG_TL, errors: [], xray: [],
+  intervals: { intervals: [], unclosed_tools: [], unclosed_approvals: [] },
+  ...over,
+});
+
+test("runCard: stall run carries identity, verdict and stall finding", () => {
+  const card = runCard(PAYLOAD());
+  assert.match(card, /^# Run card: 20261025-100503-bc9687/m);
+  assert.match(card, /meta\/muse-wonder-full-1\.0/);
+  assert.match(card, /Status: completed/);
+  assert.match(card, /Most of this run was model time \(98% of wall\)\./);
+  assert.match(card, /94% of wall, inside model time/);
+  assert.match(card, /Input tokens: 29,037/);
+  assert.match(card, /Recorded data only/);
+});
+
+test("runCard: reply stays off the card and no path or command leaks", () => {
+  const card = runCard(PAYLOAD());
+  assert.ok(!card.includes("REPLY-TEXT-HERE"));
+  assert.ok(!card.includes("/Users/"));
+  assert.ok(!card.includes("muse exec"));
+});
+
+test("runCard: long prompt truncates on the card with a plain note", () => {
+  const long = "x".repeat(500);
+  const card = runCard(PAYLOAD({ prompt: long }));
+  assert.ok(!card.includes(long));
+  assert.match(card, /truncated/);
+  assert.ok(card.includes("x".repeat(100)));
+});
+
+test("runCard: fence-hostile prompt cannot break out of its fence", () => {
+  const card = runCard(PAYLOAD({ prompt: "# not a heading\n```\nboom" }));
+  assert.ok(card.includes("````"));
+  const lines = card.split("\n");
+  const at = lines.indexOf("# not a heading");
+  assert.ok(at > 0 && lines[at - 1].startsWith("````"));
+});
+
+test("runCard: no-events run shows dashes and plain words, no verdict", () => {
+  const card = runCard(PAYLOAD({
+    events: [], wall_ms: null, model_ms: null, time_split: {},
+    sessions: [{ run_id: "20261025-100503-bc9687", at: "2026-10-25T14:05:03+00:00", prompt: "what is 2+2", provider: "meta", model: "m1", status: "failed", calls: 0 }],
+  }));
+  assert.match(card, /No calls were recorded/);
+  assert.ok(card.includes("–"));
+  assert.ok(!card.includes("Most of this run"));
+});
+
+test("runCard: running run says so and skips diagnosis", () => {
+  const card = runCard(PAYLOAD({ status: "running" }));
+  assert.match(card, /Run in progress/);
+  assert.ok(!card.includes("Most of this run"));
+});
+
+test("runCard: empty payload degrades to plain words, never crashes", () => {
+  assert.match(runCard({}), /No run selected/);
+  assert.match(runCard(null), /No run selected/);
+});
+
+test("runCard: usual baseline line appears with 3 earlier matches", () => {
+  const earlier = [1, 2, 3].map((n) => ({
+    run_id: "earlier-" + n, at: "2026-10-24T14:05:03+00:00",
+    prompt: "what is 2+2", provider: "meta", model: "muse-wonder-full-1.0",
+    context_mode: "full", status: "completed", calls: 1,
+    wall_ms: 8000, model_ms: 7000, overhead_ms: 1000,
+    input_tokens: 29000, output_tokens: 20,
+  }));
+  const base = PAYLOAD();
+  const card = runCard({ ...base, sessions: [...base.sessions, ...earlier] });
+  assert.match(card, /usual 8\.0 s/);
+});
+
+test("selectedRunFacts: matches the inputs Overview assembles by hand", () => {
+  const f = selectedRunFacts(PAYLOAD());
+  assert.equal(f.sel.run_id, "20261025-100503-bc9687");
+  assert.equal(f.wall, 192586);
+  assert.equal(f.modelTotal, 188550);
+  assert.equal(f.hasEvents, true);
+  assert.equal(f.isRunning, false);
+  assert.match(f.diag.verdict, /98% of wall/);
+  assert.equal(selectedRunFacts(PAYLOAD({ status: "running" })).diag, null);
+  assert.equal(selectedRunFacts({}).hasEvents, false);
+});
+
+test("reproPack: embeds the card body, full prompt and full reply", () => {
+  const pack = reproPack(PAYLOAD());
+  assert.match(pack, /^# Repro pack: 20261025-100503-bc9687/m);
+  assert.match(pack, /## Run card/);
+  assert.match(pack, /Most of this run was model time \(98% of wall\)\./);
+  assert.match(pack, /## Prompt in full/);
+  assert.match(pack, /## Reply/);
+  assert.ok(pack.includes("REPLY-TEXT-HERE"));
+  const long = "y".repeat(500);
+  assert.ok(reproPack(PAYLOAD({ prompt: long })).includes(long));
+});
+
+test("reproPack: rerun command rebuilt from recorded fields only", () => {
+  const pack = reproPack(PAYLOAD());
+  assert.ok(pack.includes('./run-muse --provider meta --model muse-wonder-full-1.0 "what is 2+2"'));
+  assert.ok(!pack.includes("--minimal"));
+  assert.ok(!pack.includes("/Users/"));
+  assert.ok(!pack.includes("muse exec"));
+  const base = PAYLOAD();
+  const minimal = reproPack({
+    ...base,
+    sessions: [{ ...base.sessions[0], context_mode: "minimal" }],
+  });
+  assert.ok(minimal.includes("--minimal"));
+  const quoted = reproPack(PAYLOAD({ prompt: 'say "hi" and pay $5' }));
+  assert.ok(quoted.includes('\\"hi\\"'));
+  assert.ok(quoted.includes("\\$5"));
+  const watched = reproPack({
+    ...base,
+    sessions: [{ ...base.sessions[0], context_mode: "interactive" }],
+  });
+  assert.match(watched, /interactive session/);
+  assert.ok(!watched.includes("./run-muse --provider"));
+});
+
+test("reproPack: per-call table is chronological with dash discipline", () => {
+  const pack = reproPack(PAYLOAD());
+  assert.match(pack, /\| Call \| Model \| Model time \| Input \| Output \| Cached \| Reasoning \| Retries \| Stalled \|/);
+  assert.match(pack, /\| 1 \| muse-wonder-full-1\.0 \| 3m 8\.6 s \| 29,037 \| 25 \| 0 \| – \| 1 \| 3m 1\.1 s \|/);
+  const two = reproPack(PAYLOAD({
+    events: [
+      { ...E(2000, 500, 0, 5), model: "m1", retries: 0, stalled_ms: null },
+      { ...E(1000, 300, 0, 3), model: "m1", retries: 0, stalled_ms: null },
+    ],
+  }));
+  assert.match(two, /\| 1 \| m1 \| 1\.0 s \| 300 \|/);
+  assert.match(two, /\| 2 \| m1 \| 2\.0 s \| 500 \|/);
+});
+
+test("reproPack: xray, tools, errors and timeline sections ride along", () => {
+  const pack = reproPack(PAYLOAD({
+    xray: XRAY,
+    intervals: {
+      intervals: [{ kind: "tool", name: "bash", duration_ms: 9000, wait_ms: 0, start_at: "2026-10-25T14:05:10+00:00" }],
+      unclosed_tools: ["write_file"], unclosed_approvals: [],
+    },
+    errors: [{ at: "2026-10-25T14:08:15+00:00", operation: "20261025-100503-bc9687", error_type: "exit 1" }],
+  }));
+  assert.match(pack, /## Context X-ray/);
+  assert.match(pack, /1,000 bytes/);
+  assert.match(pack, /user message was 10 bytes/);
+  assert.match(pack, /## Tools/);
+  assert.match(pack, /bash: 1 call/);
+  assert.match(pack, /write_file/);
+  assert.match(pack, /## Errors/);
+  assert.match(pack, /exit 1/);
+  assert.match(pack, /## Timeline/);
+  assert.match(pack, /runtime\.session model_completed/);
+});
+
+test("reproPack: long timeline truncates with a plain count note", () => {
+  const rows = Array.from({ length: 250 }, (_, i) => T("2026-01-01T00:00:00.000Z", "op " + i, null, i));
+  const pack = reproPack(PAYLOAD({ timeline: rows }));
+  assert.match(pack, /Timeline truncated at 200 of 250 rows/);
+  assert.ok(!pack.includes("| op 249 |"));
+});
+
+test("reproPack: empty payload and missing reply degrade in plain words", () => {
+  assert.match(reproPack({}), /No run selected/);
+  assert.match(reproPack(PAYLOAD({ reply: "" })), /No reply recorded/);
 });
