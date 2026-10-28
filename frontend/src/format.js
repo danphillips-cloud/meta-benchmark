@@ -784,6 +784,190 @@ export function radarReport(matrix, generatedAt) {
   return lines.join("\n");
 }
 
+// --- Why was this slow ----------------------------------------------
+// Two tiers, because causes nest. Tier 1 buckets are the recorded
+// time split: non-overlapping shares of wall. Tier 2 findings are
+// observations that explain a bucket and say which one they sit in
+// where nesting applies. Thresholds below only choose what surfaces.
+// Every number in a finding is recorded or plain arithmetic on
+// recorded numbers. Findings with recorded milliseconds rank by
+// those milliseconds. The rest follow in fixed priority order.
+
+const DIAG_APPROVAL_MIN_MS = 1000;
+const DIAG_MUSE_MIN_SHARE = 0.25;
+const DIAG_DOMINANT_MIN_CALLS = 3;
+const DIAG_DOMINANT_SHARE = 0.5;
+const DIAG_GROWTH_RATIO = 2;
+const DIAG_GROWTH_MIN_TOKENS = 5000;
+const DIAG_CACHE_MIN_CALLS = 3;
+const DIAG_CACHE_MAX_PCT = 25;
+const DIAG_FIXED_MIN_TOKENS = 20000;
+const DIAG_USUAL_MIN_PCT = 25;
+const DIAG_USUAL_MIN_MS = 2000;
+const DIAG_MAX_FINDINGS = 6;
+
+const DIAG_BUCKET_LABELS = {
+  model: "model time",
+  tools: "tools",
+  approval: "approval wait",
+  muse: "Muse overhead",
+};
+
+export function parseReplayStart(value, spanMs) {
+  const span = spanMs || 0;
+  if (!span) return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, span);
+}
+
+export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeline, baseline } = {}) {
+  const wall = wall_ms ?? null;
+  const chrono = [...(events || [])].reverse();
+  const series = replaySeries(timeline, events);
+  const landingOffset = (call) => {
+    const hit = series.landings[call - 1];
+    return hit ? hit.offset_ms : null;
+  };
+  const shareOf = (ms) => (ms != null && wall ? Math.round((ms / wall) * 100) : null);
+
+  const bucketDefs = [
+    ["model", split && split.model_ms != null ? split.model_ms : (model_ms ?? null)],
+    ["tools", split ? (split.tool_ms ?? null) : null],
+    ["approval", split ? (split.approval_ms ?? null) : null],
+    ["muse", split ? (split.muse_ms ?? null) : null],
+  ];
+  const buckets = bucketDefs
+    .map(([key, ms]) => ({ key, label: DIAG_BUCKET_LABELS[key], ms, share_pct: shareOf(ms) }))
+    .sort((a, b) => (b.ms ?? -1) - (a.ms ?? -1));
+  const top = buckets[0];
+  let verdict = null;
+  if (top && top.ms != null && top.share_pct != null) {
+    verdict = top.share_pct >= 50
+      ? "Most of this run was " + top.label + " (" + top.share_pct + "% of wall)."
+      : "No single slice dominated. The biggest was " + top.label
+        + " at " + top.share_pct + "% of wall.";
+  }
+
+  const withMs = [];
+  const withoutMs = [];
+  const wires = chrono.map((e) => e["wire_ms"] ?? null);
+  const wireTotal = wires.reduce((a, w) => a + (w || 0), 0);
+
+  chrono.forEach((e, i) => {
+    const stalled = e["stalled_ms"];
+    const retries = e["retries"] || 0;
+    if (retries > 0 && stalled != null && stalled > 0) {
+      const pct = shareOf(stalled);
+      withMs.push({
+        kind: "stalled", ms: stalled, call: i + 1,
+        replay_offset_ms: landingOffset(i + 1),
+        text: "Call " + (i + 1) + " stalled for " + fmtDur(stalled)
+          + (retries === 1 ? " before a retry." : " across " + retries + " retries.")
+          + (pct != null ? " That is " + pct + "% of wall, inside model time." : ""),
+      });
+    }
+  });
+
+  if (split && split.approval_ms != null && split.approval_ms >= DIAG_APPROVAL_MIN_MS) {
+    const firstApproval = series.points.find((p) => p.kind === "approval");
+    withMs.push({
+      kind: "approval", ms: split.approval_ms, call: null,
+      replay_offset_ms: firstApproval ? firstApproval.offset_ms : null,
+      text: "Approval wait took " + fmtDur(split.approval_ms)
+        + (shareOf(split.approval_ms) != null
+          ? " (" + shareOf(split.approval_ms) + "% of wall)." : "."),
+    });
+  }
+
+  if (split && split.muse_ms != null && wall
+      && split.muse_ms / wall >= DIAG_MUSE_MIN_SHARE) {
+    withMs.push({
+      kind: "muse-overhead", ms: split.muse_ms, call: null,
+      replay_offset_ms: null,
+      text: "Muse overhead took " + fmtDur(split.muse_ms)
+        + " (" + shareOf(split.muse_ms) + "% of wall). That is everything "
+        + "recorded outside model time, tools and approval wait.",
+    });
+  }
+
+  if (provider !== "claude-code" && chrono.length >= DIAG_DOMINANT_MIN_CALLS
+      && wireTotal > 0) {
+    let slowest = null;
+    wires.forEach((w, i) => {
+      if (w != null && (!slowest || w > slowest.ms)) slowest = { ms: w, call: i + 1 };
+    });
+    if (slowest && slowest.ms / wireTotal >= DIAG_DOMINANT_SHARE) {
+      withMs.push({
+        kind: "dominant-call", ms: slowest.ms, call: slowest.call,
+        replay_offset_ms: landingOffset(slowest.call),
+        text: "Call " + slowest.call + " took " + fmtDur(slowest.ms) + " of "
+          + fmtDur(wireTotal) + " model time ("
+          + Math.round((slowest.ms / wireTotal) * 100) + "%). One call carried the run.",
+      });
+    }
+  }
+
+  if (baseline && baseline.wall_ms != null && wall != null) {
+    const diff = wall - baseline.wall_ms;
+    const pct = baseline.wall_ms ? (diff / baseline.wall_ms) * 100 : null;
+    if (diff >= DIAG_USUAL_MIN_MS && pct != null && pct >= DIAG_USUAL_MIN_PCT) {
+      withoutMs.push({
+        kind: "slower-than-usual", ms: null, call: null, replay_offset_ms: null,
+        text: "Wall " + fmtDur(wall) + " against a usual " + fmtDur(baseline.wall_ms)
+          + " for this prompt (median of " + baseline.count + " earlier runs, +"
+          + Math.round(pct) + "%).",
+      });
+    }
+  }
+
+  const inputs = chrono.map((e) => e["gen_ai.usage.input_tokens"] ?? null);
+  if (chrono.length >= 2 && inputs[0] && inputs[inputs.length - 1] != null) {
+    const first = inputs[0];
+    const last = inputs[inputs.length - 1];
+    if (last / first >= DIAG_GROWTH_RATIO && last - first >= DIAG_GROWTH_MIN_TOKENS) {
+      withoutMs.push({
+        kind: "context-growth", ms: null, call: chrono.length,
+        replay_offset_ms: landingOffset(chrono.length),
+        text: "Input grew from " + fmt(first) + " tokens on call 1 to " + fmt(last)
+          + " on call " + chrono.length + " ("
+          + (Math.round((last / first) * 10) / 10) + "x). Later calls reprocess the whole history.",
+      });
+    }
+  }
+
+  if (chrono.length && inputs[0] != null && inputs[0] >= DIAG_FIXED_MIN_TOKENS) {
+    const out = chrono[0]["gen_ai.usage.output_tokens"];
+    withoutMs.push({
+      kind: "fixed-context", ms: null, call: 1,
+      replay_offset_ms: landingOffset(1),
+      text: "Call 1 already carried " + fmt(inputs[0]) + " input tokens"
+        + (out != null ? ". Its recorded output was " + fmt(out) + " tokens" : "")
+        + ". Most of a first call is fixed context Muse sends every time.",
+    });
+  }
+
+  const hasCache = chrono.some((e) => e["gen_ai.usage.cached_tokens"] != null);
+  const inSum = inputs.reduce((a, n) => a + (n || 0), 0);
+  const cacheSum = chrono.reduce(
+    (a, e) => a + (e["gen_ai.usage.cached_tokens"] || 0), 0);
+  if (hasCache && chrono.length >= DIAG_CACHE_MIN_CALLS && inSum > 0) {
+    const pct = Math.round((cacheSum / inSum) * 100);
+    if (pct < DIAG_CACHE_MAX_PCT) {
+      withoutMs.push({
+        kind: "weak-cache", ms: null, call: null, replay_offset_ms: null,
+        text: "Cache covered only " + pct + "% of " + fmt(inSum)
+          + " input tokens across " + chrono.length
+          + " calls. Most context was processed fresh each call.",
+      });
+    }
+  }
+
+  withMs.sort((a, b) => b.ms - a.ms);
+  const findings = [...withMs, ...withoutMs].slice(0, DIAG_MAX_FINDINGS);
+  return { buckets, verdict, findings };
+}
+
 export function dataSignature(d) {
   return JSON.stringify([d.selected, d.status,
     (d.sessions || []).map((s) => [s.run_id, s.status, s.wall_ms, s.calls]),

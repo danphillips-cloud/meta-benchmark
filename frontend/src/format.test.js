@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -577,4 +577,92 @@ test("xrayFirstLanes: biggest recorded lanes first, works without a system lane"
   assert.deepEqual(xrayFirstLanes(echo, 2).map((l) => [l.lane, l.bytes]),
     [["context", 39318], ["history", 9]]);
   assert.deepEqual(xrayFirstLanes(xraySeries([]), 2), []);
+});
+
+const DIAG_TL = [
+  T("2026-01-01T00:00:00.000Z", "runtime.user_intent.accepted accepted"),
+  T("2026-01-01T00:03:10.000Z", "runtime.session model_completed", 188550),
+];
+const DIAG = (over) => ({
+  wall_ms: 192586, model_ms: 188550, provider: "meta",
+  events: [{ ...E(188550, 29037, 0, 25), retries: 1, stalled_ms: 181140 }],
+  split: { model_ms: 188550, tool_ms: 0, approval_ms: 0, muse_ms: 4036 },
+  timeline: DIAG_TL, baseline: null, ...over,
+});
+
+test("diagnoseRun: stall run reads as buckets then stall finding", () => {
+  const d = diagnoseRun(DIAG());
+  assert.equal(d.buckets[0].key, "model");
+  assert.equal(d.buckets[0].share_pct, 98);
+  assert.match(d.verdict, /Most of this run was model time \(98% of wall\)\./);
+  assert.equal(d.findings[0].kind, "stalled");
+  assert.match(d.findings[0].text, /94% of wall, inside model time/);
+  assert.equal(d.findings[0].call, 1);
+  assert.equal(d.findings[0].replay_offset_ms, 190000);
+  // The fixed context finding follows. One call means no cache story.
+  assert.ok(d.findings.some((f) => f.kind === "fixed-context"));
+  assert.ok(!d.findings.some((f) => f.kind === "weak-cache"));
+  assert.ok(!d.findings.some((f) => f.kind === "dominant-call"));
+});
+
+test("diagnoseRun: thresholds fire and stay silent on both sides", () => {
+  const grow = (inputs) => diagnoseRun({
+    wall_ms: 100000, model_ms: 90000, provider: "meta",
+    events: inputs.map((n) => E(1000, n, 0, 10)).reverse(),
+    split: { model_ms: 90000, tool_ms: 0, approval_ms: 0, muse_ms: 10000 },
+    timeline: [], baseline: null,
+  }).findings.some((f) => f.kind === "context-growth");
+  assert.equal(grow([4000, 6000, 10000]), true);
+  assert.equal(grow([4000, 6000, 7600]), false);
+  const dom = (wires) => diagnoseRun({
+    wall_ms: 100000, model_ms: wires.reduce((a, b) => a + b, 0), provider: "meta",
+    events: wires.map((w) => E(w, 100, 0, 10)).reverse(),
+    split: { model_ms: wires.reduce((a, b) => a + b, 0), tool_ms: 0, approval_ms: 0, muse_ms: 0 },
+    timeline: [], baseline: null,
+  }).findings.some((f) => f.kind === "dominant-call");
+  assert.equal(dom([60000, 20000, 20000]), true);
+  assert.equal(dom([60000, 40000]), false);
+  const usual = (wall, base) => diagnoseRun({
+    wall_ms: wall, model_ms: wall, provider: "meta",
+    events: [E(wall, 100, 0, 10)],
+    split: { model_ms: wall, tool_ms: 0, approval_ms: 0, muse_ms: 0 },
+    timeline: [], baseline: base ? { wall_ms: base, count: 4 } : null,
+  }).findings.some((f) => f.kind === "slower-than-usual");
+  assert.equal(usual(40000, 30000), true);
+  assert.equal(usual(33000, 30000), false);
+  assert.equal(usual(40000, null), false);
+});
+
+test("diagnoseRun: recorded-ms findings rank biggest first, cap holds", () => {
+  const d = diagnoseRun(DIAG({
+    wall_ms: 100000, model_ms: 40000,
+    split: { model_ms: 40000, tool_ms: 5000, approval_ms: 30000, muse_ms: 25000 },
+    events: [{ ...E(40000, 29037, 0, 25), retries: 1, stalled_ms: 10000 }],
+  }));
+  const kinds = d.findings.map((f) => f.kind);
+  assert.ok(kinds.indexOf("approval") < kinds.indexOf("muse-overhead"));
+  assert.ok(kinds.indexOf("muse-overhead") < kinds.indexOf("stalled"));
+  assert.ok(d.findings.length <= 6);
+});
+
+test("diagnoseRun: Claude Code runs thin out without invented call detail", () => {
+  const d = diagnoseRun({
+    wall_ms: 40000, model_ms: 38000, provider: "claude-code",
+    events: [{ ...E(null, 1500, 0, null), retries: 0, stalled_ms: null }],
+    split: { model_ms: 38000, tool_ms: null, approval_ms: null, muse_ms: null },
+    timeline: [], baseline: null,
+  });
+  assert.equal(d.buckets[0].key, "model");
+  assert.deepEqual(d.findings, []);
+  assert.deepEqual(diagnoseRun({}).findings, []);
+  assert.equal(diagnoseRun({}).verdict, null);
+});
+
+test("parseReplayStart: numeric offsets clamp, junk becomes zero", () => {
+  assert.equal(parseReplayStart("5000", 10000), 5000);
+  assert.equal(parseReplayStart("99999", 10000), 10000);
+  assert.equal(parseReplayStart("-5", 10000), 0);
+  assert.equal(parseReplayStart("abc", 10000), 0);
+  assert.equal(parseReplayStart(null, 10000), 0);
+  assert.equal(parseReplayStart("5000", 0), 0);
 });

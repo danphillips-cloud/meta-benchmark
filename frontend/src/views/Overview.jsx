@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
-import { useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, buildRunsQuery, explainLines, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, legKey, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
+import { Link, useSearchParams } from "react-router";
+import { DID_NOT_COMPLETE, buildRunsQuery, diagnoseRun, explainLines, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, legKey, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, usualBaseline } from "../format.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
 import { Chip, CopyButton, StatIcon, StatusPill } from "../components/widgets.jsx";
@@ -128,6 +128,15 @@ export default function Overview({ data, onSelect, onGoto }) {
   const baseline = usualBaseline(sel.run_id ? sel : null, data.sessions || []);
   const usualWall = baseline && baseline.wall_ms != null ? " · usual " + fmtDur(baseline.wall_ms) : "";
   const usualModel = baseline && baseline.model_ms != null ? " · usual " + fmtDur(baseline.model_ms) : "";
+  const isRunning = (data.status || sel.status) === "running";
+  const diag = !isRunning && hasEvents ? diagnoseRun({
+    wall_ms: wall, model_ms: modelTotal,
+    provider: data.provider || sel.provider, events, split,
+    timeline: data.timeline, baseline,
+  }) : null;
+  const detailLines = whatLines.filter((line) =>
+    !line.startsWith("Model time was") && !line.startsWith("Tools ran")
+    && !line.startsWith("Waited") && !line.includes(" retried "));
 
   // Medians by provider/model, completed runs only.
   const groups = new Map();
@@ -192,7 +201,45 @@ export default function Overview({ data, onSelect, onGoto }) {
         </div>
       </div>
       <p className="note" style={{ display: notes.length ? "" : "none" }}>{notes.join(" ")}</p>
-      {whatLines.length ? (
+      {diag ? (
+        <section className="panel" aria-label="Why was this slow" style={{ marginTop: 12 }}>
+          <div className="panelHead"><div><div className="pt">Why was this slow</div><div className="ps">Recorded data only · ranked causes · no model call, no estimates</div></div></div>
+          {diag.verdict ? <div className="diagVerdict">{diag.verdict}</div> : null}
+          <div className="diagBuckets">
+            {diag.buckets.map((b) => (
+              <div className="diagBucketRow" key={b.key}>
+                <span className="diagBucketLabel">{b.label}</span>
+                <span className="diagBucketTrack">
+                  <span className={"diagBucketFill diagFill-" + b.key} style={{ width: (b.share_pct || 0) + "%" }}></span>
+                </span>
+                <span className="diagBucketValue">{b.ms == null ? "–" : fmtDur(b.ms) + " · " + b.share_pct + "%"}</span>
+              </div>
+            ))}
+          </div>
+          {diag.findings.length ? (
+            <ol className="diagFindings">
+              {diag.findings.map((f, i) => (
+                <li key={i}>
+                  {f.text}
+                  {f.replay_offset_ms != null && data.selected ? (
+                    <> <Link className="viewAll" to={"/replay/" + encodeURIComponent(data.selected) + "?t=" + Math.round(f.replay_offset_ms)}>Watch in Replay →</Link></>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="note">No recorded cause stands out. The slices above are the whole story the log tells.</p>
+          )}
+          {detailLines.length ? (
+            <>
+              <div className="label" style={{ marginTop: 12 }}>What happened</div>
+              <ul style={{ margin: "6px 0 0", paddingLeft: 18, lineHeight: 1.7, fontSize: 13.5 }}>
+                {detailLines.map((line, i) => <li key={i}>{line}</li>)}
+              </ul>
+            </>
+          ) : null}
+        </section>
+      ) : whatLines.length ? (
         <section className="panel" aria-label="What happened" style={{ marginTop: 12 }}>
           <div className="panelHead"><div><div className="pt">What happened</div><div className="ps">Recorded data only · no estimates</div></div></div>
           <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 13.5 }}>
