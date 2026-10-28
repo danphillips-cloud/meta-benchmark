@@ -82,6 +82,15 @@ def _timeline_row(e, node):
     }
 
 
+def _timeline_rows(records):
+    rows = []
+    for e in records:
+        row = _timeline_row(e, next(find_model_completed(e), None))
+        if row:
+            rows.append(row)
+    return _finish_timeline(rows)
+
+
 def _finish_timeline(rows):
     for i, row in enumerate(rows):
         nxt = rows[i + 1]["recorded_at"] if i + 1 < len(rows) else None
@@ -445,6 +454,7 @@ def split_turns(records):
             "at": datetime.fromtimestamp(
                 start_us / 1_000_000, timezone.utc).isoformat(),
             "wall_ms": wall_ms, "calls": calls,
+            "timeline": _timeline_rows(seg),
             "split": time_split(seg, wall_ms, model_ms),
             "model": meta["model"], "version": meta["version"],
         })
@@ -464,13 +474,7 @@ def live_calls_from_records(records):
     Calls come from calls_from_records, so a running run shows the
     same calls (retry fields included) as the finished run.
     """
-    timeline = []
-    for e in records:
-        node = next(find_model_completed(e), None)
-        row = _timeline_row(e, node)
-        if row:
-            timeline.append(row)
-    return calls_from_records(records), _finish_timeline(timeline)
+    return calls_from_records(records), _timeline_rows(records)
 
 
 def live_calls_from_log(path):
