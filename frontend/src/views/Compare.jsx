@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Link } from "react-router";
 import { fastestOf, fmtDur, fmtMs, legKey, localTime, median, shortText } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
@@ -139,7 +140,7 @@ export default function Compare({ data, onSelect }) {
   );
   return (
     <section data-view-panel="compare">
-      <div className="viewHead"><span className="hint">same prompt across legs, or any runs side by side</span></div>
+      <div className="viewHead"><span className="hint">same prompt across legs, or any runs side by side</span><Link className="viewAll" to="/radar">Version radar →</Link></div>
       <CompareSet data={data} onSelect={onSelect} />
       <section className="panel" style={{ marginTop: 12 }}>
         <div className="panelHead"><div><div className="pt">Compare runs manually</div><div className="ps">Selected run plus up to two more</div></div></div>

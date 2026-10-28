@@ -1,0 +1,19 @@
+{
+  "prompts": [
+    {
+      "name": "sky-one-shot",
+      "prompt": "Explain in about 120 words why the sky is blue, for a curious 12 year old. Plain text only.",
+      "minimal": true
+    },
+    {
+      "name": "line-counter",
+      "prompt": "write a python script that counts lines in a file, then run it on itself, then explain the output",
+      "minimal": true
+    },
+    {
+      "name": "explain-dict",
+      "prompt": "Explain what a Python dictionary is to a beginner, with one short code example. About 100 words plus the example.",
+      "minimal": true
+    }
+  ]
+}

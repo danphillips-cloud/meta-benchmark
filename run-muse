@@ -712,6 +712,7 @@ BASE_REPORT = {
     "at": None, "run_id": None, "prompt": "", "model": None,
     "provider": None, "session_id": None, "context_mode": None,
     "comparison_id": None, "round": None, "compare_mode": None,
+    "suite_id": None, "suite_prompt": None,
     "harness_version": None, "tool_ms": None, "approval_ms": None,
     "muse_ms": None, "needs_approval_tool": None, "status": None,
     "timeout_seconds": None, "command": None, "wall_ms": None,
@@ -802,7 +803,8 @@ def print_summary(report, r, run_dir):
 
 def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                minimal=False, timeout=None, comparison_id=None,
-               compare_round=None, compare_mode=None):
+               compare_round=None, compare_mode=None,
+               suite_id=None, suite_prompt=None):
     model = model or default_model(provider)
     if timeout is None:
         timeout = default_timeout(provider)
@@ -824,6 +826,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
         "compare_mode": compare_mode,
+        "suite_id": suite_id, "suite_prompt": suite_prompt,
         "harness_version": version,
         "status": "running",
         "timeout_seconds": timeout, "command": None,
@@ -873,6 +876,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
         "compare_mode": compare_mode,
+        "suite_id": suite_id, "suite_prompt": suite_prompt,
         "harness_version": version,
         "tool_ms": split["tool_ms"], "approval_ms": split["approval_ms"],
         "muse_ms": split["muse_ms"],
@@ -1054,6 +1058,120 @@ def run_compare(prompt, mode, minimal, timeout, repeat):
     return 0
 
 
+SUITE_DEFAULT = ROOT / "golden-prompts.json"
+
+
+def load_suite(path):
+    """Golden prompts from a JSON file: {\"prompts\": [entry, ...]}.
+
+    Each entry needs a unique non-empty name and prompt. Provider,
+    model and minimal are optional per entry. Raises ValueError with
+    a plain message for anything else, so main can show it as-is.
+    """
+    path = Path(path)
+    try:
+        text = path.read_text()
+    except OSError as e:
+        raise ValueError(
+            f"cannot read suite file {path}: {e.strerror or e}")
+    try:
+        data = json.loads(text)
+    except Exception:
+        raise ValueError(f"suite file {path} is not valid JSON")
+    raw = data.get("prompts") if isinstance(data, dict) else None
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("suite file needs a non-empty 'prompts' list")
+    entries = []
+    seen = set()
+    for i, entry in enumerate(raw):
+        name = entry.get("name") if isinstance(entry, dict) else None
+        prompt = entry.get("prompt") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name.strip() \
+                or not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError(
+                f"suite entry {i + 1} needs non-empty 'name' and "
+                "'prompt'")
+        if name in seen:
+            raise ValueError(f"duplicate suite prompt name '{name}'")
+        seen.add(name)
+        entries.append({
+            "name": name, "prompt": prompt,
+            "provider": entry.get("provider") or DEFAULT_PROVIDER,
+            "model": entry.get("model"),
+            "minimal": bool(entry.get("minimal")),
+        })
+    return entries
+
+
+def previous_suite_version(provider):
+    """Last harness version a suite run recorded for this provider."""
+    index = RUNS / "index.jsonl"
+    last = None
+    if index.is_file():
+        for line in index.read_text(errors="replace").splitlines():
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            if entry.get("suite_id") \
+                    and entry.get("provider") == provider \
+                    and entry.get("harness_version"):
+                last = entry["harness_version"]
+    return last
+
+
+def suite_version_notice(previous, current, provider):
+    if previous and current and previous != current:
+        return (f"Harness changed since the last suite run: "
+                f"{provider} was {previous}, now {current}.")
+    return None
+
+
+def run_suite(path, timeout, repeat):
+    entries = load_suite(path)
+    suite_id = uuid.uuid4().hex[:8]
+    print(f"Suite {suite_id}: {len(entries)} prompt(s), "
+          f"{repeat} repeat(s) each")
+    providers = []
+    for entry in entries:
+        if entry["provider"] not in providers:
+            providers.append(entry["provider"])
+    for provider in providers:
+        notice = suite_version_notice(
+            previous_suite_version(provider),
+            harness_version(provider), provider)
+        if notice:
+            print(notice)
+    statuses = []
+    stop = False
+    for _round in range(repeat):
+        for entry in entries:
+            if stop:
+                break
+            try:
+                report = run_prompt(
+                    entry["prompt"], provider=entry["provider"],
+                    model=entry["model"], minimal=entry["minimal"],
+                    timeout=timeout, suite_id=suite_id,
+                    suite_prompt=entry["name"])
+                statuses.append(report["status"])
+            except KeyboardInterrupt:
+                statuses.append("interrupted")
+                stop = True
+        if stop:
+            break
+    done = sum(1 for status in statuses if status == "completed")
+    closing = f"Suite {suite_id} done: {done} completed of {len(statuses)}."
+    if ui_enabled():
+        closing += f" UI: {UI_URL}radar"
+    print(closing)
+    if "interrupted" in statuses:
+        return 130
+    if any(status != "completed" for status in statuses):
+        return 1
+    return 0
+
+
 def handle_command(line, state):
     """Classify one prompt-loop line. Pure: state is only read.
 
@@ -1128,16 +1246,33 @@ def main():
                         help="watch a Muse session read-only (newest "
                              "when no session id is given) and record "
                              "each finished turn")
+    parser.add_argument("--suite", nargs="?", const=str(SUITE_DEFAULT),
+                        default=None, metavar="FILE",
+                        help="run the golden prompt suite (default file "
+                             "golden-prompts.json) and stamp each run "
+                             "for the regression radar")
     args = parser.parse_args()
-    if args.repeat is not None and not args.compare:
-        parser.error("--repeat needs --compare")
+    if args.repeat is not None and not args.compare \
+            and args.suite is None:
+        parser.error("--repeat needs --compare or --suite")
+    if args.suite is not None and (args.prompt or args.compare
+                                   or args.watch is not None):
+        parser.error("--suite takes no prompt, --compare or --watch")
     if args.watch is not None and (args.prompt or args.compare):
         parser.error("--watch takes no prompt or --compare")
     mode = args.compare
     args.model = args.model or default_model(args.provider)
     repeat = args.repeat if args.repeat is not None else 1
-    if mode is not None and repeat < 1:
+    if (mode is not None or args.suite is not None) and repeat < 1:
         parser.error("--repeat must be at least 1")
+    if args.suite is not None:
+        suite_repeat = args.repeat if args.repeat is not None else 3
+        try:
+            load_suite(args.suite)
+        except ValueError as e:
+            parser.error(str(e))
+        ensure_ui()
+        return run_suite(args.suite, args.timeout, suite_repeat)
     ensure_ui()
     if args.watch is not None:
         run_watch(args.watch or None)

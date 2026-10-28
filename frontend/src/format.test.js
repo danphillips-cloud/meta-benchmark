@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  liveStateText, median, overviewScope, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, runMode, showBrush, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -487,6 +487,86 @@ test("xrayHeadline and xrayLines: first-call story from recorded bytes only", ()
   assert.deepEqual(xrayLines(xraySeries([])), []);
   const missing = xrayHeadline(xraySeries([TRACE(0, null, null, [])]));
   assert.deepEqual(missing, { total_bytes: null, user_bytes: null, user_pct: null });
+});
+
+const VA = "Muse Code 1.4.13 (fake-a)";
+const VB = "Muse Code 1.4.14 (fake-b)";
+const RS = (over) => ({
+  suite_prompt: "sky", prompt: "why blue", provider: "meta", model: "m1",
+  context_mode: "minimal", harness_version: VA, status: "completed",
+  at: "2026-01-01T00:00:00Z", wall_ms: 200, model_ms: 80,
+  input_tokens: 1000, ...over,
+});
+const RADAR_ROWS = [
+  RS({ run_id: "1", wall_ms: 100 }),
+  RS({ run_id: "2", wall_ms: 300, at: "2026-01-02T00:00:00Z" }),
+  RS({ run_id: "3", wall_ms: 200, at: "2026-01-03T00:00:00Z" }),
+  RS({ run_id: "4", wall_ms: 400, harness_version: VB, at: "2026-02-01T00:00:00Z" }),
+  RS({ run_id: "5", wall_ms: 600, harness_version: VB, at: "2026-02-02T00:00:00Z" }),
+  RS({ run_id: "6", wall_ms: 99999, status: "failed", harness_version: VB, at: "2026-02-03T00:00:00Z" }),
+  RS({ run_id: "7", suite_prompt: null, prompt: "loose prompt", harness_version: null }),
+];
+
+test("radarMatrix: version columns, medians, threshold delta", () => {
+  const m = radarMatrix(RADAR_ROWS);
+  assert.deepEqual(m.versions.map((v) => v.label), ["Version not recorded", VA, VB]);
+  const sky = m.rows[0];
+  assert.equal(sky.label, "sky");
+  assert.equal(sky.suite, true);
+  assert.equal(sky.cells[VA].n, 3);
+  assert.equal(sky.cells[VA].wall_ms, 200);
+  // The failed run never feeds a median or a count.
+  assert.equal(sky.cells[VB].n, 2);
+  assert.equal(sky.cells[VB].wall_ms, 500);
+  assert.equal(sky.delta.from_version, VA);
+  assert.equal(sky.delta.to_version, VB);
+  assert.deepEqual(sky.delta.wall_ms, { from: 200, to: 500, diff: 300, pct: 150 });
+  const loose = m.rows.find((r) => r.label === "loose prompt");
+  assert.equal(loose.suite, false);
+  assert.equal(loose.delta, null);
+  assert.deepEqual(radarMatrix([]), { versions: [], rows: [] });
+});
+
+test("radarMatrix: an unstamped run with the same prompt joins the suite group", () => {
+  const rows = [
+    RS({ run_id: "s1" }),
+    // Same prompt, provider, model and context, recorded before the
+    // suite existed. It belongs to the same held-constant group.
+    RS({ run_id: "old", suite_prompt: null, wall_ms: 260 }),
+    RS({ run_id: "diff", suite_prompt: null, context_mode: "full" }),
+  ];
+  const m = radarMatrix(rows);
+  assert.equal(m.rows.length, 2);
+  const sky = m.rows.find((r) => r.label === "sky");
+  assert.equal(sky.suite, true);
+  assert.equal(sky.cells[VA].n, 2);
+  assert.equal(sky.cells[VA].wall_ms, 230);
+});
+
+test("radarMatrix: a version with one run earns no delta", () => {
+  const rows = RADAR_ROWS.filter((r) => r.run_id !== "5");
+  const sky = radarMatrix(rows).rows[0];
+  assert.equal(sky.cells[VB].n, 1);
+  assert.equal(sky.delta, null);
+});
+
+test("radarReport: mechanical summary and method, recorded numbers only", () => {
+  const text = radarReport(radarMatrix(RADAR_ROWS), "2026-03-04T10:00:00Z");
+  assert.match(text, /^# Muse latency report/m);
+  assert.match(text, /Date: 2026-03-04/);
+  assert.match(text, /Reporter: \(fill in\)/);
+  assert.match(text, /sky: median wall 200 ms -> 500 ms \(\+150%\)/);
+  assert.match(text, /Nothing is estimated/);
+  assert.match(text, /Not held constant: machine load, network/);
+  // Token medians display rounded. Half a token is maths, not a count.
+  const halves = radarReport(radarMatrix([
+    RS({ run_id: "h1", input_tokens: 1000 }),
+    RS({ run_id: "h2", input_tokens: 1001 }),
+  ]), "2026-03-04T10:00:00Z");
+  assert.ok(!halves.includes("1,000.5"));
+  assert.match(halves, /1,001/);
+  const empty = radarReport(radarMatrix([]), "2026-03-04T10:00:00Z");
+  assert.match(empty, /No prompt has two versions/);
 });
 
 test("xrayFirstLanes: biggest recorded lanes first, works without a system lane", () => {
