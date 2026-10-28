@@ -360,6 +360,39 @@ export function usualBaseline(selected, sessions) {
   };
 }
 
+// One assembly of the selected run's recorded facts. Overview, the
+// run card and the repro pack all read this so the same run gets the
+// same words everywhere. Mirrors what Overview used to inline.
+export function selectedRunFacts(data) {
+  const d = data || {};
+  const sel = (d.sessions || []).find((s) => s.run_id === d.selected) || {};
+  const events = d.events || [];
+  const wires = events.map((e) => e["wire_ms"]).filter((v) => v != null);
+  const hasEvents = events.length > 0;
+  const modelTotal = hasEvents
+    ? (d.model_ms ?? (wires.length ? wires.reduce((a, b) => a + b, 0) : null))
+    : null;
+  const wall = hasEvents ? (d.wall_ms ?? null) : null;
+  const split = d.time_split || {};
+  const provider = d.provider || sel.provider;
+  const isRunning = (d.status || sel.status) === "running";
+  const baseline = usualBaseline(sel.run_id ? sel : null, d.sessions || []);
+  const whatLines = explainLines({
+    wall_ms: wall, model_ms: modelTotal, provider, events, split,
+  });
+  const diag = !isRunning && hasEvents ? diagnoseRun({
+    wall_ms: wall, model_ms: modelTotal, provider, events, split,
+    timeline: d.timeline, baseline, intervals: d.intervals,
+  }) : null;
+  const detailLines = whatLines.filter((line) =>
+    !line.startsWith("Model time was") && !line.startsWith("Tools ran")
+    && !line.startsWith("Waited") && !line.includes(" retried "));
+  return {
+    sel, events, hasEvents, modelTotal, wall, split, provider,
+    isRunning, baseline, whatLines, diag, detailLines,
+  };
+}
+
 export function perCallSeries(events, provider) {
   if (provider === "claude-code") return [];
   const chrono = [...(events || [])].reverse();
@@ -1038,4 +1071,261 @@ export function dataSignature(d) {
   return JSON.stringify([d.selected, d.status,
     (d.sessions || []).map((s) => [s.run_id, s.status, s.wall_ms, s.calls]),
     (d.events || []).length, (d.timeline || []).length, d.reply || "", d.wall_ms]);
+}
+
+// --- Shareable run cards and repro packs -----------------------------
+// Both artifacts are Markdown built only from the /api/logs payload,
+// which carries no absolute paths and no stored command string. The
+// prompt and reply are user content shared on purpose. A missing
+// number is always a dash, never an estimate.
+
+export const CARD_PROMPT_CHARS = 200;
+export const PACK_TIMELINE_ROWS = 200;
+
+// Fence that always outranks any backtick run inside the text, so
+// prompt or reply content can never break the surrounding Markdown.
+function mdFence(text) {
+  const t = String(text ?? "");
+  const runs = t.match(/`+/g) || [];
+  const longest = runs.reduce((a, r) => Math.max(a, r.length), 0);
+  const mark = "`".repeat(Math.max(3, longest + 1));
+  return mark + "\n" + t + "\n" + mark;
+}
+
+const capLine = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+export function runCard(data) {
+  const d = data || {};
+  const f = selectedRunFacts(d);
+  const sel = f.sel;
+  const runId = d.selected || sel.run_id || null;
+  if (!runId) return "# Run card\n\nNo run selected.\n";
+  const prompt = String(d.prompt ?? sel.prompt ?? "");
+  const truncated = prompt.length > CARD_PROMPT_CHARS;
+  const shownPrompt = truncated ? prompt.slice(0, CARD_PROMPT_CHARS) : prompt;
+  const status = d.status || sel.status || "unknown";
+  const usual = f.baseline && f.baseline.wall_ms != null
+    ? " (usual " + fmtDur(f.baseline.wall_ms) + " across "
+      + f.baseline.count + " earlier runs)"
+    : "";
+  const lines = [
+    "# Run card: " + runId,
+    "",
+    "Prompt:",
+    "",
+    mdFence(shownPrompt || "–"),
+  ];
+  if (truncated) {
+    lines.push("", "Prompt truncated at " + CARD_PROMPT_CHARS
+      + " characters on this card. The repro pack carries it in full.");
+  }
+  lines.push(
+    "",
+    "- When: " + (localTime(sel.at) || "–"),
+    "- Status: " + status,
+    "- Provider and model: " + legKey({
+      provider: d.provider || sel.provider,
+      model: d.model || sel.model,
+    }),
+    "- Harness: " + (sel.harness_version ?? d.harness_version ?? "–"),
+    "- Context: " + (sel.context_mode ?? "–"),
+    "- Wall time: " + fmtDur(f.wall) + usual,
+    "- Model time: " + fmtDur(f.modelTotal)
+      + " · Tools: " + fmtDur(f.split.tool_ms ?? null)
+      + " · Approval wait: " + fmtDur(f.split.approval_ms ?? null)
+      + " · Muse: " + fmtDur(f.split.muse_ms ?? null),
+    "- Calls: " + fmt(f.hasEvents ? f.events.length : (sel.calls ?? null))
+      + " · Input tokens: " + fmt(sel.input_tokens ?? null)
+      + " · Output tokens: " + fmt(sel.output_tokens ?? null),
+    "",
+  );
+  if (f.isRunning) {
+    lines.push("Run in progress. Totals grow as calls land.");
+  } else if (!f.hasEvents) {
+    lines.push("No calls were recorded for this run.");
+  } else if (f.diag) {
+    if (f.diag.verdict) lines.push("Verdict: " + f.diag.verdict, "");
+    lines.push("Where the wall time went:");
+    f.diag.buckets.forEach((b) => {
+      lines.push("- " + capLine(b.label) + ": "
+        + (b.ms == null ? "–" : fmtDur(b.ms) + " · " + b.share_pct + "%"));
+    });
+    lines.push("");
+    if (f.diag.findings.length) {
+      lines.push("Why it was slow, ranked:");
+      f.diag.findings.forEach((finding, i) => {
+        lines.push((i + 1) + ". " + finding.text);
+      });
+    } else {
+      lines.push("No recorded cause stands out. "
+        + "The slices above are the whole story the log tells.");
+    }
+    if (f.diag.partial_note) lines.push("", f.diag.partial_note);
+    if (f.detailLines.length) {
+      lines.push("", "What happened:");
+      f.detailLines.forEach((line) => lines.push("- " + line));
+    }
+  } else if (f.whatLines.length) {
+    lines.push("What happened:");
+    f.whatLines.forEach((line) => lines.push("- " + line));
+  }
+  lines.push(
+    "",
+    "Recorded data only. Nothing is estimated. "
+      + "Generated by meta-benchmark from a local run log.",
+    "",
+  );
+  return lines.join("\n");
+}
+
+// One-line, shell-safe form of the prompt for the rerun command.
+// The prompt itself always rides in full above the command.
+function shellPrompt(prompt) {
+  const flat = String(prompt ?? "").replace(/\s+/g, " ").trim();
+  return flat.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+    .replace(/\$/g, "\\$").replace(/`/g, "\\`");
+}
+
+const cell = (v) => String(v ?? "–").replace(/\|/g, "/");
+
+export function reproPack(data) {
+  const d = data || {};
+  const f = selectedRunFacts(d);
+  const sel = f.sel;
+  const runId = d.selected || sel.run_id || null;
+  if (!runId) return "# Repro pack\n\nNo run selected.\n";
+  const prompt = String(d.prompt ?? sel.prompt ?? "");
+  const reply = String(d.reply ?? "");
+  const cardBody = runCard(d).replace(/^# Run card: [^\n]*\n\n/, "");
+  const lines = [
+    "# Repro pack: " + runId,
+    "",
+    "Everything recorded about one local run, in one file. "
+      + "Recorded data only. Nothing is estimated.",
+    "",
+    "## Run card",
+    "",
+    cardBody.trimEnd(),
+    "",
+    "## Prompt in full",
+    "",
+    mdFence(prompt || "–"),
+    "",
+    "## Rerun it",
+    "",
+  ];
+  const provider = d.provider || sel.provider || null;
+  const model = d.model || sel.model || null;
+  const context = sel.context_mode ?? null;
+  const harness = sel.harness_version ?? d.harness_version ?? null;
+  lines.push("Recorded setup: provider " + (provider || "–")
+    + ", model " + (model || "–")
+    + ", context " + (context || "–")
+    + ", harness " + (harness || "–") + ".");
+  if (sel.suite_id) {
+    lines.push("This run was part of suite " + sel.suite_id
+      + (sel.suite_prompt ? " (prompt " + sel.suite_prompt + ")" : "") + ".");
+  }
+  if (sel.comparison_id) {
+    lines.push("This run was part of compare set " + sel.comparison_id
+      + (sel.round ? ", round " + sel.round : "") + ".");
+  }
+  lines.push("");
+  if (context === "interactive") {
+    lines.push("This run came from a watched interactive session. "
+      + "There is no one-command rerun for it. "
+      + "The prompt and every recorded number are in this pack.");
+  } else {
+    const parts = ["./run-muse"];
+    if (provider) parts.push("--provider " + provider);
+    if (model) parts.push("--model " + model);
+    if (context === "minimal") parts.push("--minimal");
+    parts.push('"' + shellPrompt(prompt) + '"');
+    lines.push("    " + parts.join(" "), "");
+    lines.push("Timing will differ on a rerun. "
+      + "Machine load and network conditions are not held constant.");
+  }
+  lines.push("", "## Reply", "");
+  lines.push(reply ? mdFence(reply) : "No reply recorded for this run.");
+  if (f.hasEvents) {
+    const chrono = [...f.events].reverse();
+    lines.push("", "## Per-call detail", "",
+      "| Call | Model | Model time | Input | Output | Cached | Reasoning | Retries | Stalled |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    chrono.forEach((e, i) => {
+      lines.push("| " + [
+        i + 1,
+        cell(e.model || model),
+        fmtDur(e["wire_ms"] ?? null),
+        fmt(e["gen_ai.usage.input_tokens"] ?? null),
+        fmt(e["gen_ai.usage.output_tokens"] ?? null),
+        fmt(e["gen_ai.usage.cached_tokens"] ?? null),
+        fmt(e["gen_ai.usage.reasoning_tokens"] ?? null),
+        fmt(e["retries"] || 0),
+        fmtDur(e["stalled_ms"] ?? null),
+      ].join(" | ") + " |");
+    });
+  }
+  const series = xraySeries(d.xray || []);
+  const head = xrayHeadline(series);
+  if (head && head.total_bytes != null) {
+    lines.push("", "## Context X-ray", "");
+    lines.push("The first recorded request was " + fmt(head.total_bytes)
+      + " bytes. The user message was " + fmt(head.user_bytes) + " bytes.");
+    const lanes = xrayFirstLanes(series, 3)
+      .filter((l) => l.bytes != null);
+    if (lanes.length) {
+      lines.push("Biggest first-request lanes: "
+        + lanes.map((l) => xrayLaneName(l.lane) + " " + fmt(l.bytes) + " bytes").join(", ")
+        + ".");
+    }
+    xrayLines(series).forEach((line) => lines.push("- " + line));
+  }
+  const totals = toolTotals(d.intervals);
+  const unclosed = [...new Set([
+    ...((d.intervals && d.intervals.unclosed_tools) || []),
+    ...((d.intervals && d.intervals.unclosed_approvals) || []),
+  ])];
+  if (totals.length || unclosed.length) {
+    lines.push("", "## Tools", "");
+    totals.forEach((t) => {
+      lines.push("- " + t.name + ": " + t.calls
+        + (t.calls === 1 ? " call" : " calls")
+        + " · " + fmtDur(t.total_ms) + " total"
+        + " · slowest " + fmtDur(t.slowest_ms)
+        + (t.wait_ms > 0 ? " · approval wait inside " + fmtDur(t.wait_ms) : ""));
+    });
+    if (unclosed.length) {
+      lines.push("- Tool picture is partial: " + unclosed.join(", ")
+        + " started but never recorded a finish, so "
+        + (unclosed.length === 1 ? "it is" : "they are")
+        + " not counted above.");
+    }
+  }
+  if ((d.errors || []).length) {
+    lines.push("", "## Errors", "");
+    d.errors.forEach((e) => {
+      lines.push("- " + (e.operation || "call") + ": " + (e.error_type || "failed"));
+    });
+  }
+  const timeline = d.timeline || [];
+  if (timeline.length) {
+    lines.push("", "## Timeline", "",
+      "| # | Operation | Duration | Wire |",
+      "| --- | --- | --- | --- |");
+    timeline.slice(0, PACK_TIMELINE_ROWS).forEach((t, i) => {
+      lines.push("| " + [
+        i + 1,
+        cell(t.operation),
+        fmtDur(t.duration_ms ?? null),
+        fmtDur(t.wire_ms ?? null),
+      ].join(" | ") + " |");
+    });
+    if (timeline.length > PACK_TIMELINE_ROWS) {
+      lines.push("", "Timeline truncated at " + PACK_TIMELINE_ROWS
+        + " of " + timeline.length + " rows in this pack.");
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
 }
