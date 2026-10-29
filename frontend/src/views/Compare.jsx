@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router";
-import { fastestOf, fmtDur, fmtMs, legKey, localTime, median, shortText } from "../format.js";
+import { fastestOf, fmtDur, fmtMs, legKey, localTime, median, raceProgress, shortText } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -22,9 +22,12 @@ function CompareSet({ data, onSelect }) {
     + (modeName ? " · " + modeName : "") + " · set " + selected.comparison_id
     + " · " + rounds.length + (rounds.length === 1 ? " round" : " rounds");
   const prompts = [...new Set(inSet.map((s) => s.prompt || ""))];
-  const promptLine = prompts.length === 1
+  const allRaced = inSet.length > 0 && inSet.every((s) => s.raced);
+  const promptLine = (prompts.length === 1
     ? "Same prompt for every leg: “" + shortText(prompts[0], 140) + "”. Run each way in the terminal with ./run-muse --compare …; this panel lines the legs up side by side."
-    : "Heads up: legs in this set do not all share one prompt, so treat side-by-side times with care.";
+    : "Heads up: legs in this set do not all share one prompt, so treat side-by-side times with care.")
+    + (allRaced ? " Legs ran at the same time." : "");
+  const racing = raceProgress(inSet, Date.now());
   const wallMeds = legs.map((key) => {
     const done = byLeg.get(key).filter((s) => s.status === "completed");
     return { key, wall: median(done.map((s) => s.wall_ms)), ok: done.length };
@@ -33,6 +36,24 @@ function CompareSet({ data, onSelect }) {
   return (
     <section className="panel">
       <div className="panelHead"><div><div className="pt">{title}</div><div className="ps">{promptLine}</div></div></div>
+      {racing.length ? (
+        <div className="tableWrap" style={{ marginBottom: 12 }}>
+          <table>
+            <thead><tr><th>Leg running now</th><th className="num">Elapsed</th><th className="num">Calls landed</th><th className="num">Model so far</th><th>Status</th></tr></thead>
+            <tbody>
+              {racing.map((r) => (
+                <tr key={r.run_id}>
+                  <td>{r.leg}</td>
+                  <td className="num">{fmtDur(r.elapsed_ms)}</td>
+                  <td className="num">{r.calls == null ? "–" : r.calls}</td>
+                  <td className="num">{fmtDur(r.model_ms)}</td>
+                  <td><StatusPill status={r.status} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
       <RunsBarChart runs={inSet} selected={data.selected} onSelect={onSelect} />
       <div className="legend"><span><span className="sw swModel"></span>model time</span><span><span className="sw swOver"></span>overhead</span><span>outlined = selected run</span></div>
       <div className="tableWrap" style={{ marginTop: 12 }}>

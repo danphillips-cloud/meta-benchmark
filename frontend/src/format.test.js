@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -16,6 +16,25 @@ test("honesty basics: missing renders as –, median skips nulls", () => {
   assert.equal(fmt(null), "–");
   assert.equal(median([null, 10, 20]), 15);
   assert.equal(median([null]), null);
+});
+
+test("raceProgress shows running legs only, elapsed from recorded start", () => {
+  const now = Date.parse("2026-01-01T00:01:00+00:00");
+  const rows = raceProgress([
+    S({ run_id: "done", status: "completed" }),
+    S({ run_id: "run2", status: "running", model: "m2", calls: 3, model_ms: 900, at: "2026-01-01T00:00:30+00:00" }),
+    S({ run_id: "run1", status: "running", model: "m1", calls: 1, model_ms: 100, at: "2026-01-01T00:00:00+00:00" }),
+    S({ run_id: "run3", status: "running", model: "m3", at: null }),
+  ], now);
+  assert.deepEqual(rows.map((r) => r.run_id), ["run1", "run2", "run3"]);
+  assert.equal(rows[0].leg, "meta/m1");
+  assert.equal(rows[0].elapsed_ms, 60000);
+  assert.equal(rows[0].calls, 1);
+  assert.equal(rows[1].elapsed_ms, 30000);
+  assert.equal(rows[1].model_ms, 900);
+  assert.equal(rows[2].elapsed_ms, null);
+  assert.deepEqual(raceProgress([S({})], now), []);
+  assert.deepEqual(raceProgress(null, now), []);
 });
 
 test("runMode defaults single runs to 'single'", () => {

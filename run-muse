@@ -60,6 +60,10 @@ def load_dotenv(path=None):
 
 load_dotenv()
 RUNS = ROOT / "muse-runs"
+# Race legs share one index file and one terminal. These locks keep
+# whole lines whole when leg threads write at the same moment.
+_INDEX_LOCK = threading.Lock()
+_PRINT_LOCK = threading.Lock()
 PORT = int(os.environ.get("PORT", "8765"))
 UI_URL = f"http://127.0.0.1:{PORT}/"
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
@@ -316,14 +320,17 @@ def ensure_ui():
 
 
 def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
-                watch=None):
+                watch=None, stop_event=None):
     """Run one harness process, writing stdout to stdout_path and
     stderr to the sibling stderr.log. Returns exit state plus the
     stdout lines stamped with arrival time in ms since start.
 
     `watch`, when given, is polled while the process runs. It may
     return ("needs_approval", tool) to stop the process at once;
-    the result then carries needs_approval=tool.
+    the result then carries needs_approval=tool. `stop_event`, when
+    set by another thread, stops the process the same way Ctrl+C
+    does. Race legs stop through it, since SIGINT lands only on
+    the main thread.
     """
     started = time.monotonic()
     lines = []
@@ -383,6 +390,10 @@ def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
                         needs_approval = verdict[1]
                         exit_code = stop_proc()
                         break
+                if stop_event is not None and stop_event.is_set():
+                    interrupted = True
+                    exit_code = stop_proc()
+                    break
                 if deadline is not None and time.monotonic() >= deadline:
                     timed_out = True
                     exit_code = stop_proc()
@@ -429,9 +440,14 @@ def format_live_line(state):
     return state.get("state") or "idle"
 
 
-def _live_watch(session_id, seen):
+def _live_watch(session_id, seen, label=None):
     """Poll closure for run_process: print finished calls and the
-    live state, and stop the run if an approval prompt appears."""
+    live state, and stop the run if an approval prompt appears.
+
+    With a label (race legs), every line is prefixed with the leg
+    and the live state prints as whole lines. One terminal cannot
+    hold several carriage-return lines at once.
+    """
     # The log path is resolved once, on the first poll that finds it,
     # and reused from `seen` after that instead of globbing the whole
     # sessions tree on every poll.
@@ -441,27 +457,30 @@ def _live_watch(session_id, seen):
         if not path:
             return None
         seen["path"] = path
+    prefix = f"{label} · " if label else ""
     records = muse_log.read_records(path)
     calls = muse_log.calls_from_records(records)
     while seen["calls"] < len(calls):
         seen["calls"] += 1
-        print(format_call_line(seen["calls"], calls[seen["calls"] - 1]),
-              flush=True)
+        with _PRINT_LOCK:
+            print(prefix + format_call_line(
+                seen["calls"], calls[seen["calls"] - 1]), flush=True)
     state = muse_log.live_state(records)
     if state["state"] == "waiting for approval":
         return ("needs_approval", state.get("tool"))
     text = format_live_line(state)
     if text != seen.get("live"):
         seen["live"] = text
-        if sys.stdout.isatty():
-            print("\r" + text + "   ", end="", flush=True)
-        else:
-            print(text, flush=True)
+        with _PRINT_LOCK:
+            if label or not sys.stdout.isatty():
+                print(prefix + text, flush=True)
+            else:
+                print("\r" + text + "   ", end="", flush=True)
     return None
 
 
 def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
-                  session_id=None):
+                  session_id=None, stop_event=None, leg_label=None):
     """Run one prompt through Muse. Returns report fields."""
     session_id = session_id or str(uuid.uuid4())
     workspace = run_dir / "workspace"
@@ -478,11 +497,11 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
     if minimal:
         cmd += ["--disable-reminders", "--no-foreign-personal-context"]
     seen = {"calls": 0, "live": None}
-    watch = (lambda: _live_watch(session_id, seen)) \
+    watch = (lambda: _live_watch(session_id, seen, label=leg_label)) \
         if provider != "echo" else None
     proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
-                       timeout, watch=watch)
-    if sys.stdout.isatty():
+                       timeout, watch=watch, stop_event=stop_event)
+    if sys.stdout.isatty() and not leg_label:
         print(flush=True)
     wall_ms = proc["wall_ms"]
     exit_code = proc["exit_code"]
@@ -656,7 +675,7 @@ def parse_claude_stream(stamped):
     return parsed
 
 
-def run_claude_code(prompt, run_dir, model, timeout):
+def run_claude_code(prompt, run_dir, model, timeout, stop_event=None):
     """Run one prompt through Claude Code in --bare mode."""
     workspace = run_dir / "workspace"
     workspace.mkdir()
@@ -684,7 +703,8 @@ def run_claude_code(prompt, run_dir, model, timeout):
     env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
     try:
         proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
-                           timeout, input_text=prompt)
+                           timeout, input_text=prompt,
+                           stop_event=stop_event)
     except OSError as e:
         return _empty_result(" ".join(cmd), error=str(e))
     parsed = parse_claude_stream(proc["lines"])
@@ -719,23 +739,27 @@ BASE_REPORT = {
     "exit_code": None, "reply": "", "calls": [], "timeline": [],
     "api_ms": None, "ttft_ms": None, "num_turns": None,
     "cost_usd": None, "totals": None, "metrics_unavailable": False,
-    "error": None, "turn_index": None,
+    "error": None, "turn_index": None, "raced": False,
 }
 
 
 def new_run_dir():
     RUNS.mkdir(exist_ok=True)
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" \
-        + uuid.uuid4().hex[:6]
-    run_dir = RUNS / run_id
-    run_dir.mkdir()
-    return run_id, run_dir
+    while True:
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S") + "-" \
+            + uuid.uuid4().hex[:6]
+        run_dir = RUNS / run_id
+        try:
+            run_dir.mkdir()
+            return run_id, run_dir
+        except FileExistsError:
+            continue
 
 
 def write_run(run_dir, report):
     (run_dir / "report.json").write_text(json.dumps(report, indent=2))
     summary = {k: v for k, v in report.items() if k != "timeline"}
-    with open(RUNS / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, open(RUNS / "index.jsonl", "a") as f:
         f.write(json.dumps(summary) + "\n")
 
 
@@ -804,12 +828,14 @@ def print_summary(report, r, run_dir):
 def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                minimal=False, timeout=None, comparison_id=None,
                compare_round=None, compare_mode=None,
-               suite_id=None, suite_prompt=None):
+               suite_id=None, suite_prompt=None,
+               raced=False, stop_event=None):
     model = model or default_model(provider)
     if timeout is None:
         timeout = default_timeout(provider)
     if provider in PAID_PROVIDERS:
-        print(paid_notice(model))
+        with _PRINT_LOCK:
+            print(paid_notice(model), flush=True)
     run_id, run_dir = new_run_dir()
     # Register the run immediately so the UI shows it while it runs.
     # The final summary is appended again at the end; the UI keeps the
@@ -825,7 +851,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "provider": provider, "session_id": live_session_id,
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
-        "compare_mode": compare_mode,
+        "compare_mode": compare_mode, "raced": raced,
         "suite_id": suite_id, "suite_prompt": suite_prompt,
         "harness_version": version,
         "status": "running",
@@ -833,17 +859,21 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "wall_ms": None, "exit_code": None, "reply": "",
         "calls": [], "metrics_unavailable": False, "error": None,
     }
-    with open(RUNS / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, open(RUNS / "index.jsonl", "a") as f:
         f.write(json.dumps(running) + "\n")
     started = time.monotonic()
     try:
         if provider == "anthropic":
             r = run_anthropic(prompt, run_dir, model, timeout)
         elif provider == "claude-code":
-            r = run_claude_code(prompt, run_dir, model, timeout)
+            r = run_claude_code(prompt, run_dir, model, timeout,
+                                stop_event=stop_event)
         else:
+            leg_label = f"{provider}/{recorded_model(provider, model)}" \
+                if raced else None
             r = run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
-                              session_id=live_session_id)
+                              session_id=live_session_id,
+                              stop_event=stop_event, leg_label=leg_label)
     except KeyboardInterrupt:
         # Ctrl+C during a direct API call, or outside proc.wait() in
         # run_muse_exec, must still write a final status below.
@@ -875,7 +905,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "provider": provider, "session_id": r["session_id"],
         "context_mode": context_mode,
         "comparison_id": comparison_id, "round": compare_round,
-        "compare_mode": compare_mode,
+        "compare_mode": compare_mode, "raced": raced,
         "suite_id": suite_id, "suite_prompt": suite_prompt,
         "harness_version": version,
         "tool_ms": split["tool_ms"], "approval_ms": split["approval_ms"],
@@ -895,7 +925,8 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                  or (stderr_tail if status != "completed" else None),
     })
     write_run(run_dir, report)
-    print_summary(report, r, run_dir)
+    with _PRINT_LOCK:
+        print_summary(report, r, run_dir)
     return report
 
 
@@ -1120,13 +1151,62 @@ def exit_code_for(status):
     return 1
 
 
-def run_compare(prompt, mode, minimal, timeout, repeat):
+def _run_round_raced(prompt, order, minimal, timeout, comparison_id,
+                     round_no, mode):
+    """One compare round with every leg running at once.
+
+    Returns one status per leg, in leg order. Ctrl+C lands on the
+    main thread while it joins. It sets the shared stop Event, and
+    each leg stops its own process and records interrupted through
+    the usual paths. A leg exception is re-raised here after every
+    leg has been joined. It is never swallowed inside a thread.
+    """
+    stop_event = threading.Event()
+    reports = [None] * len(order)
+    errors = []
+
+    def leg(index, provider, model):
+        try:
+            reports[index] = run_prompt(
+                prompt, provider=provider, model=model, minimal=minimal,
+                timeout=timeout, comparison_id=comparison_id,
+                compare_round=round_no, compare_mode=mode,
+                raced=True, stop_event=stop_event)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=leg, args=(i, provider, model))
+               for i, (provider, model) in enumerate(order)]
+    for t in threads:
+        t.start()
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        stop_event.set()
+        for t in threads:
+            t.join()
+    if errors:
+        raise errors[0]
+    return [r["status"] for r in reports]
+
+
+def run_compare(prompt, mode, minimal, timeout, repeat, race=False):
     comparison_id = uuid.uuid4().hex[:8]
     models = compare_models_for(mode)
-    print(f"Comparing {len(models)} model(s), {repeat} round(s), "
+    verb = "Racing" if race and len(models) > 1 else "Comparing"
+    print(f"{verb} {len(models)} model(s), {repeat} round(s), "
           f"set {comparison_id}")
     statuses = []
     for round_no, order in compare_schedule(models, repeat):
+        if race and len(order) > 1:
+            round_statuses = _run_round_raced(
+                prompt, order, minimal, timeout, comparison_id,
+                round_no, mode)
+            statuses.extend(round_statuses)
+            if "interrupted" in round_statuses:
+                break
+            continue
         for provider, model in order:
             report = run_prompt(prompt, provider=provider, model=model,
                                 minimal=minimal, timeout=timeout,
@@ -1328,6 +1408,9 @@ def main():
                              "(COMPARE_MODELS)")
     parser.add_argument("--repeat", type=int, default=None,
                         help="compare rounds, alternating order (default 1)")
+    parser.add_argument("--race", action="store_true",
+                        help="run the legs of each compare round at the "
+                             "same time (needs --compare)")
     parser.add_argument("--watch", nargs="?", const="", default=None,
                         metavar="SESSION",
                         help="watch a Muse session read-only (newest "
@@ -1345,6 +1428,8 @@ def main():
     if args.repeat is not None and not args.compare \
             and args.suite is None:
         parser.error("--repeat needs --compare or --suite")
+    if args.race and not args.compare:
+        parser.error("--race needs --compare")
     if args.suite is not None and (args.prompt or args.compare
                                    or args.watch is not None or args.retro):
         parser.error("--suite takes no prompt, --compare, --watch or --retro")
@@ -1375,7 +1460,8 @@ def main():
         return 0
     prompt = " ".join(args.prompt).strip()
     if prompt and mode is not None:
-        return run_compare(prompt, mode, args.minimal, args.timeout, repeat)
+        return run_compare(prompt, mode, args.minimal, args.timeout, repeat,
+                           race=args.race)
     if prompt:
         report = run_prompt(prompt, provider=args.provider,
                             model=args.model, minimal=args.minimal,
@@ -1413,7 +1499,8 @@ def main():
                            timeout=args.timeout)
             else:
                 run_compare(result["text"], state["mode"],
-                            args.minimal, args.timeout, repeat)
+                            args.minimal, args.timeout, repeat,
+                            race=args.race)
         except KeyboardInterrupt:
             print("\nInterrupted.")
     return 0

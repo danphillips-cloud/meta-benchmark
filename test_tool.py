@@ -1002,6 +1002,140 @@ def _completed(**overrides):
     return result
 
 
+class RaceTest(unittest.TestCase):
+    """Race mode: parallel compare legs, stops, stamps (stubbed)."""
+
+    def _compare(self, *args, **kwargs):
+        import contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            return run_muse.run_compare(*args, **kwargs)
+
+    def test_legs_overlap_and_rounds_stay_sequential(self):
+        import threading
+        import time
+        barrier = threading.Barrier(2)
+        log = []
+        lock = threading.Lock()
+
+        def fake_run_prompt(prompt, provider=None, model=None, **kwargs):
+            with lock:
+                log.append((kwargs.get("compare_round"), "start",
+                            time.monotonic()))
+            barrier.wait(timeout=5)
+            with lock:
+                log.append((kwargs.get("compare_round"), "end",
+                            time.monotonic()))
+            return {"status": "completed"}
+
+        with mock.patch.object(run_muse, "run_prompt", fake_run_prompt), \
+                mock.patch.object(run_muse, "compare_models_for",
+                                  lambda mode: [("meta", "a"),
+                                                ("meta", "b")]):
+            code = self._compare("hi", "meta", False, None, 2, race=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(log), 8)
+        r1_end = max(t for r, kind, t in log if r == 1 and kind == "end")
+        r2_start = min(t for r, kind, t in log
+                       if r == 2 and kind == "start")
+        self.assertGreaterEqual(r2_start, r1_end)
+
+    def test_race_index_parseable_and_stamped(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            fake = lambda *a, **k: run_muse._empty_result(  # noqa: E731
+                "fake", exit_code=0, wall_ms=7)
+            with mock.patch.object(run_muse, "RUNS", runs), \
+                    mock.patch.object(run_muse, "run_anthropic", fake), \
+                    mock.patch.object(
+                        run_muse, "compare_models_for",
+                        lambda mode: [("anthropic", "m1"),
+                                      ("anthropic", "m2")]):
+                self.assertEqual(self._compare(
+                    "hi", "custom", False, None, 1, race=True), 0)
+                self.assertEqual(self._compare(
+                    "hi", "custom", False, None, 1, race=False), 0)
+            entries = [json.loads(l) for l in
+                       (runs / "index.jsonl").read_text().splitlines()]
+            finals = {}
+            for e in entries:
+                finals[e["run_id"]] = e
+            raced = [e for e in finals.values() if e.get("raced")]
+            plain = [e for e in finals.values() if not e.get("raced")]
+            self.assertEqual(len(raced), 2)
+            self.assertEqual(len(plain), 2)
+            self.assertTrue(all(e["comparison_id"] for e in raced))
+            self.assertTrue(all(e["status"] == "completed"
+                                for e in finals.values()))
+
+    def test_interrupted_leg_rolls_up_130(self):
+        def fake_run_prompt(prompt, provider=None, model=None, **kwargs):
+            return {"status": "interrupted" if model == "b"
+                    else "completed"}
+
+        with mock.patch.object(run_muse, "run_prompt", fake_run_prompt), \
+                mock.patch.object(run_muse, "compare_models_for",
+                                  lambda mode: [("meta", "a"),
+                                                ("meta", "b")]):
+            code = self._compare("hi", "meta", False, None, 1, race=True)
+        self.assertEqual(code, 130)
+
+    def test_stop_event_stops_the_process(self):
+        import threading
+        import time
+        stop = threading.Event()
+        timer = threading.Timer(0.3, stop.set)
+        with tempfile.TemporaryDirectory() as td:
+            timer.start()
+            try:
+                result = run_muse.run_process(
+                    ["sh", "-c", "sleep 5"], Path(td), dict(os.environ),
+                    Path(td) / "out.log", timeout=10, stop_event=stop)
+            finally:
+                timer.cancel()
+        self.assertTrue(result["interrupted"])
+        self.assertLess(result["wall_ms"], 3000)
+        self.assertGreaterEqual(result["wall_ms"], 250)
+
+    def test_new_run_dir_retries_on_collision(self):
+        class FakeUUID:
+            def __init__(self, hexed):
+                self.hex = hexed
+
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            fakes = [FakeUUID("a" * 32), FakeUUID("a" * 32),
+                     FakeUUID("b" * 32)]
+            with mock.patch.object(run_muse, "RUNS", runs), \
+                    mock.patch.object(run_muse.uuid, "uuid4",
+                                      side_effect=fakes):
+                first, first_dir = run_muse.new_run_dir()
+                second, second_dir = run_muse.new_run_dir()
+            self.assertNotEqual(first, second)
+            self.assertTrue(first_dir.is_dir())
+            self.assertTrue(second_dir.is_dir())
+
+    def _main_error(self, argv):
+        import contextlib
+        err = io.StringIO()
+        with mock.patch.object(sys, "argv", argv):
+            with contextlib.redirect_stderr(err):
+                with self.assertRaises(SystemExit) as ctx:
+                    run_muse.main()
+        self.assertEqual(ctx.exception.code, 2)
+        return err.getvalue()
+
+    def test_race_without_compare_is_an_error(self):
+        err = self._main_error(["run-muse", "--race", "hi"])
+        self.assertIn("--race needs --compare", err)
+
+    def test_server_session_row_carries_raced(self):
+        base = {"run_id": "x", "at": None, "prompt": "", "model": "m",
+                "wall_ms": None, "calls": [], "provider": "meta"}
+        self.assertTrue(server.session_row(
+            dict(base, raced=True))["raced"])
+        self.assertFalse(server.session_row(base)["raced"])
+
+
 class SuiteTest(unittest.TestCase):
     def _write_suite(self, td, data):
         path = Path(td) / "suite.json"
@@ -1193,12 +1327,12 @@ class DefaultTimeoutTest(unittest.TestCase):
 
         # Each fake records the timeout argument by position.
         if fake_name in ("run_anthropic", "run_claude_code"):
-            def fake(prompt, run_dir, mdl, timeout):
+            def fake(prompt, run_dir, mdl, timeout, **kwargs):
                 captured["timeout"] = timeout
                 return _completed()
         else:
             def fake(prompt, run_dir, prov, mdl, minimal, timeout,
-                     session_id=None):
+                     session_id=None, **kwargs):
                 captured["timeout"] = timeout
                 return _completed(session_id=session_id)
 
@@ -1455,7 +1589,7 @@ class VisibilityTest(unittest.TestCase):
         captured = {}
 
         def fake_process(cmd, cwd, env, out, timeout, input_text=None,
-                         watch=None):
+                         watch=None, stop_event=None):
             captured["cmd"] = cmd
             Path(out).write_text("")
             return {"wall_ms": 1, "exit_code": 1, "timed_out": False,
