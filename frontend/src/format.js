@@ -47,6 +47,26 @@ export function median(values) {
 
 export const legKey = (s) => (s.provider || "?") + "/" + (s.model || "?");
 
+// Live progress for legs still running, in start order. Elapsed is
+// now minus the recorded start, never estimated: a missing start
+// gives null, which renders as a dash. Calls and model time are
+// the live counts the server already returns on session rows.
+export function raceProgress(sessions, nowMs) {
+  return [...(sessions || [])]
+    .filter((s) => s && s.status === "running")
+    .sort((a, b) => ((a.at ? 0 : 1) - (b.at ? 0 : 1))
+      || String(a.at || "").localeCompare(String(b.at || "")))
+    .map((s) => {
+      const start = s.at ? Date.parse(s.at) : NaN;
+      return {
+        run_id: s.run_id, leg: legKey(s), status: s.status,
+        elapsed_ms: Number.isFinite(start) && nowMs != null
+          ? Math.max(0, nowMs - start) : null,
+        calls: s.calls ?? null, model_ms: s.model_ms ?? null,
+      };
+    });
+}
+
 export const STATUSES = ["completed", "running", "failed", "interrupted", "timeout", "needs_approval"];
 export const DID_NOT_COMPLETE = STATUSES.filter((s) => s !== "completed" && s !== "running");
 
