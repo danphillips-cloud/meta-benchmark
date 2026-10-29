@@ -108,9 +108,21 @@ function CompareSet({ data, onSelect }) {
           </thead>
           <tbody>
             {!rounds.length ? <tr><td className="empty">No rounds.</td></tr>
-              : rounds.map((r) => (
+              : rounds.map((r) => {
+                const roundRuns = legs
+                  .map((k) => byLeg.get(k).find((x) => (x.round ?? null) === r))
+                  .filter(Boolean);
+                return (
                 <tr key={String(r)}>
-                  <td>{r == null ? "–" : "Round " + r}</td>
+                  <td>
+                    {r == null ? "–" : "Round " + r}
+                    {roundRuns.length === 2 ? (
+                      <>
+                        <br />
+                        <Link className="viewAll" to={"/replay/" + encodeURIComponent(roundRuns[0].run_id) + "?vs=" + encodeURIComponent(roundRuns[1].run_id)}>Replay both</Link>
+                      </>
+                    ) : null}
+                  </td>
                   {legs.map((k) => {
                     const s = byLeg.get(k).find((x) => (x.round ?? null) === r);
                     if (!s) return <td key={k} className="num">–</td>;
@@ -126,7 +138,8 @@ function CompareSet({ data, onSelect }) {
                     );
                   })}
                 </tr>
-              ))}
+                );
+              })}
           </tbody>
         </table>
       </div>

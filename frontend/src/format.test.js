@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
-  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -440,6 +440,26 @@ test("replayAt: counters only count calls that had landed by then", () => {
   ]);
   assert.equal(replayAt(missing, 10000).input_tokens, null);
   assert.equal(replayAt(missing, 10000).calls_landed, 2);
+});
+
+test("replayPair: shared span, merged offsets, recorded start gap", () => {
+  const a = replaySeries(REPLAY_TIMELINE, REPLAY_EVENTS);
+  const b = replaySeries([
+    T("2026-01-01T00:00:02.000Z", "runtime.user_intent.accepted accepted"),
+    T("2026-01-01T00:00:07.000Z", "runtime.session model_completed", 3000, 0),
+    T("2026-01-01T00:00:07.000Z", "runtime.session capture"),
+    T("2026-01-01T00:00:20.000Z", "runtime.session model_completed", 2000, 0),
+  ], []);
+  const pair = replayPair(a, b);
+  assert.equal(pair.span_ms, 18000);
+  assert.deepEqual(pair.offsets, [0, 5000, 8000, 10000, 18000]);
+  assert.equal(pair.gap_ms, 2000);
+  assert.equal(replayPair(b, a).gap_ms, -2000);
+  // Missing starts give a null gap, never a made-up zero.
+  assert.equal(replayPair(a, replaySeries([], [])).gap_ms, null);
+  assert.equal(replayPair(a, replaySeries([], [])).span_ms, 10000);
+  assert.deepEqual(replayPair(null, null), { span_ms: 0, offsets: [], gap_ms: null });
+  assert.deepEqual(replayPair(undefined, a).offsets, [0, 5000, 8000, 10000]);
 });
 
 test("replaySeries: no timed model rows means no landings, steps still replay", () => {
