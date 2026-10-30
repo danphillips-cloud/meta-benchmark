@@ -20,7 +20,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 41
+VERSION = 42
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -157,6 +157,7 @@ def session_row(r):
         "suite_id": r.get("suite_id"), "suite_prompt": r.get("suite_prompt"),
         "harness_version": r.get("harness_version"),
         "cost_usd": r.get("cost_usd"),
+        "cost_source": r.get("cost_source"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
         "model_ms": model_ms,
         "overhead_ms": None if model_ms is None or r.get("wall_ms") is None

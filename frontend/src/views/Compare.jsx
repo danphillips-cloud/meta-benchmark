@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router";
-import { fastestOf, fmtDur, fmtMs, legKey, localTime, median, raceProgress, shortText } from "../format.js";
+import { fastestOf, fmtCost, fmtDur, fmtMs, legKey, localTime, median, raceProgress, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -65,11 +65,7 @@ function CompareSet({ data, onSelect }) {
               const runs = all.filter((s) => s.status === "completed");
               const med = (f) => { const v = median(runs.map(f)); return v == null ? "–" : fmtMs(v); };
               const medDur = (f) => fmtDur(median(runs.map(f)));
-              // Claude Code prices every model from Anthropic's list, so a
-              // Meta model's cost_usd is not a Meta price. Hide it there.
-              const groupModel = (all[0] && all[0].model) || "";
-              const costVal = groupModel.startsWith("muse-") ? null : median(runs.map((s) => s.cost_usd));
-              const cost = costVal == null ? "–" : "$" + costVal.toFixed(4);
+              const cost = fmtCost(median(runs.map((s) => visibleCost(s))));
               const latest = [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
                 .find((s) => s.status === "completed") || [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
               const cells = [key, runs.length + "/" + all.length + " ok", medDur((s) => s.wall_ms), medDur((s) => s.model_ms),
@@ -161,6 +157,7 @@ export default function Compare({ data, onSelect }) {
     ["Overhead", (s) => s.overhead_ms, 1], ["TTFT", (s) => s.ttft_ms, 1],
     ["Calls", (s) => s.calls], ["Input tokens, run", (s) => s.input_tokens],
     ["Output tokens, run", (s) => s.output_tokens],
+    ["Cost", (s) => visibleCost(s)],
     ["Input tokens, last call", (s) => s.last_input_tokens],
     ["Output tokens, last call", (s) => s.last_output_tokens]];
   // Honest delta: – when either side is missing. Never substitute 0.
@@ -199,12 +196,16 @@ export default function Compare({ data, onSelect }) {
                   </thead>
                   <tbody>
                     {metrics.map(([name, f, isDur]) => {
-                      const show = (v) => isDur ? fmtDur(v) : fmtMs(v);
+                      const isCost = name === "Cost";
+                      const show = (v) => isCost ? fmtCost(v) : isDur ? fmtDur(v) : fmtMs(v);
+                      const delta = (x, y) => isCost
+                        ? ((x == null || y == null) ? "–" : ((x - y) > 0 ? "+" : (x - y) < 0 ? "-" : "") + fmtCost(Math.abs(x - y)))
+                        : deltaText(x, y, isDur);
                       return (
                         <tr key={name}>
                           <td>{name}</td>
                           <td className="num">{show(f(a))}</td>
-                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s))}</td>, <td key={s.run_id + "-dv"} className="num">{deltaText(f(a), f(s), isDur)}</td>])}
+                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s))}</td>, <td key={s.run_id + "-dv"} className="num">{delta(f(a), f(s))}</td>])}
                         </tr>
                       );
                     })}

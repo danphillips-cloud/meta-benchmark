@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, buildRunsQuery, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts } from "../format.js";
+import { DID_NOT_COMPLETE, buildRunsQuery, costNote, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts, visibleCost } from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -139,6 +139,7 @@ export default function Overview({ data, onSelect, onGoto }) {
       key, all: all.length, ok: runs.length,
       wall: median(runs.map((s) => s.wall_ms)), model: median(runs.map((s) => s.model_ms)),
       over: median(runs.map((s) => s.overhead_ms)),
+      cost: median(runs.map((s) => visibleCost(s))),
     };
   }).filter((r) => r.ok > 0).sort((a, b) => b.ok - a.ok || a.key.localeCompare(b.key));
   const wallRows = rows.filter((r) => r.ok > 0);
@@ -234,6 +235,11 @@ export default function Overview({ data, onSelect, onGoto }) {
           <div className="big"><span>{fmt(sel.input_tokens)}</span></div>
           <div className="detail">{"Output " + fmt(sel.output_tokens) + " · " + cacheShare}</div>
         </div>
+        <div className="stat">
+          <div className="statTop"><small>Cost</small><StatIcon kind="cost" /></div>
+          <div className="big"><span>{fmtCost(visibleCost(sel))}</span></div>
+          <div className="detail">{costNote(sel) + (sel.cost_source === "computed" ? " · input and output only" : "")}</div>
+        </div>
       </div>
       <p className="note" style={{ display: notes.length ? "" : "none" }}>{notes.join(" ")}</p>
       {diag ? (
@@ -324,7 +330,7 @@ export default function Overview({ data, onSelect, onGoto }) {
                           {fastestKeys.has(r.key) ? <span className="badgeFast" title="Lowest median wall time in this scope">fastest</span> : null}
                         </div>
                         {fastestKeys.has(r.key) ? <span className="fastRatio" title="Median wall time vs the slowest group in this scope">{fastRatio.toFixed(1) + "× faster"}</span> : null}
-                        <div className="sub">{"Model " + fmtDur(r.model) + " · Overhead " + fmtDur(r.over) + " · " + r.ok + "/" + r.all + " ok"}</div>
+                        <div className="sub">{"Model " + fmtDur(r.model) + " · Overhead " + fmtDur(r.over) + (r.cost == null ? "" : " · Cost " + fmtCost(r.cost)) + " · " + r.ok + "/" + r.all + " ok"}</div>
                       </div>
                       <div className="wall" title={r.wall == null ? "" : fmtMs(r.wall) + " ms"}>{wp[0]}<span className="unit">{wp[1]}</span></div>
                     </div>

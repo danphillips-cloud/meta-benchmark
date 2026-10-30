@@ -91,6 +91,39 @@ Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) be
 
 In the prompt loop, `/mode meta`, `/mode claude` and `/mode single` switch mode, and the prompt shows it, for example `muse[meta]>`. `/help` lists commands. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
 
+### Manifests
+
+Stage a whole benchmark in one JSON file, then run it in one go.
+
+```sh
+./run-muse --manifest bench.json --dry-run   # list what would run, run nothing
+./run-muse --manifest bench.json --resume    # run it, keep progress in bench.state.json
+```
+
+`--suite` is the older name for the same thing, and `golden-prompts.json` still works as before. The file holds a `prompts` list and an optional `settings` block.
+
+```json
+{
+  "settings": {
+    "concurrency": 1,
+    "timeout_seconds": 1800,
+    "max_cost_usd": 10.0,
+    "max_runtime_seconds": 3600,
+    "pricing": {"input_per_mtok": 4.0, "output_per_mtok": 20.0}
+  },
+  "prompts": [
+    {"name": "sky", "prompt": "Why is the sky blue?", "minimal": true},
+    {"name": "big", "file": "prompts/big.md", "timeout_seconds": 3600, "skip": false}
+  ]
+}
+```
+
+Each entry needs a unique `name` and either a `prompt` or a `file`, relative to the manifest. `provider`, `model`, `minimal`, `skip` and `timeout_seconds` are optional per entry. The `--timeout` flag beats a per entry timeout, which beats the settings timeout, which beats the provider default.
+
+Budgets stop new entries from starting. They never kill a run in flight, because a run's cost is only known when it ends. The next entry timeout also shrinks to fit the runtime budget left. `--dry-run` prints every entry, marks paid ones, and says what the budgets count. Read it before a big paid run.
+
+`--resume` writes progress to a state file beside the manifest. Stop partway, run the same command again, and completed entries are skipped under the same suite. Failed and timed out entries run again. Add `--fresh` to ignore saved progress. Without `--resume` nothing changes from before, and no state file is written. The runner reads the manifest once at the start, so edit it only between runs.
+
 ### Providers
 
 | `--provider` | Runs |
@@ -129,6 +162,8 @@ The page refreshes every 2 seconds and follows a run in progress, so model calls
 
 Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
 
+**Cost** shows on Overview, Runs and Compare. Claude Code reports its own cost, and that figure is used as-is, except for `muse-*` models where it prices from Anthropic's list, which is not a Meta price. For other runs, set your own rates and the cost is worked out from the recorded input and output tokens. Set `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model. A computed cost is marked "at your rates" and counts input and output tokens only. Cached and reasoning tokens stay unpriced, because no provider here records how they bill. No rates set means a dash. Nothing is ever estimated.
+
 ## Configuration
 
 | Variable | Default | What it does |
@@ -141,6 +176,7 @@ Claude Code doesn't report per-call time, so its per-call columns are blank and 
 | `COMPARE_CLAUDE` | `claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare claude` |
 | `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare custom` |
 | `BENCH_CLAUDE_MODEL` | `claude-sonnet-5-5` | Default model for `claude-code` and `anthropic` |
+| `BENCH_PRICING` | unset | Your rates as JSON, USD per million tokens per model, used to work out run cost |
 | `META_BASE_URL` | `https://api.meta.ai` | Meta API endpoint |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API endpoint |
 | `MUSE_SESSIONS_DIR` | `~/.local/share/muse/sessions` | Where Muse writes session logs |
