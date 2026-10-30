@@ -87,6 +87,7 @@ export function StatIcon({ kind }) {
   if (kind === "wall") return (<svg className="statIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>);
   if (kind === "model") return (<svg className="statIcon" {...svgProps}><rect x="7" y="7" width="10" height="10" rx="1.5" /><rect x="10.2" y="10.2" width="3.6" height="3.6" /><path d="M10 2v5" /><path d="M14 2v5" /><path d="M10 17v5" /><path d="M14 17v5" /><path d="M2 10h5" /><path d="M2 14h5" /><path d="M17 10h5" /><path d="M17 14h5" /></svg>);
   if (kind === "overhead") return (<svg className="statIcon" {...svgProps}><polygon points="9.6,5.4 10.9,5.1 10.6,2.9 13.4,2.9 13.1,5.1 14.4,5.4 15.0,5.7 16.1,6.3 17.4,4.6 19.4,6.6 17.7,7.9 18.3,9.0 18.6,9.6 18.9,10.9 21.1,10.6 21.1,13.4 18.9,13.1 18.6,14.4 18.3,15.0 17.7,16.1 19.4,17.4 17.4,19.4 16.1,17.7 15.0,18.3 14.4,18.6 13.1,18.9 13.4,21.1 10.6,21.1 10.9,18.9 9.6,18.6 9.0,18.3 7.9,17.7 6.6,19.4 4.6,17.4 6.3,16.1 5.7,15.0 5.4,14.4 5.1,13.1 2.9,13.4 2.9,10.6 5.1,10.9 5.4,9.6 5.7,9.0 6.3,7.9 4.6,6.6 6.6,4.6 7.9,6.3 9.0,5.7" /><circle cx="12" cy="12" r="3.2" /></svg>);
+  if (kind === "cost") return (<svg className="statIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><path d="M12 6.5v11" /><path d="M15 8.8c-.6-1-1.7-1.4-3-1.4-1.7 0-3 1-3 2.3 0 3.1 6 1.7 6 4.4 0 1.3-1.3 2.3-3 2.3-1.3 0-2.4-.5-3-1.4" /></svg>);
   return (<svg className="statIcon" {...svgProps}><path d="M12 3l9 5-9 5-9-5 9-5Z" /><path d="M3 13l9 5 9-5" /><path d="M3 18l9 5 9-5" /></svg>);
 }
 

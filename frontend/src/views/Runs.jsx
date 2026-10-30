@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   DID_NOT_COMPLETE, RUNS_PAGE_SIZE, buildRunsQuery, compareSessions, filterOptions, filterSessions,
-  fmt, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, runMode, shortText,
+  fmt, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, runMode, shortText, visibleCost,
 } from "../format.js";
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -17,13 +17,16 @@ export function summaryText(data) {
       + (s.comparison_id ? " · compare set " + s.comparison_id : "") + (s.status ? " · " + s.status : ""));
     lines.push("  " + s.calls + " call(s) · wall " + fmtDur(s.wall_ms) + " · model " + fmtDur(s.model_ms)
       + " · overhead " + fmtDur(s.overhead_ms) + " · last in " + fmt(s.last_input_tokens)
-      + " / out " + fmt(s.last_output_tokens));
+      + " / out " + fmt(s.last_output_tokens) + " · cost " + fmtCost(visibleCost(s)));
   });
   const wall = sessions.reduce((a, s) => a + (s.wall_ms || 0), 0);
   const model = sessions.reduce((a, s) => a + (s.model_ms || 0), 0);
+  const priced = sessions.map((s) => visibleCost(s)).filter((v) => v != null);
+  const cost = priced.reduce((a, v) => a + v, 0);
   lines.push("");
   lines.push("Total: " + sessions.length + " session(s) · wall " + fmtDur(wall)
-    + " · model " + fmtDur(model) + " · overhead " + fmtDur(wall - model));
+    + " · model " + fmtDur(model) + " · overhead " + fmtDur(wall - model)
+    + " · recorded cost " + (priced.length ? fmtCost(cost) + " over " + priced.length + " priced run(s)" : "–"));
   return lines.join("\n");
 }
 
@@ -34,6 +37,7 @@ const HEADERS = [
   ["calls", "Calls", true],
   ["wall_ms", "Wall", true], ["model_ms", "Model", true],
   ["overhead_ms", "Overhead", true],
+  ["cost_usd", "Cost", true],
 ];
 
 function cellValue(s, id) {
@@ -44,6 +48,7 @@ function cellValue(s, id) {
   if (id === "status") return <StatusPill status={s.status} />;
   if (id === "harness_version") return s.harness_version || "–";
   if (id === "calls") return fmt(s.calls);
+  if (id === "cost_usd") return (<span title={s.cost_source === "computed" ? "Computed from recorded tokens at your rates. Input and output only" : visibleCost(s) == null && s.cost_usd != null ? "Claude Code priced this from Anthropic's list. That is not a Meta price, so it is hidden" : s.cost_source === "reported" ? "Reported by the harness" : "No cost recorded"}>{fmtCost(visibleCost(s))}</span>);
   return fmtDur(s[id]);
 }
 

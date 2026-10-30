@@ -1,5 +1,7 @@
 # Run data: prompts, replies, and session timelines stay local.
 muse-runs/
+# Suite resume state sits beside its manifest.
+*.state.json*
 # Local notes: research, resume notes, and draft reports stay local.
 .docs/
 __pycache__/

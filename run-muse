@@ -12,6 +12,7 @@ appends the result to muse-runs/ for the UI to display. Meta runs use
 the Muse subscription login. Direct API providers use their own key.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -166,6 +167,105 @@ PAID_PROVIDERS = ("claude-code", "anthropic")
 
 def default_timeout(provider):
     return 300 if provider in PAID_PROVIDERS else 1800
+
+
+def _pricing_pair(value, where):
+    if not isinstance(value, dict):
+        raise ValueError(f"pricing in {where} needs input_per_mtok "
+                         "and output_per_mtok")
+    pair = {}
+    for key in ("input_per_mtok", "output_per_mtok"):
+        rate = value.get(key)
+        if isinstance(rate, bool) \
+                or not isinstance(rate, (int, float)) or rate < 0:
+            raise ValueError(f"pricing in {where} needs a number at "
+                             f"or above zero for '{key}'")
+        pair[key] = float(rate)
+    return pair
+
+
+def parse_pricing(raw, where="BENCH_PRICING"):
+    """User supplied rates as {model: pair}, "*" for any model.
+
+    Accepts a dict or a JSON string. A flat pair means any model.
+    Returns {} when nothing is set. Raises ValueError with a plain
+    message for anything else, so callers can show it as-is.
+    """
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raise ValueError(f"pricing in {where} is not valid JSON")
+    if not isinstance(raw, dict):
+        raise ValueError(f"pricing in {where} must be an object")
+    if "input_per_mtok" in raw or "output_per_mtok" in raw:
+        return {"*": _pricing_pair(raw, where)}
+    pricing = {}
+    for model, value in raw.items():
+        if not isinstance(model, str) or not model:
+            raise ValueError(f"pricing in {where} has a bad model key")
+        pricing[model] = _pricing_pair(value, where)
+    return pricing
+
+
+def env_pricing():
+    return parse_pricing(os.environ.get("BENCH_PRICING"))
+
+
+def pricing_for(model, pricing):
+    if not pricing:
+        return None
+    return pricing.get(model) or pricing.get("*")
+
+
+def compute_cost(model, totals, calls, pricing):
+    """(cost_usd, pricing_used) from recorded tokens, or (None, None).
+
+    Prices input and output tokens only. Uses totals when present,
+    else sums over calls. A missing or partial token figure gives
+    None, never a made up cost.
+    """
+    pair = pricing_for(model, pricing)
+    if pair is None:
+        return None, None
+    if totals:
+        in_tok = totals.get("input_tokens")
+        out_tok = totals.get("output_tokens")
+    elif calls:
+        def summed(key):
+            values = [c.get(key) for c in calls]
+            if any(v is None for v in values):
+                return None
+            return sum(values)
+        in_tok = summed("input_tokens")
+        out_tok = summed("output_tokens")
+    else:
+        return None, None
+    if in_tok is None or out_tok is None:
+        return None, None
+    cost = (in_tok * pair["input_per_mtok"]
+            + out_tok * pair["output_per_mtok"]) / 1000000
+    return cost, {"model": model, "input_per_mtok": pair["input_per_mtok"],
+                  "output_per_mtok": pair["output_per_mtok"]}
+
+
+def counted_cost(model, cost_usd, cost_source):
+    """The cost figure budgets and displays may use, or None.
+
+    Claude Code prices every model from Anthropic's list, so its
+    reported cost for a muse-* model is not a Meta price. The
+    page hides that figure. Budgets and the terminal must apply
+    the same rule, or the three views of one run disagree. A
+    computed cost uses the user's own rates and always counts.
+    """
+    if cost_usd is None:
+        return None
+    if str(model or "").startswith("muse-") \
+            and cost_source != "computed":
+        return None
+    return cost_usd
 
 
 def paid_notice(model):
@@ -738,7 +838,8 @@ BASE_REPORT = {
     "timeout_seconds": None, "command": None, "wall_ms": None,
     "exit_code": None, "reply": "", "calls": [], "timeline": [],
     "api_ms": None, "ttft_ms": None, "num_turns": None,
-    "cost_usd": None, "totals": None, "metrics_unavailable": False,
+    "cost_usd": None, "cost_source": None, "pricing": None,
+    "totals": None, "metrics_unavailable": False,
     "error": None, "turn_index": None, "raced": False,
 }
 
@@ -798,8 +899,17 @@ def print_summary(report, r, run_dir):
             sum(c["input_tokens"] or 0 for c in r["calls"])
         out_tok = totals.get("output_tokens") if totals else \
             sum(c["output_tokens"] or 0 for c in r["calls"])
+        cost_text = ""
+        shown_cost = counted_cost(report.get("model"),
+                                  report.get("cost_usd"),
+                                  report.get("cost_source"))
+        if shown_cost is not None:
+            cost_text = f" · cost ${shown_cost:.4f}"
+            if report.get("cost_source") == "computed":
+                cost_text += " (at your rates)"
         print(f"[{label}] wall {r['wall_ms']} ms · model {model_text} · "
-              f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s) · {status}")
+              f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s)"
+              f"{cost_text} · {status}")
     if r["reply"]:
         print(r["reply"][:500])
         if len(r["reply"]) > 500:
@@ -829,7 +939,7 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                minimal=False, timeout=None, comparison_id=None,
                compare_round=None, compare_mode=None,
                suite_id=None, suite_prompt=None,
-               raced=False, stop_event=None):
+               raced=False, stop_event=None, pricing=None):
     model = model or default_model(provider)
     if timeout is None:
         timeout = default_timeout(provider)
@@ -924,6 +1034,26 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                  or r.get("error_override")
                  or (stderr_tail if status != "completed" else None),
     })
+    rates = pricing if pricing is not None else env_pricing()
+    reported = report["cost_usd"]
+    # For a muse-* model, a reported cost is priced from
+    # Anthropic's list by Claude Code, which is not a Meta price.
+    # When the user supplied their own rates for that model, their
+    # figure is the honest one and wins over the reported one.
+    prefer_own = reported is not None \
+        and str(report["model"] or "").startswith("muse-") \
+        and pricing_for(report["model"], rates) is not None
+    if reported is not None and not prefer_own:
+        report["cost_source"] = "reported"
+    else:
+        cost, used = compute_cost(
+            report["model"], report["totals"], report["calls"], rates)
+        if cost is not None:
+            report["cost_usd"] = cost
+            report["cost_source"] = "computed"
+            report["pricing"] = used
+        elif reported is not None:
+            report["cost_source"] = "reported"
     write_run(run_dir, report)
     with _PRINT_LOCK:
         print_summary(report, r, run_dir)
@@ -1213,6 +1343,10 @@ def run_compare(prompt, mode, minimal, timeout, repeat, race=False):
                                 comparison_id=comparison_id,
                                 compare_round=round_no, compare_mode=mode)
             statuses.append(report["status"])
+            if report["status"] == "interrupted":
+                break
+        if "interrupted" in statuses:
+            break
     done = sum(1 for status in statuses if status == "completed")
     closing = f"Compare set {comparison_id} done: {done} completed of {len(statuses)}."
     if ui_enabled():
@@ -1235,29 +1369,79 @@ def load_suite(path):
     model and minimal are optional per entry. Raises ValueError with
     a plain message for anything else, so main can show it as-is.
     """
+    return _suite_entries(_read_suite_data(path), Path(path))
+
+
+def _read_suite_data(path):
+    """Read and parse a suite file once. Plain errors only."""
     path = Path(path)
     try:
         text = path.read_text()
+    except UnicodeDecodeError:
+        raise ValueError(f"suite file {path} is not valid UTF-8 text")
     except OSError as e:
         raise ValueError(
             f"cannot read suite file {path}: {e.strerror or e}")
     try:
-        data = json.loads(text)
+        return json.loads(text)
     except Exception:
         raise ValueError(f"suite file {path} is not valid JSON")
+
+
+def _suite_entries(data, path):
     raw = data.get("prompts") if isinstance(data, dict) else None
     if not isinstance(raw, list) or not raw:
         raise ValueError("suite file needs a non-empty 'prompts' list")
     entries = []
     seen = set()
     for i, entry in enumerate(raw):
-        name = entry.get("name") if isinstance(entry, dict) else None
-        prompt = entry.get("prompt") if isinstance(entry, dict) else None
-        if not isinstance(name, str) or not name.strip() \
-                or not isinstance(prompt, str) or not prompt.strip():
+        if not isinstance(entry, dict):
+            raise ValueError(f"suite entry {i + 1} needs non-empty "
+                             "'name' and 'prompt'")
+        name = entry.get("name")
+        prompt = entry.get("prompt")
+        prompt_file = entry.get("file")
+        if not isinstance(name, str) or not name.strip():
             raise ValueError(
                 f"suite entry {i + 1} needs non-empty 'name' and "
                 "'prompt'")
+        if prompt is not None and prompt_file is not None:
+            raise ValueError(
+                f"suite entry '{name}' has both 'prompt' and 'file'. "
+                "Give one only")
+        if prompt_file is not None:
+            if not isinstance(prompt_file, str) or not prompt_file.strip():
+                raise ValueError(
+                    f"suite entry '{name}' needs a non-empty 'file'")
+            file_path = Path(prompt_file)
+            if not file_path.is_absolute():
+                file_path = path.parent / file_path
+            try:
+                prompt = file_path.read_text()
+            except UnicodeDecodeError:
+                raise ValueError(
+                    f"prompt file {file_path} for suite entry "
+                    f"'{name}' is not valid UTF-8 text")
+            except OSError as e:
+                raise ValueError(
+                    f"cannot read prompt file {file_path} for suite "
+                    f"entry '{name}': {e.strerror or e}")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError(
+                f"suite entry {i + 1} needs non-empty 'name' and "
+                "'prompt'")
+        skip = entry.get("skip", False)
+        if not isinstance(skip, bool):
+            raise ValueError(
+                f"suite entry '{name}' needs 'skip' to be true or false")
+        entry_timeout = entry.get("timeout_seconds")
+        if entry_timeout is not None and (
+                isinstance(entry_timeout, bool)
+                or not isinstance(entry_timeout, int)
+                or entry_timeout < 1):
+            raise ValueError(
+                f"suite entry '{name}' needs 'timeout_seconds' to be "
+                "a whole number of seconds, at least 1")
         if name in seen:
             raise ValueError(f"duplicate suite prompt name '{name}'")
         seen.add(name)
@@ -1266,8 +1450,64 @@ def load_suite(path):
             "provider": entry.get("provider") or DEFAULT_PROVIDER,
             "model": entry.get("model"),
             "minimal": bool(entry.get("minimal")),
+            "skip": skip, "timeout_seconds": entry_timeout,
         })
     return entries
+
+
+def _positive_number(value, key, whole=False):
+    if value is None:
+        return None
+    bad = isinstance(value, bool) \
+        or not isinstance(value, int if whole else (int, float))
+    if bad or (value < 1 if whole else value <= 0):
+        raise ValueError(f"suite settings need '{key}' to be a "
+                         "positive number")
+    return value
+
+
+def load_manifest(path):
+    """Suite file plus its optional settings block.
+
+    Returns {"settings": {...}, "entries": [...]}. Settings keys:
+    concurrency, timeout_seconds, repeat, max_cost_usd,
+    max_runtime_seconds, pricing. Raises ValueError with a plain
+    message for anything bad, like load_suite.
+    """
+    path = Path(path)
+    data = _read_suite_data(path)
+    entries = _suite_entries(data, path)
+    raw = data.get("settings") if isinstance(data, dict) else None
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("suite 'settings' must be an object")
+    concurrency = raw.get("concurrency", 1)
+    if isinstance(concurrency, bool) \
+            or not isinstance(concurrency, int) \
+            or not 1 <= concurrency <= 8:
+        raise ValueError("suite settings need 'concurrency' to be "
+                         "a whole number from 1 to 8")
+    timeout_seconds = raw.get("timeout_seconds")
+    if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or timeout_seconds < 1):
+        raise ValueError("suite settings need 'timeout_seconds' to "
+                         "be a whole number of seconds, at least 1")
+    settings = {
+        "concurrency": concurrency,
+        "timeout_seconds": timeout_seconds,
+        "repeat": _positive_number(raw.get("repeat"), "repeat",
+                                   whole=True),
+        "max_cost_usd": _positive_number(raw.get("max_cost_usd"),
+                                         "max_cost_usd"),
+        "max_runtime_seconds": _positive_number(
+            raw.get("max_runtime_seconds"), "max_runtime_seconds"),
+        "pricing": parse_pricing(raw.get("pricing"),
+                                 f"settings in {path}"),
+    }
+    return {"settings": settings, "entries": entries}
 
 
 def previous_suite_version(provider):
@@ -1294,9 +1534,150 @@ def suite_version_notice(previous, current, provider):
     return None
 
 
-def run_suite(path, timeout, repeat):
-    entries = load_suite(path)
-    suite_id = uuid.uuid4().hex[:8]
+def effective_timeout(entry, settings, cli_timeout):
+    """Timeout precedence: flag, entry, settings, provider default."""
+    if cli_timeout is not None:
+        return cli_timeout
+    if entry.get("timeout_seconds") is not None:
+        return entry["timeout_seconds"]
+    if settings.get("timeout_seconds") is not None:
+        return settings["timeout_seconds"]
+    return default_timeout(entry["provider"])
+
+
+def suite_state_path(path):
+    path = Path(path)
+    return path.parent / (path.stem + ".state.json")
+
+
+def load_state(path):
+    """Resume state stored beside a suite file, or None.
+
+    Raises ValueError with a plain message when the file exists
+    but cannot be trusted. A suite must never silently rerun
+    finished entries because its state file was damaged.
+    """
+    state_path = suite_state_path(path)
+    if not state_path.is_file():
+        return None
+    try:
+        state = json.loads(state_path.read_text())
+    except Exception:
+        raise ValueError(f"state file {state_path} is not valid JSON. "
+                         "Fix it or delete it and start again")
+    if not isinstance(state, dict) \
+            or state.get("manifest") != Path(path).name \
+            or not state.get("suite_id") \
+            or not isinstance(state.get("entries"), dict):
+        raise ValueError(f"state file {state_path} does not belong "
+                         f"to {Path(path).name}. Delete it if it is "
+                         "stale")
+    return state
+
+
+def save_state(path, state):
+    state_path = suite_state_path(path)
+    tmp = state_path.with_name(state_path.name + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, state_path)
+
+
+def _entry_model(entry):
+    # Mirror what run_prompt records, so pricing keys line up.
+    # The echo provider always records its model as "echo".
+    return recorded_model(
+        entry["provider"],
+        entry.get("model") or default_model(entry["provider"]))
+
+
+def _priced_text(entry, pricing):
+    if pricing_for(_entry_model(entry), pricing):
+        return "priced"
+    if entry["provider"] == "claude-code" \
+            and not _entry_model(entry).startswith("muse-"):
+        return "cost reported by Claude Code"
+    return "unpriced"
+
+
+def print_suite_plan(path, settings, entries, pricing, cli_timeout,
+                     repeat, resume, fresh=False):
+    """The --dry-run listing. Prints only. Runs nothing."""
+    print(f"Suite file: {path}")
+    print(f"{len(entries)} prompt(s), {repeat} repeat(s) each, "
+          f"concurrency {settings['concurrency']}")
+    if settings.get("max_cost_usd") is not None:
+        print(f"Cost budget: stop starting new entries at "
+              f"${settings['max_cost_usd']:.2f} of recorded cost")
+    if settings.get("max_runtime_seconds") is not None:
+        print(f"Runtime budget: stop starting new entries after "
+              f"{settings['max_runtime_seconds']} seconds")
+    state = None
+    if resume and fresh:
+        print("Fresh: saved progress will be ignored. Every entry "
+              "runs again under a new suite id")
+    elif resume:
+        try:
+            state = load_state(path)
+        except ValueError as e:
+            print(f"State problem: {e}")
+            return 1
+        if state:
+            done = sum(1 for v in state["entries"].values()
+                       if v.get("status") == "completed")
+            print(f"Resume: suite {state['suite_id']}, "
+                  f"{done} already completed")
+        else:
+            print("Resume: no state file yet. A fresh suite id "
+                  "will be recorded on the first real run")
+    any_paid = False
+    any_unpriced = False
+    for entry in entries:
+        paid = entry["provider"] in PAID_PROVIDERS
+        any_paid = any_paid or (paid and not entry["skip"])
+        priced = _priced_text(entry, pricing)
+        any_unpriced = any_unpriced or priced == "unpriced"
+        parts = [entry["name"],
+                 f"{entry['provider']}/{_entry_model(entry)}",
+                 f"timeout "
+                 f"{effective_timeout(entry, settings, cli_timeout)} s",
+                 priced]
+        if paid:
+            parts.append("PAID")
+        if entry["skip"]:
+            parts.append("skip")
+        print("- " + " · ".join(parts))
+    if any_paid and settings["concurrency"] > 1:
+        print("Paid entries can run at the same time at this "
+              "concurrency. They spend in parallel")
+    if settings.get("max_cost_usd") is not None and any_unpriced:
+        print("Some entries are unpriced. The cost budget counts "
+              "priced and reported runs only")
+    print("Dry run only. Nothing was run")
+    return 0
+
+
+def run_suite(path, timeout=None, repeat=None, dry_run=False,
+              resume=False, fresh=False, manifest=None):
+    if manifest is None:
+        manifest = load_manifest(path)
+    settings, entries = manifest["settings"], manifest["entries"]
+    pricing = dict(env_pricing())
+    pricing.update(settings["pricing"])
+    if repeat is None:
+        repeat = settings["repeat"] or 3
+    if dry_run:
+        return print_suite_plan(path, settings, entries, pricing,
+                                timeout, repeat, resume, fresh=fresh)
+    state = None
+    if resume:
+        state = None if fresh else load_state(path)
+        if state is None:
+            state = {"manifest": Path(path).name,
+                     "suite_id": uuid.uuid4().hex[:8], "entries": {}}
+            save_state(path, state)
+        suite_id = state["suite_id"]
+    else:
+        suite_id = uuid.uuid4().hex[:8]
     print(f"Suite {suite_id}: {len(entries)} prompt(s), "
           f"{repeat} repeat(s) each")
     providers = []
@@ -1309,32 +1690,195 @@ def run_suite(path, timeout, repeat):
             harness_version(provider), provider)
         if notice:
             print(notice)
-    statuses = []
-    stop = False
-    for _round in range(repeat):
-        for entry in entries:
-            if stop:
-                break
+    work = [(f"{entry['name']}#{round_no}", entry)
+            for round_no in range(1, repeat + 1) for entry in entries]
+    done_before = set()
+    spent = 0.0
+    if state:
+        entry_by_key = dict(work)
+        for key, record in state["entries"].items():
+            if record.get("status") == "completed":
+                done_before.add(key)
+            # Failed, timed out and interrupted runs cost money too.
+            # The budget must count every recorded cost from earlier
+            # launches, not only the successful ones.
+            record_model = record.get("model")
+            if record_model is None and key in entry_by_key:
+                record_model = _entry_model(entry_by_key[key])
+            spent += counted_cost(record_model,
+                                  record.get("cost_usd"),
+                                  record.get("cost_source")) or 0
+        already = sum(1 for key, _ in work if key in done_before)
+        if already:
+            print(f"Resuming. {already} already completed "
+                  "and will not run again")
+    if settings.get("max_cost_usd") is not None and any(
+            not e["skip"] and _priced_text(e, pricing) == "unpriced"
+            for e in entries):
+        print("Warning: some entries are unpriced. The cost budget "
+              "counts priced and reported runs only")
+    state_lock = threading.Lock()
+    budget = {"spent": spent, "reason": None}
+    started = time.monotonic()
+    stop_event = threading.Event()
+    results = {}
+
+    def mark(key, record):
+        if state is None:
+            return
+        with state_lock:
+            state["entries"][key] = record
+            save_state(path, state)
+
+    def attempt(key, entry):
+        if stop_event.is_set():
+            return "not_started"
+        with state_lock:
+            if settings.get("max_cost_usd") is not None \
+                    and budget["spent"] >= settings["max_cost_usd"]:
+                budget["reason"] = "cost budget reached"
+                return "not_started"
+            remaining = None
+            if settings.get("max_runtime_seconds") is not None:
+                remaining = settings["max_runtime_seconds"] \
+                    - (time.monotonic() - started)
+                if remaining < 1:
+                    budget["reason"] = "runtime budget reached"
+                    return "not_started"
+        entry_timeout = effective_timeout(entry, settings, timeout)
+        if remaining is not None:
+            entry_timeout = min(entry_timeout, int(remaining))
+        mark(key, {"status": "running", "run_id": None,
+                   "cost_usd": None, "wall_seconds": None,
+                   "updated_at": datetime.now(timezone.utc).isoformat()})
+        report = run_prompt(
+            entry["prompt"], provider=entry["provider"],
+            model=entry["model"], minimal=entry["minimal"],
+            timeout=entry_timeout, suite_id=suite_id,
+            suite_prompt=entry["name"], pricing=pricing,
+            stop_event=stop_event
+            if settings["concurrency"] > 1 else None)
+        with state_lock:
+            budget["spent"] += counted_cost(
+                report.get("model") or _entry_model(entry),
+                report.get("cost_usd"),
+                report.get("cost_source")) or 0
+        if report["status"] == "interrupted":
+            stop_event.set()
+        mark(key, {"status": report["status"],
+                   "run_id": report.get("run_id"),
+                   "model": report.get("model"),
+                   "cost_usd": report.get("cost_usd"),
+                   "cost_source": report.get("cost_source"),
+                   "wall_seconds": (report["wall_ms"] / 1000
+                                    if report.get("wall_ms") is not None
+                                    else None),
+                   "updated_at": datetime.now(timezone.utc).isoformat()})
+        return report["status"]
+
+    pending = []
+    for key, entry in work:
+        if entry["skip"]:
+            print(f"Skipping {entry['name']} (skip is true)")
+            results[key] = "skipped"
+        elif key in done_before:
+            results[key] = "completed"
+        else:
+            pending.append((key, entry))
+    interrupted = False
+    if settings["concurrency"] > 1 and len(pending) > 1:
+        errors = []
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=settings["concurrency"]) as pool:
+            futures = {pool.submit(attempt, key, entry): key
+                       for key, entry in pending}
             try:
-                report = run_prompt(
-                    entry["prompt"], provider=entry["provider"],
-                    model=entry["model"], minimal=entry["minimal"],
-                    timeout=timeout, suite_id=suite_id,
-                    suite_prompt=entry["name"])
-                statuses.append(report["status"])
+                for future in concurrent.futures.as_completed(futures):
+                    key = futures[future]
+                    try:
+                        results[key] = future.result()
+                    except BaseException as exc:
+                        errors.append(exc)
+                        results[key] = "failed"
             except KeyboardInterrupt:
-                statuses.append("interrupted")
-                stop = True
-        if stop:
-            break
-    done = sum(1 for status in statuses if status == "completed")
-    closing = f"Suite {suite_id} done: {done} completed of {len(statuses)}."
+                interrupted = True
+                stop_event.set()
+                for future in futures:
+                    future.cancel()
+        # Leaving the pool waits for legs already running. They
+        # finish through their normal paths and record real
+        # statuses, so harvest those here. Nothing may relabel a
+        # finished leg as not started, or a resume would bill it
+        # a second time. Only truly cancelled legs never ran.
+        for future, key in futures.items():
+            if key in results:
+                continue
+            if future.cancelled():
+                results[key] = "not_started"
+                continue
+            try:
+                results[key] = future.result()
+            except BaseException as exc:
+                errors.append(exc)
+                results[key] = "failed"
+        if errors:
+            raise errors[0]
+    else:
+        for key, entry in pending:
+            if interrupted:
+                results[key] = "not_started"
+                continue
+            try:
+                results[key] = attempt(key, entry)
+            except KeyboardInterrupt:
+                results[key] = "interrupted"
+                mark(key, {"status": "interrupted", "run_id": None,
+                           "cost_usd": None, "wall_seconds": None,
+                           "updated_at":
+                           datetime.now(timezone.utc).isoformat()})
+            # run_prompt records most interrupts itself and returns
+            # an interrupted report instead of raising. Either way
+            # the suite stops here. It must not start the next
+            # entry and wait for a second Ctrl+C.
+            if results[key] == "interrupted":
+                interrupted = True
+    if "interrupted" in results.values():
+        interrupted = True
+    if state:
+        terminal = ("completed", "failed", "timeout",
+                    "needs_approval", "interrupted")
+        for key, _entry in pending:
+            if results.get(key) == "not_started":
+                with state_lock:
+                    existing = state["entries"].get(key, {}) \
+                        .get("status")
+                if existing in terminal:
+                    results[key] = existing
+                    continue
+                mark(key, {"status": "not_started", "run_id": None,
+                           "cost_usd": None, "wall_seconds": None,
+                           "reason": budget["reason"]
+                           or ("interrupted" if interrupted else None),
+                           "updated_at":
+                           datetime.now(timezone.utc).isoformat()})
+    if budget["reason"]:
+        print(f"Stopped starting new entries. {budget['reason']}. "
+              f"Recorded cost so far: ${budget['spent']:.4f}")
+    counts = {}
+    for status in results.values():
+        counts[status] = counts.get(status, 0) + 1
+    done = counts.get("completed", 0)
+    closing = f"Suite {suite_id} done: {done} completed of {len(work)}."
     if ui_enabled():
         closing += f" UI: {UI_URL}radar"
     print(closing)
-    if "interrupted" in statuses:
+    print("Counts: " + ", ".join(
+        f"{name} {counts[name]}" for name in sorted(counts))
+        + f". Recorded cost: ${budget['spent']:.4f}")
+    if interrupted:
         return 130
-    if any(status != "completed" for status in statuses):
+    if any(status not in ("completed", "skipped")
+           for status in results.values()):
         return 1
     return 0
 
@@ -1419,11 +1963,22 @@ def main():
     parser.add_argument("--retro", action="store_true",
                         help="record finished turns from every Muse "
                              "session log already on disk")
-    parser.add_argument("--suite", nargs="?", const=str(SUITE_DEFAULT),
+    parser.add_argument("--suite", "--manifest", nargs="?",
+                        const=str(SUITE_DEFAULT),
                         default=None, metavar="FILE",
-                        help="run the golden prompt suite (default file "
-                             "golden-prompts.json) and stamp each run "
-                             "for the regression radar")
+                        help="run a prompt suite or manifest file "
+                             "(default file golden-prompts.json) and "
+                             "stamp each run for the regression radar")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --suite, list what would run and "
+                             "run nothing")
+    parser.add_argument("--resume", action="store_true",
+                        help="with --suite, record progress in a "
+                             "state file beside the suite file and "
+                             "skip entries already completed")
+    parser.add_argument("--fresh", action="store_true",
+                        help="with --resume, ignore saved progress "
+                             "and run every entry again")
     args = parser.parse_args()
     if args.repeat is not None and not args.compare \
             and args.suite is None:
@@ -1433,6 +1988,11 @@ def main():
     if args.suite is not None and (args.prompt or args.compare
                                    or args.watch is not None or args.retro):
         parser.error("--suite takes no prompt, --compare, --watch or --retro")
+    if (args.dry_run or args.resume or args.fresh) \
+            and args.suite is None:
+        parser.error("--dry-run, --resume and --fresh need --suite")
+    if args.fresh and not args.resume:
+        parser.error("--fresh needs --resume")
     if args.watch is not None and (args.prompt or args.compare):
         parser.error("--watch takes no prompt or --compare")
     if args.retro and (args.prompt or args.compare
@@ -1443,14 +2003,25 @@ def main():
     repeat = args.repeat if args.repeat is not None else 1
     if (mode is not None or args.suite is not None) and repeat < 1:
         parser.error("--repeat must be at least 1")
+    try:
+        env_pricing()
+    except ValueError as e:
+        parser.error(str(e))
     if args.suite is not None:
-        suite_repeat = args.repeat if args.repeat is not None else 3
         try:
-            load_suite(args.suite)
+            manifest = load_manifest(args.suite)
+            if args.resume and not args.fresh:
+                load_state(args.suite)
         except ValueError as e:
             parser.error(str(e))
+        if args.dry_run:
+            return run_suite(args.suite, args.timeout, args.repeat,
+                             dry_run=True, resume=args.resume,
+                             fresh=args.fresh, manifest=manifest)
         ensure_ui()
-        return run_suite(args.suite, args.timeout, suite_repeat)
+        return run_suite(args.suite, args.timeout, args.repeat,
+                         resume=args.resume, fresh=args.fresh,
+                         manifest=manifest)
     ensure_ui()
     if args.watch is not None:
         run_watch(args.watch or None)

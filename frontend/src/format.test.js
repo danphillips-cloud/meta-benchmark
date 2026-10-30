@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, visibleCost,
   diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -10,6 +10,20 @@ const S = (over) => ({
   provider: "meta", model: "muse-wonder-1.0", compare_mode: null,
   status: "completed", calls: 2, wall_ms: 100, model_ms: 80,
   overhead_ms: 20, ...over,
+});
+
+test("visibleCost hides reported muse cost, shows computed and plain", () => {
+  assert.equal(visibleCost(null), null);
+  assert.equal(visibleCost(S({ cost_usd: null })), null);
+  assert.equal(visibleCost(S({ cost_usd: 1.5, cost_source: "reported" })), null);
+  assert.equal(visibleCost(S({ cost_usd: 1.5 })), null);
+  assert.equal(visibleCost(S({ cost_usd: 1.5, cost_source: "computed" })), 1.5);
+  assert.equal(visibleCost(S({ model: "claude-sonnet-5-5", cost_usd: 2, cost_source: "reported" })), 2);
+  assert.equal(fmtCost(null), "–");
+  assert.equal(fmtCost(0.01084), "$0.0108");
+  assert.equal(costNote(S({ cost_usd: 1, cost_source: "computed" })), "at your rates");
+  assert.equal(costNote(S({ cost_usd: 1, cost_source: "reported" })), "not a Meta price, hidden");
+  assert.equal(costNote(S({ cost_usd: null })), "not recorded");
 });
 
 test("isLongPrompt flags long text and many lines only", () => {

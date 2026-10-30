@@ -35,6 +35,26 @@ export const promptPreview = (s) => {
 export const fmt = (n) => (n == null ? "–" : Number(n).toLocaleString("en-US"));
 export const fmtMs = (n) => (n == null ? "–" : fmt(Math.round(n)));
 
+// Cost is shown only when recorded or computed from recorded tokens
+// at rates the user supplied. Claude Code prices every model from
+// Anthropic's list, so a reported cost for a muse- model is not a
+// Meta price and stays hidden. A computed cost uses the user's own
+// rates, so it is shown for any model.
+export const visibleCost = (s) => {
+  if (!s || s.cost_usd == null) return null;
+  if (String(s.model || "").startsWith("muse-")
+    && s.cost_source !== "computed") return null;
+  return s.cost_usd;
+};
+
+export const fmtCost = (n) => (n == null ? "–" : "$" + Number(n).toFixed(4));
+
+export const costNote = (s) => {
+  if (!s || s.cost_usd == null) return "not recorded";
+  if (visibleCost(s) == null) return "not a Meta price, hidden";
+  return s.cost_source === "computed" ? "at your rates" : "reported";
+};
+
 export const fmtDurParts = (n) => {
   if (n == null) return ["–", ""];
   const sign = n < 0 ? "-" : "";
@@ -291,6 +311,7 @@ const SORT_VALUE = {
   wall_ms: (s) => (s.wall_ms == null ? null : s.wall_ms),
   model_ms: (s) => (s.model_ms == null ? null : s.model_ms),
   overhead_ms: (s) => (s.overhead_ms == null ? null : s.overhead_ms),
+  cost_usd: (s) => visibleCost(s),
 };
 
 export function compareSessions(a, b, sort, dir) {
@@ -1202,6 +1223,8 @@ export function runCard(data) {
     "- Calls: " + fmt(f.hasEvents ? f.events.length : (sel.calls ?? null))
       + " · Input tokens: " + fmt(sel.input_tokens ?? null)
       + " · Output tokens: " + fmt(sel.output_tokens ?? null),
+    "- Cost: " + fmtCost(visibleCost(sel))
+      + (visibleCost(sel) == null ? "" : " (" + costNote(sel) + ")"),
     "",
   );
   if (f.isRunning) {
