@@ -6,6 +6,32 @@ export const shortText = (s, n) => {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 };
 
+// A prompt past either limit would fill the Selected run panel and push
+// the stat cards off screen, so Overview shows it clamped with a toggle.
+export const PROMPT_LONG_CHARS = 300;
+export const PROMPT_LONG_LINES = 3;
+
+export const isLongPrompt = (s) => {
+  s = String(s ?? "");
+  return s.length > PROMPT_LONG_CHARS || s.split("\n").length > PROMPT_LONG_LINES;
+};
+
+// Collapsed form of a long prompt. Keeps the first lines, then cuts on a
+// word boundary so the preview ends cleanly instead of mid word.
+export const PROMPT_PREVIEW_CHARS = 280;
+
+export const promptPreview = (s) => {
+  s = String(s ?? "");
+  if (!isLongPrompt(s)) return s;
+  let head = s.split("\n").slice(0, PROMPT_LONG_LINES).join("\n");
+  if (head.length > PROMPT_PREVIEW_CHARS) {
+    head = head.slice(0, PROMPT_PREVIEW_CHARS);
+    const cut = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"));
+    if (cut > 0) head = head.slice(0, cut);
+  }
+  return head.replace(/\s+$/, "") + "…";
+};
+
 export const fmt = (n) => (n == null ? "–" : Number(n).toLocaleString("en-US"));
 export const fmtMs = (n) => (n == null ? "–" : fmt(Math.round(n)));
 

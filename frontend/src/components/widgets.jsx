@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { STATUSES } from "../format.js";
 import { copyText } from "../api.js";
 
@@ -33,6 +33,45 @@ const svgProps = {
   viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8,
   strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true, focusable: false,
 };
+
+export function ChevronIcon({ expanded }) {
+  return (
+    <svg {...svgProps}>
+      <path d={expanded ? "m18 15-6-6-6 6" : "m6 9 6 6 6-6"} />
+    </svg>
+  );
+}
+
+export function CopyIconButton({ text, label = "Copy" }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef(null);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const onCopy = async (event) => {
+    event.stopPropagation();
+    await copyText(text);
+    setCopied(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <button
+      className={"iconBtn" + (copied ? " copied" : "")}
+      type="button"
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
+      onClick={onCopy}
+    >
+      {copied ? (
+        <svg {...svgProps}><path d="M20 6 9 17l-5-5" /></svg>
+      ) : (
+        <svg {...svgProps}>
+          <rect x="8" y="8" width="14" height="14" rx="2" />
+          <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+        </svg>
+      )}
+    </button>
+  );
+}
 
 export function NavIcon({ view }) {
   if (view === "overview") return (<svg className="navIcon" {...svgProps}><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>);

@@ -12,30 +12,63 @@ Work in progress. I've tested it on macOS with Muse Code 1.4.13. Expect rough ed
 
 Python 3.9 or newer on macOS or Linux, and Muse Code. Claude Code runs also need the `claude` CLI.
 
-## Quick start
+## Getting started
+
+### 1. Clone and sign in
 
 ```sh
 git clone https://github.com/danphillips-cloud/meta-benchmark.git
 cd meta-benchmark
 muse login    # first time only
-./run-muse
 ```
 
-The results page opens at http://127.0.0.1:8765 (or your `PORT`). Type a prompt at `muse>` and press Enter. Each prompt is one run. The reply prints with a summary line: wall time, model time and tokens.
+That is the whole install for everything below. These runs use a Muse subscription. No API key, no Node.
 
-If another app already has that port, the launcher says so and the run carries on without the page. Use another port with `PORT=8766 ./run-muse`.
+### 2. Run one real test
 
-### First runs
-
-Three free runs that show what the page does. They use your Muse subscription, no keys.
+Skip `what is 2+2` as a first run. It makes one model call, so the page has almost nothing to split. Start with one proper one-shot prompt instead. One-shot means everything the agent needs sits in a single prompt, with no follow-up.
 
 ```sh
-./run-muse --minimal "what is 2+2"                  # one model call
-./run-muse --minimal --compare meta "what is 2+2"   # two Meta models side by side
-./run-muse --minimal "write a python script that counts lines in a file, then run it on itself"
+./run-muse --minimal "Read server.py and muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
 ```
 
-The last one makes several model calls and runs tools, so the time split shows model, tools and Muse time.
+The prompt is built to be checkable in one pass:
+
+- **Goal first.** Trace one run from a log file to the page.
+- **Files named.** The agent reads two files, not the whole repo.
+- **Evidence demanded.** A function name and a line number for each step.
+- **Hard limits.** No file changes. Under 300 words.
+- **An honesty check.** Anything unconfirmed gets flagged, not guessed.
+
+`--minimal` drops reminders and personal context, so a repeat of the same command measures the same work.
+
+The terminal prints each model call as it finishes, then the reply with one summary line. I recorded this run on 2026-10-29 with Muse Code 1.4.14:
+
+```text
+[meta/muse-wonder-full-1.0] wall 72978 ms · model 69696 ms · in 276136 · out 3377 · 6 call(s) · completed
+```
+
+Six model calls. Model time was 69.7 s of the 73.0 s wall. Tools took 0.4 s and Muse itself 2.9 s. Your numbers will differ. The split is the point.
+
+### 3. Read it on the page
+
+The results page opens at http://127.0.0.1:8765 (or your `PORT`). If another app already has that port, the launcher says so and the run carries on without the page. Use another port with `PORT=8766 ./run-muse`.
+
+Open Overview for the time split and the plain-words summary of the run. Open Timeline for every recorded step in order. Open Replay and press play to watch the run back on its recorded clock, calls landing where they landed.
+
+Then check the answer itself. Pick one claim from the reply, open the cited file at the cited line, and confirm it. The stopwatch says where the time went. It does not say the answer is right.
+
+### 4. Run it again
+
+One run is a timing. A repeat is data. Run the same command again and Overview gains your usual time for the same prompt. To put two Meta models on the same work, compare them:
+
+```sh
+./run-muse --minimal --compare meta --repeat 3 "Read server.py and muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
+```
+
+Each round is two full runs of the prompt. The Compare page reads medians over the rounds, so one slow call cannot carry the result.
+
+For an open-ended session, run `./run-muse` with no prompt. Type a prompt at `muse>` and press Enter. Each prompt is one run, recorded the same way.
 
 Ready for a longer build? The [getting started guide](docs/getting-started.md) has five one-shot app prompts, plus a frame for writing your own.
 
@@ -87,6 +120,9 @@ The page refreshes every 2 seconds and follows a run in progress, so model calls
 - **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
 - **Compare** shows medians for a compare set, with the fastest marked.
 - **Timeline** lists the model calls and every step Muse recorded, in order.
+- **Replay** plays a run back on its recorded clock. Calls land where they landed, at a speed you pick.
+- **X-ray** shows what Muse sent on each call, in recorded bytes.
+- **Radar** shows median wall time per prompt across Muse versions, and the change between the two newest versions with enough runs.
 - **Export** saves the selected run as CSV or JSON.
 
 <img src="docs/runs.png" width="720" alt="Runs: every run, sortable and filterable">

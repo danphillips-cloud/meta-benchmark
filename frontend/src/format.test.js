@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview,
   diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -10,6 +10,30 @@ const S = (over) => ({
   provider: "meta", model: "muse-wonder-1.0", compare_mode: null,
   status: "completed", calls: 2, wall_ms: 100, model_ms: 80,
   overhead_ms: 20, ...over,
+});
+
+test("isLongPrompt flags long text and many lines only", () => {
+  assert.equal(isLongPrompt("what is 2+2"), false);
+  assert.equal(isLongPrompt(""), false);
+  assert.equal(isLongPrompt(null), false);
+  assert.equal(isLongPrompt("x".repeat(300)), false);
+  assert.equal(isLongPrompt("x".repeat(301)), true);
+  assert.equal(isLongPrompt("one\ntwo\nthree"), false);
+  assert.equal(isLongPrompt("one\ntwo\nthree\nfour"), true);
+});
+
+test("promptPreview cuts long prompts on a word boundary", () => {
+  assert.equal(promptPreview("what is 2+2"), "what is 2+2");
+  assert.equal(promptPreview(""), "");
+  assert.equal(promptPreview(null), "");
+  const long = ("build a game ").repeat(40).trim();
+  const preview = promptPreview(long);
+  assert.ok(preview.endsWith("…"));
+  assert.ok(preview.length <= 281);
+  assert.equal(long.startsWith(preview.slice(0, -1)), true);
+  assert.equal(preview.slice(0, -1).endsWith(" "), false);
+  assert.equal(promptPreview("one\ntwo\nthree\nfour"), "one\ntwo\nthree…");
+  assert.equal(promptPreview("x".repeat(400)), "x".repeat(280) + "…");
 });
 
 test("honesty basics: missing renders as –, median skips nulls", () => {
