@@ -37,6 +37,8 @@ Three free runs that show what the page does. They use your Muse subscription, n
 
 The last one makes several model calls and runs tools, so the time split shows model, tools and Muse time.
 
+Ready for a longer build? The [getting started guide](docs/getting-started.md) has five one-shot app prompts, plus a frame for writing your own.
+
 ## Usage
 
 | Mode | Command |
