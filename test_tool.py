@@ -886,6 +886,21 @@ class ExitCodeTest(unittest.TestCase):
             self.assertEqual(
                 run_muse.run_compare("hi", "meta", False, None, 1), 0)
 
+    def test_run_compare_stops_after_interrupted_leg(self):
+        calls = []
+
+        def fake(*args, **kwargs):
+            calls.append(kwargs.get("model"))
+            return {"status": "interrupted"}
+
+        with mock.patch.object(
+                run_muse, "compare_models_for",
+                lambda mode: [("meta", "a"), ("meta", "b")]), \
+                mock.patch.object(run_muse, "run_prompt", fake):
+            self.assertEqual(
+                run_muse.run_compare("hi", "meta", False, None, 3), 130)
+        self.assertEqual(len(calls), 1)
+
     def test_prompt_loop_still_exits_zero(self):
         with mock.patch.object(sys, "argv", ["run-muse"]), \
                 mock.patch.object(run_muse, "ensure_ui", lambda: None), \
@@ -1349,6 +1364,62 @@ class PricingTest(unittest.TestCase):
         self.assertEqual(report["cost_usd"], 9.5)
         self.assertEqual(report["cost_source"], "reported")
 
+    def test_muse_reported_cost_yields_to_own_rates(self):
+        pricing = run_muse.parse_pricing(
+            {"input_per_mtok": 1000000, "output_per_mtok": 1000000})
+        result = {"session_id": None, "wall_ms": 5, "exit_code": 0,
+                  "timed_out": False, "interrupted": False,
+                  "reply": "x", "calls": [], "timeline": [],
+                  "command": "fake", "usage_model": "muse-wonder-1.0",
+                  "error_override": None, "api_ms": None,
+                  "ttft_ms": None, "num_turns": None, "cost_usd": 9.5,
+                  "totals": {"input_tokens": 2, "output_tokens": 1,
+                             "cached_tokens": None}}
+        report = self._run_with_fake(
+            "run_claude_code", dict(result), provider="claude-code",
+            model="muse-wonder-1.0", pricing=pricing)
+        self.assertAlmostEqual(report["cost_usd"], 3.0)
+        self.assertEqual(report["cost_source"], "computed")
+        report = self._run_with_fake(
+            "run_claude_code", dict(result), provider="claude-code",
+            model="muse-wonder-1.0", pricing={})
+        self.assertEqual(report["cost_usd"], 9.5)
+        self.assertEqual(report["cost_source"], "reported")
+        self.assertIsNone(run_muse.counted_cost(
+            report["model"], report["cost_usd"],
+            report["cost_source"]))
+
+    def test_counted_cost_rule(self):
+        self.assertIsNone(run_muse.counted_cost("muse-x", 5,
+                                                  "reported"))
+        self.assertIsNone(run_muse.counted_cost("muse-x", 5, None))
+        self.assertEqual(run_muse.counted_cost("muse-x", 5,
+                                                 "computed"), 5)
+        self.assertEqual(run_muse.counted_cost("claude-y", 5,
+                                                 "reported"), 5)
+        self.assertIsNone(run_muse.counted_cost("claude-y", None,
+                                                  "reported"))
+
+    def test_terminal_summary_hides_muse_reported_cost(self):
+        import contextlib
+        r = {"wall_ms": 5, "reply": "", "totals": None,
+             "calls": [{"duration_ms": 5, "input_tokens": 2,
+                        "output_tokens": 1}]}
+        base = {"provider": "claude-code", "model": "muse-wonder-1.0",
+                "status": "completed", "metrics_unavailable": False,
+                "cost_usd": 9.5, "cost_source": "reported",
+                "error": None, "run_id": "x",
+                "timeout_seconds": 300}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run_muse.print_summary(dict(base), r, Path("/tmp"))
+        self.assertNotIn("cost $", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run_muse.print_summary(
+                dict(base, cost_source="computed"), r, Path("/tmp"))
+        self.assertIn("cost $9.5000 (at your rates)", out.getvalue())
+
     def test_server_session_row_carries_cost_source(self):
         base = {"run_id": "x", "at": None, "prompt": "", "model": "m",
                 "wall_ms": None, "calls": [], "provider": "meta",
@@ -1503,7 +1574,8 @@ class ManifestTest(unittest.TestCase):
             old = self._patched_suite(
                 td, lambda p, **k: calls.append(p)
                 or {"status": "completed", "wall_ms": 1,
-                    "cost_usd": 0.6})
+                    "model": "muse-wonder-full-1.0",
+                    "cost_usd": 0.6, "cost_source": "computed"})
             try:
                 code = run_muse.run_suite(path, repeat=1, resume=True)
             finally:
@@ -1538,6 +1610,173 @@ class ManifestTest(unittest.TestCase):
             elapsed = time.monotonic() - started
         self.assertEqual(code, 0)
         self.assertLess(elapsed, 0.6)
+
+    def test_sequential_interrupt_stops_the_suite(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, {"prompts": [
+                {"name": "a", "prompt": "pa"},
+                {"name": "b", "prompt": "pb"}]})
+            calls = []
+            old = self._patched_suite(
+                td, lambda p, **k: calls.append(p)
+                or {"status": "interrupted", "wall_ms": 1})
+            try:
+                code = run_muse.run_suite(path, repeat=1, resume=True)
+            finally:
+                self._restore(old)
+            state = json.loads(
+                run_muse.suite_state_path(path).read_text())
+        self.assertEqual(code, 130)
+        self.assertEqual(calls, ["pa"])
+        self.assertEqual(state["entries"]["b#1"]["status"],
+                         "not_started")
+
+    def test_concurrent_interrupt_keeps_finished_runs(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, {
+                "settings": {"concurrency": 3},
+                "prompts": [{"name": n, "prompt": "p" + n}
+                            for n in "abc"]})
+            calls = []
+
+            def fake(prompt, **kwargs):
+                calls.append(prompt)
+                if prompt == "pa":
+                    return {"status": "completed", "wall_ms": 1,
+                            "run_id": "r-a", "cost_usd": 0.5,
+                            "model": "m", "cost_source": "computed"}
+                stop = kwargs.get("stop_event")
+                if stop is not None:
+                    stop.wait(10)
+                return {"status": "interrupted", "wall_ms": 1}
+
+            real_as_completed = \
+                run_muse.concurrent.futures.as_completed
+
+            def interrupting(futures, timeout=None):
+                gen = real_as_completed(futures)
+                yield next(gen)
+                raise KeyboardInterrupt
+
+            old = self._patched_suite(td, fake)
+            try:
+                with mock.patch.object(
+                        run_muse.concurrent.futures, "as_completed",
+                        interrupting):
+                    code = run_muse.run_suite(
+                        path, repeat=1, resume=True)
+            finally:
+                self._restore(old)
+            state = json.loads(
+                run_muse.suite_state_path(path).read_text())
+            self.assertEqual(code, 130)
+            self.assertEqual(state["entries"]["a#1"]["status"],
+                             "completed")
+            second = []
+            old = self._patched_suite(
+                td, lambda p, **k: second.append(p)
+                or {"status": "completed", "wall_ms": 1})
+            try:
+                code = run_muse.run_suite(path, repeat=1, resume=True)
+            finally:
+                self._restore(old)
+        self.assertEqual(code, 0)
+        self.assertNotIn("pa", second)
+        self.assertEqual(sorted(second), ["pb", "pc"])
+
+    def test_resume_budget_counts_failed_run_costs(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, {
+                "settings": {"max_cost_usd": 10},
+                "prompts": [{"name": "a", "prompt": "pa"},
+                            {"name": "b", "prompt": "pb"}]})
+            run_muse.save_state(path, {
+                "manifest": "bench.json", "suite_id": "old1",
+                "entries": {"a#1": {
+                    "status": "failed", "run_id": "r-old",
+                    "model": "m", "cost_usd": 10.5,
+                    "cost_source": "computed",
+                    "wall_seconds": 1, "updated_at": None}}})
+            calls = []
+            old = self._patched_suite(
+                td, lambda p, **k: calls.append(p)
+                or {"status": "completed", "wall_ms": 1})
+            try:
+                code = run_muse.run_suite(path, repeat=1, resume=True)
+            finally:
+                self._restore(old)
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [])
+
+    def test_budget_ignores_hidden_muse_reported_cost(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, {
+                "settings": {"max_cost_usd": 1},
+                "prompts": [{"name": "a", "prompt": "pa"},
+                            {"name": "b", "prompt": "pb"}]})
+            calls = []
+            old = self._patched_suite(
+                td, lambda p, **k: calls.append(p)
+                or {"status": "completed", "wall_ms": 1,
+                    "model": "muse-wonder-1.0", "cost_usd": 100,
+                    "cost_source": "reported"})
+            try:
+                code = run_muse.run_suite(path, repeat=1)
+            finally:
+                self._restore(old)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["pa", "pb"])
+
+    def test_dry_run_fresh_says_progress_is_ignored(self):
+        import contextlib
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, {"prompts": [
+                {"name": "a", "prompt": "pa"}]})
+            run_muse.save_state(path, {
+                "manifest": "bench.json", "suite_id": "old1",
+                "entries": {"a#1": {"status": "completed"}}})
+            old = self._patched_suite(
+                td, lambda p, **k: {"status": "completed"})
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    code = run_muse.run_suite(
+                        path, repeat=1, dry_run=True, resume=True,
+                        fresh=True)
+            finally:
+                self._restore(old)
+        self.assertEqual(code, 0)
+        self.assertIn("Fresh: saved progress will be ignored",
+                      out.getvalue())
+        self.assertNotIn("already completed", out.getvalue())
+
+    def test_non_utf8_prompt_file_names_the_entry(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "bad.md").write_bytes(b"\xff\xfe\xfd")
+            path = self._write(td, {"prompts": [
+                {"name": "broken", "file": "bad.md"}]})
+            with self.assertRaises(ValueError) as ctx:
+                run_muse.load_manifest(path)
+        self.assertIn("broken", str(ctx.exception))
+        self.assertIn("UTF-8", str(ctx.exception))
+
+    def test_run_suite_uses_preloaded_manifest_without_rereading(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write(td, {"prompts": [
+                {"name": "a", "prompt": "pa"}]})
+            manifest = run_muse.load_manifest(path)
+            path.unlink()
+            calls = []
+            old = self._patched_suite(
+                td, lambda p, **k: calls.append(p)
+                or {"status": "completed", "wall_ms": 1})
+            try:
+                code = run_muse.run_suite(path, repeat=1,
+                                           manifest=manifest)
+            finally:
+                self._restore(old)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["pa"])
 
     def test_entry_model_matches_recorded_model(self):
         self.assertEqual(run_muse._entry_model(

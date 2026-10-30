@@ -50,7 +50,8 @@ export const visibleCost = (s) => {
 export const fmtCost = (n) => (n == null ? "–" : "$" + Number(n).toFixed(4));
 
 export const costNote = (s) => {
-  if (!s || visibleCost(s) == null) return "not recorded";
+  if (!s || s.cost_usd == null) return "not recorded";
+  if (visibleCost(s) == null) return "not a Meta price, hidden";
   return s.cost_source === "computed" ? "at your rates" : "reported";
 };
 

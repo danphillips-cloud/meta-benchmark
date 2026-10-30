@@ -22,6 +22,7 @@ test("visibleCost hides reported muse cost, shows computed and plain", () => {
   assert.equal(fmtCost(null), "–");
   assert.equal(fmtCost(0.01084), "$0.0108");
   assert.equal(costNote(S({ cost_usd: 1, cost_source: "computed" })), "at your rates");
+  assert.equal(costNote(S({ cost_usd: 1, cost_source: "reported" })), "not a Meta price, hidden");
   assert.equal(costNote(S({ cost_usd: null })), "not recorded");
 });
 

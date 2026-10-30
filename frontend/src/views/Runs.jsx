@@ -48,7 +48,7 @@ function cellValue(s, id) {
   if (id === "status") return <StatusPill status={s.status} />;
   if (id === "harness_version") return s.harness_version || "–";
   if (id === "calls") return fmt(s.calls);
-  if (id === "cost_usd") return (<span title={s.cost_source === "computed" ? "Computed from recorded tokens at your rates. Input and output only" : s.cost_source === "reported" ? "Reported by the harness" : "No cost recorded"}>{fmtCost(visibleCost(s))}</span>);
+  if (id === "cost_usd") return (<span title={s.cost_source === "computed" ? "Computed from recorded tokens at your rates. Input and output only" : visibleCost(s) == null && s.cost_usd != null ? "Claude Code priced this from Anthropic's list. That is not a Meta price, so it is hidden" : s.cost_source === "reported" ? "Reported by the harness" : "No cost recorded"}>{fmtCost(visibleCost(s))}</span>);
   return fmtDur(s[id]);
 }
 
