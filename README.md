@@ -70,6 +70,8 @@ Each round is two full runs of the prompt. The Compare page reads medians over t
 
 For an open-ended session, run `./run-muse` with no prompt. Type a prompt at `muse>` and press Enter. Each prompt is one run, recorded the same way.
 
+Ready for a longer build? The [getting started guide](docs/getting-started.md) has five one-shot app prompts, plus a frame for writing your own.
+
 ## Usage
 
 | Mode | Command |
