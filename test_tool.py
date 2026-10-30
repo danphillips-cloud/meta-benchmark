@@ -650,39 +650,86 @@ class ClaudeLiveTest(unittest.TestCase):
             run_muse.format_claude_call_line(2, None, None),
             "call 2 · arrived – · – in")
 
+    def _seen(self):
+        return {"index": 0,
+                "tracker": claude_stream.new_live_tracker(),
+                "live": None, "last_arrival": None}
+
     def test_watch_prints_each_call_once_as_lines_land(self):
         import contextlib
         lines = self._fixture_lines()
-        with tempfile.TemporaryDirectory() as td:
-            events = Path(td) / "events.jsonl"
-            events.write_text("")
-            seen = {"lines": 0, "calls": 0, "ids": set(),
-                    "tools": {}, "live": None,
-                    "started": 0.0, "last_at": None}
-            import time
-            seen["started"] = time.monotonic()
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                # Batch boundaries land where real polls would:
-                # system lines first, then one event at a time.
-                written = []
-                for batch in (lines[:2], lines[2:3], lines[3:4]):
-                    written += batch
-                    events.write_text("\n".join(written) + "\n")
-                    run_muse._claude_live_watch(events, seen)
-                first = out.getvalue()
-                run_muse._claude_live_watch(events, seen)
-                self.assertEqual(out.getvalue(), first)
-                events.write_text(
-                    "\n".join(lines) + "\n" + lines[2][:20])
-                run_muse._claude_live_watch(events, seen)
-                events.write_text("\n".join(lines) + "\n")
-                run_muse._claude_live_watch(events, seen)
-            text = out.getvalue()
+        stamps = [0, 100, 10900, 11000, 21700, 21800]
+        stamped = []
+        seen = self._seen()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            for batch in ((0, 2), (2, 3), (3, 4)):
+                stamped += [(stamps[i], lines[i] + "\n")
+                            for i in range(*batch)]
+                run_muse._claude_live_watch(stamped, seen)
+            first = out.getvalue()
+            run_muse._claude_live_watch(stamped, seen)
+            self.assertEqual(out.getvalue(), first)
+            stamped.append((21900, "{not json\n"))
+            stamped += [(stamps[i], lines[i] + "\n") for i in (4, 5)]
+            run_muse._claude_live_watch(stamped, seen)
+        text = out.getvalue()
+        self.assertIn("call 1 · arrived +10.8 s", text)
+        self.assertIn("call 2 · arrived +10.7 s", text)
         self.assertEqual(text.count("call 1 · arrived"), 1)
-        self.assertEqual(text.count("call 2 · arrived"), 1)
         self.assertIn("tool running: Bash", text)
-        self.assertEqual(seen["calls"], 2)
+        self.assertEqual(len(seen["tracker"]["calls"]), 2)
+
+    def _multi_block_events(self):
+        # Real Claude streams send one assistant event per
+        # content block, all sharing one message id. The
+        # recorded fixture packs a whole message per event,
+        # so this common shape needs building by hand.
+        usage = {"input_tokens": 100, "output_tokens": 3}
+        return [
+            {"type": "system", "subtype": "init",
+             "session_id": "s1"},
+            {"type": "assistant", "message": {
+                "id": "m1", "model": "claude-sonnet-5-5",
+                "usage": usage,
+                "content": [{"type": "text", "text": "working"}]}},
+            {"type": "assistant", "message": {
+                "id": "m1", "model": "claude-sonnet-5-5",
+                "usage": usage,
+                "content": [{"type": "tool_use", "id": "t1",
+                             "name": "Bash"}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1"}]}},
+            {"type": "assistant", "message": {
+                "id": "m2", "model": "claude-sonnet-5-5",
+                "usage": usage,
+                "content": [{"type": "text", "text": "done"}]}},
+            {"type": "result", "subtype": "success",
+             "is_error": False, "result": "done",
+             "usage": usage},
+        ]
+
+    def test_multi_block_message_registers_its_tool(self):
+        import contextlib
+        events = self._multi_block_events()
+        lines = [json.dumps(e) for e in events]
+        live = claude_stream.live_from_lines(lines[:3])
+        self.assertEqual(live["live_state"],
+                         {"state": "tool running", "tool": "Bash"})
+        self.assertEqual(len(live["calls"]), 1)
+        parsed = claude_stream.parse_claude_stream(
+            [(i * 100, line) for i, line in enumerate(lines)])
+        self.assertEqual(len(parsed["calls"]), 2)
+        stamped = [(i * 1000, line + "\n")
+                   for i, line in enumerate(lines)]
+        seen = self._seen()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run_muse._claude_live_watch(stamped, seen)
+        text = out.getvalue()
+        self.assertEqual(text.count("call 1 · arrived"), 1)
+        self.assertIn("tool running: Bash", text)
+        self.assertEqual(len(seen["tracker"]["calls"]), 2)
 
     def test_server_read_logs_shows_running_claude_run(self):
         lines = self._fixture_lines()
@@ -719,15 +766,54 @@ class ClaudeLiveTest(unittest.TestCase):
         self.assertEqual(empty["events"], [])
         self.assertIsNone(empty["live_state"])
 
-    def test_server_live_state_tool_running_mid_tool(self):
+    def test_server_read_logs_tool_running_mid_tool(self):
         lines = self._fixture_lines()
         live = server._claude_live({
             "provider": "meta", "status": "running",
             "run_id": "x"})
         self.assertEqual(live["calls"], [])
         self.assertIsNone(live["live_state"])
-        state = claude_stream.live_from_lines(lines[:3])["live_state"]
-        self.assertEqual(state["tool"], "Bash")
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-mid-tool").mkdir(parents=True)
+            run = {"run_id": "run-mid-tool",
+                   "at": datetime.now(timezone.utc).isoformat(),
+                   "prompt": "hi", "model": "claude-sonnet-5-5",
+                   "provider": "claude-code", "status": "running",
+                   "session_id": None, "exit_code": None,
+                   "error": None, "reply": "", "wall_ms": None,
+                   "timeout_seconds": 999999, "calls": []}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            events = runs / "run-mid-tool" / "events.jsonl"
+            events.write_text("\n".join(lines[:3]) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            server._CLAUDE_LIVE_CACHE.clear()
+            try:
+                data = server.read_logs("run-mid-tool")
+                parses = []
+                real = server.claude_stream.live_from_lines
+
+                def counting(raw_lines):
+                    parses.append(len(raw_lines))
+                    return real(raw_lines)
+
+                with mock.patch.object(
+                        server.claude_stream, "live_from_lines",
+                        counting):
+                    again = server.read_logs("run-mid-tool")
+                    self.assertEqual(parses, [])
+                    events.write_text("\n".join(lines[:4]) + "\n")
+                    moved = server.read_logs("run-mid-tool")
+                    self.assertEqual(parses, [4])
+            finally:
+                server.INDEX = old
+                server._CLAUDE_LIVE_CACHE.clear()
+        self.assertEqual(data["live_state"],
+                         {"state": "tool running", "tool": "Bash"})
+        self.assertEqual(again["live_state"]["state"], "tool running")
+        self.assertEqual(moved["live_state"]["state"],
+                         "model call running")
 
 
 class CompareScheduleTest(unittest.TestCase):

@@ -31,7 +31,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import muse_log  # noqa: E402
-from claude_stream import _input_with_cache, parse_claude_stream  # noqa: E402,F401
+from claude_stream import (  # noqa: E402,F401
+    feed_live_event, new_live_tracker, parse_claude_stream,
+    tracker_live_state)
 from muse_log import build_timeline, harvest_calls  # noqa: E402
 
 ROOT = Path(__file__).parent
@@ -421,7 +423,7 @@ def ensure_ui():
 
 
 def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
-                watch=None, stop_event=None):
+                watch=None, stop_event=None, lines_out=None):
     """Run one harness process, writing stdout to stdout_path and
     stderr to the sibling stderr.log. Returns exit state plus the
     stdout lines stamped with arrival time in ms since start.
@@ -431,10 +433,12 @@ def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
     the result then carries needs_approval=tool. `stop_event`, when
     set by another thread, stops the process the same way Ctrl+C
     does. Race legs stop through it, since SIGINT lands only on
-    the main thread.
+    the main thread. `lines_out`, when given, is the list the
+    reader appends stamped lines to, so a watch can follow exact
+    arrivals as they land instead of re-reading the output file.
     """
     started = time.monotonic()
-    lines = []
+    lines = lines_out if lines_out is not None else []
     timed_out = False
     interrupted = False
     needs_approval = None
@@ -583,9 +587,10 @@ def _live_watch(session_id, seen, label=None):
 def format_claude_call_line(n, gap_ms, input_tokens):
     """One landed Claude call, timed by arrival and labelled so.
 
-    gap_ms is time since the previous stream event was first
-    seen here. Claude Code reports no per-call duration, so the
-    line says "arrived". It never claims model time.
+    gap_ms is time since the previous stream event arrived, by
+    the reader thread's own stamp. Claude Code reports no
+    per-call duration, so the line says "arrived". It never
+    claims model time.
     """
     gap = f"+{gap_ms / 1000:.1f} s" if gap_ms is not None else "–"
     tok = f"{round(input_tokens / 1000)}k in" \
@@ -593,78 +598,39 @@ def format_claude_call_line(n, gap_ms, input_tokens):
     return f"call {n} · arrived {gap} · {tok}"
 
 
-def _claude_live_watch(events_path, seen, label=None):
+def _claude_live_watch(stamped, seen, label=None):
     """Poll closure for run_process on Claude Code runs.
 
-    Reads the run's events.jsonl, which the reader thread
-    flushes line by line. Prints one whole line per landed
-    model call and keeps the live state line current, exactly
-    like _live_watch does for Muse runs. Only complete lines
-    are consumed. A trailing partial line waits for its rest.
-    Always returns None. Claude Code in dontAsk mode has no
-    approval wait for a watch to stop on.
+    stamped is the very list the reader thread appends to, so
+    arrival stamps are exact and nothing re-reads the events
+    file. Events go through the shared tracker in
+    claude_stream, the same one the parser and the server
+    use. Prints one whole line per landed call and keeps the
+    live state line current, exactly like _live_watch does
+    for Muse runs. Always returns None. Claude Code in
+    dontAsk mode has no approval wait to stop on.
     """
-    try:
-        text = Path(events_path).read_text(errors="replace")
-    except OSError:
-        return None
-    # Only text up to the last newline is complete lines. The
-    # rest is a partial line still being written. splitlines
-    # never yields a trailing empty entry to mistake for a line.
-    if not text.endswith("\n"):
-        text = text[:text.rfind("\n") + 1]
-    lines = text.splitlines()
     prefix = f"{label} · " if label else ""
-    while seen["lines"] < len(lines):
-        line = lines[seen["lines"]]
-        seen["lines"] += 1
+    tracker = seen["tracker"]
+    while seen["index"] < len(stamped):
+        arrival, line = stamped[seen["index"]]
+        seen["index"] += 1
         try:
             e = json.loads(line)
         except Exception:
             continue
-        now = time.monotonic()
-        last = seen.get("last_at") or seen["started"]
-        gap_ms = round((now - last) * 1000)
-        seen["last_at"] = now
-        etype = e.get("type")
-        state = None
-        if etype == "assistant":
-            msg = e.get("message") or {}
-            mid = msg.get("id")
-            if msg.get("model") == "<synthetic>" \
-                    or (mid and mid in seen["ids"]):
-                continue
-            if mid:
-                seen["ids"].add(mid)
-            seen["calls"] += 1
-            input_tokens = _input_with_cache(msg.get("usage") or {}) \
-                or None
+        gap_ms = None
+        if arrival is not None:
+            last = seen.get("last_arrival")
+            gap_ms = arrival - last if last is not None else arrival
+            seen["last_arrival"] = arrival
+        call = feed_live_event(tracker, e)
+        if call is not None:
             with _PRINT_LOCK:
                 print(prefix + format_claude_call_line(
-                    seen["calls"], gap_ms, input_tokens), flush=True)
-            content = msg.get("content")
-            for block in content if isinstance(content, list) else []:
-                if isinstance(block, dict) \
-                        and block.get("type") == "tool_use" \
-                        and block.get("id"):
-                    seen["tools"][block["id"]] = block.get("name")
-            state = {"state": "model call running", "tool": None}
-        elif etype == "user":
-            content = (e.get("message") or {}).get("content")
-            for block in content if isinstance(content, list) else []:
-                if isinstance(block, dict) \
-                        and block.get("type") == "tool_result":
-                    seen["tools"].pop(block.get("tool_use_id"), None)
-            state = {"state": "model call running", "tool": None}
-        elif etype == "result":
-            state = {"state": "ended", "tool": None}
-        if seen["tools"] and (state is None
-                              or state["state"] != "ended"):
-            state = {"state": "tool running",
-                     "tool": list(seen["tools"].values())[-1]}
-        if state is None:
-            continue
-        text_out = format_live_line(state)
+                    len(tracker["calls"]), gap_ms,
+                    call["input_tokens"]), flush=True)
+        text_out = format_live_line(tracker_live_state(tracker))
         if text_out != seen.get("live"):
             seen["live"] = text_out
             with _PRINT_LOCK:
@@ -809,19 +775,21 @@ def run_claude_code(prompt, run_dir, model, timeout, stop_event=None,
     env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
     env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
     env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
-    seen = {"lines": 0, "calls": 0, "ids": set(), "tools": {},
-            "live": None, "started": time.monotonic(),
-            "last_at": None}
+    stamped = []
+    seen = {"index": 0, "tracker": new_live_tracker(),
+            "live": None, "last_arrival": None}
     watch = lambda: _claude_live_watch(  # noqa: E731
-        run_dir / "events.jsonl", seen, label=leg_label)
+        stamped, seen, label=leg_label)
     try:
         proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
                            timeout, input_text=prompt,
-                           stop_event=stop_event, watch=watch)
+                           stop_event=stop_event, watch=watch,
+                           lines_out=stamped)
     except OSError as e:
         return _empty_result(" ".join(cmd), error=str(e))
     watch()
-    if sys.stdout.isatty() and not leg_label:
+    if sys.stdout.isatty() and not leg_label \
+            and seen.get("live") is not None:
         print(flush=True)
     parsed = parse_claude_stream(proc["lines"])
     exit_code = proc["exit_code"]

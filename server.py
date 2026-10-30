@@ -48,13 +48,20 @@ def live_calls(session_id):
     return muse_log.live_calls_from_log(path)
 
 
+_CLAUDE_LIVE_CACHE = {}
+
+
 def _claude_live(run):
     """Live calls, timeline and state for a running Claude run.
 
     Reads the run's events.jsonl, which run-muse writes and
     flushes line by line while the harness runs. Empty values
     when the run is not a running Claude Code run, or when the
-    file is not there yet. This server only ever reads.
+    file is not there yet. This server only ever reads. One
+    request can ask for the same run twice, and the page polls
+    every two seconds, so a parse is cached against the file
+    stamp and size. An appended line always changes one of
+    them, so a stale entry can never outlive new data.
     """
     empty = {"calls": [], "timeline": [], "live_state": None}
     if run.get("provider") != "claude-code" \
@@ -62,12 +69,22 @@ def _claude_live(run):
         return empty
     events_file = INDEX.parent / str(run["run_id"]) / "events.jsonl"
     try:
+        stamp = events_file.stat()
+    except OSError:
+        return empty
+    version = (stamp.st_mtime_ns, stamp.st_size)
+    cached = _CLAUDE_LIVE_CACHE.get(run["run_id"])
+    if cached and cached[0] == version:
+        return cached[1]
+    try:
         lines = events_file.read_text(errors="replace").splitlines()
     except OSError:
         return empty
     live = claude_stream.live_from_lines(lines)
-    return {"calls": live["calls"], "timeline": live["timeline"],
-            "live_state": live["live_state"]}
+    result = {"calls": live["calls"], "timeline": live["timeline"],
+              "live_state": live["live_state"]}
+    _CLAUDE_LIVE_CACHE[run["run_id"]] = (version, result)
+    return result
 
 
 def _is_stale_running(run):

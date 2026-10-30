@@ -1,11 +1,12 @@
 """Claude Code stream-json parsing. Stdlib only.
 
 `run-muse` uses this to build a finished run report from the
-stamped lines `run_process` collected. `server.py` uses the
-live side to show a Claude Code run while it is still going,
-from the same lines as they land in its events file. One
-parser, so the live view can never disagree with the final
-report about what a call is.
+stamped lines `run_process` collected, and to print progress
+while the run is going. `server.py` uses the live side to show
+a Claude Code run in progress, from the same lines as they
+land in its events file. All three share one tracker, so a
+call, a running tool, and a live state mean the same thing in
+the report, the terminal, and the page.
 """
 import json
 
@@ -18,27 +19,92 @@ def _input_with_cache(usage):
     return sum(p or 0 for p in parts)
 
 
-def parse_claude_stream(stamped):
-    """Map stamped Claude Code stream-json lines onto report fields.
+def _content_blocks(event):
+    content = (event.get("message") or {}).get("content")
+    return content if isinstance(content, list) else []
 
-    stamped holds (arrival_ms, line) pairs from run_process. An
-    arrival may be None when the caller only has the lines, as
-    the server does for a live run. Timeline durations then
-    stay None instead of inventing a measurement. One call
-    per unique assistant message.id. Claude Code reports no
-    per-call duration, and per-call output counts are partial
-    snapshots, so both stay None and output totals come from
-    the result event. result.usage.iterations only holds the
-    last call, so it is not used.
+
+def new_live_tracker():
+    """Fresh incremental state for feed_live_event."""
+    return {"ids": set(), "tools": {}, "calls": [],
+            "usage_model": None, "ended": False, "seen_any": False}
+
+
+def feed_live_event(tracker, event):
+    """Apply one parsed stream event to a tracker.
+
+    Returns the new call dict when a fresh message lands, else
+    None. Claude Code sends one assistant event per content
+    block, and every block of one message shares its id. Tool
+    blocks are therefore scanned on every assistant event,
+    before the id dedup that keeps the message to one call.
+    Scanning after dedup would miss the common text then tool
+    sequence entirely.
     """
-    events = []
-    for arrival, line in stamped:
-        try:
-            events.append((arrival, json.loads(line)))
-        except Exception:
-            continue
-    calls, timeline, seen = [], [], set()
-    result, session_id, usage_model = None, None, None
+    if not isinstance(event, dict):
+        return None
+    tracker["seen_any"] = True
+    etype = event.get("type")
+    if etype == "assistant":
+        msg = event.get("message") or {}
+        # Claude Code emits a "<synthetic>" message to carry an error.
+        # It is not a model call and holds no real tool work.
+        if msg.get("model") == "<synthetic>":
+            return None
+        for block in _content_blocks(event):
+            if isinstance(block, dict) \
+                    and block.get("type") == "tool_use" \
+                    and block.get("id"):
+                tracker["tools"][block["id"]] = block.get("name")
+        mid = msg.get("id")
+        if mid and mid in tracker["ids"]:
+            return None
+        if mid:
+            tracker["ids"].add(mid)
+        usage = msg.get("usage") or {}
+        tracker["usage_model"] = msg.get("model") \
+            or tracker["usage_model"]
+        # Meta's endpoint sends all-zero per-call usage. A real call
+        # always has input, so 0 means not reported.
+        input_tokens = _input_with_cache(usage) or None
+        call = {
+            "model": msg.get("model"), "duration_ms": None,
+            "input_tokens": input_tokens,
+            "output_tokens": None,
+            "cached_tokens": usage.get("cache_read_input_tokens")
+                             if input_tokens else None,
+            "reasoning_tokens": None,
+        }
+        tracker["calls"].append(call)
+        return call
+    if etype == "user":
+        for block in _content_blocks(event):
+            if isinstance(block, dict) \
+                    and block.get("type") == "tool_result":
+                tracker["tools"].pop(block.get("tool_use_id"), None)
+        return None
+    if etype == "result":
+        tracker["ended"] = True
+    return None
+
+
+def tracker_live_state(tracker):
+    """Live state for a tracker, in muse_log.live_state names."""
+    if tracker["ended"]:
+        return {"state": "ended", "tool": None}
+    if tracker["tools"]:
+        return {"state": "tool running",
+                "tool": list(tracker["tools"].values())[-1]}
+    if tracker["seen_any"]:
+        return {"state": "model call running", "tool": None}
+    return {"state": "idle", "tool": None}
+
+
+def _parse_events(events):
+    """Report fields from (arrival_ms, event) pairs, parsed once."""
+    tracker = new_live_tracker()
+    timeline = []
+    result, session_id = None, None
     for i, (arrival, e) in enumerate(events):
         session_id = session_id or e.get("session_id")
         etype = e.get("type")
@@ -58,35 +124,16 @@ def parse_claude_stream(stamped):
             "duration_ms": duration_ms,
             "wire_ms": None,
         })
-        if etype == "assistant":
-            msg = e.get("message") or {}
-            mid = msg.get("id")
-            # Claude Code emits a "<synthetic>" message to carry an error.
-            # It is not a model call.
-            if msg.get("model") == "<synthetic>" or (mid and mid in seen):
-                continue
-            if mid:
-                seen.add(mid)
-            usage = msg.get("usage") or {}
-            usage_model = msg.get("model") or usage_model
-            # Meta's endpoint sends all-zero per-call usage. A real call
-            # always has input, so 0 means not reported.
-            input_tokens = _input_with_cache(usage) or None
-            calls.append({
-                "model": msg.get("model"), "duration_ms": None,
-                "input_tokens": input_tokens,
-                "output_tokens": None,
-                "cached_tokens": usage.get("cache_read_input_tokens")
-                                 if input_tokens else None,
-                "reasoning_tokens": None,
-            })
-        elif etype == "result":
+        feed_live_event(tracker, e)
+        if etype == "result":
             result = e
-    parsed = {"session_id": session_id, "reply": "", "calls": calls,
-              "timeline": timeline, "usage_model": usage_model,
+    parsed = {"session_id": session_id, "reply": "",
+              "calls": tracker["calls"], "timeline": timeline,
+              "usage_model": tracker["usage_model"],
               "api_ms": None, "ttft_ms": None, "num_turns": None,
               "cost_usd": None, "totals": None, "is_error": False,
-              "api_error_status": None}
+              "api_error_status": None,
+              "live_state": tracker_live_state(tracker)}
     if result:
         usage = result.get("usage") or {}
         parsed.update({
@@ -110,52 +157,41 @@ def parse_claude_stream(stamped):
     return parsed
 
 
-def _content_blocks(event):
-    content = (event.get("message") or {}).get("content")
-    return content if isinstance(content, list) else []
+def _events_from_lines(stamped):
+    events = []
+    for arrival, line in stamped:
+        try:
+            events.append((arrival, json.loads(line)))
+        except Exception:
+            continue
+    return events
+
+
+def parse_claude_stream(stamped):
+    """Map stamped Claude Code stream-json lines onto report fields.
+
+    stamped holds (arrival_ms, line) pairs from run_process. An
+    arrival may be None when the caller only has the lines, as
+    the server does for a live run. Timeline durations then
+    stay None instead of inventing a measurement. One call
+    per unique assistant message.id. Claude Code reports no
+    per-call duration, and per-call output counts are partial
+    snapshots, so both stay None and output totals come from
+    the result event. result.usage.iterations only holds the
+    last call, so it is not used.
+    """
+    return _parse_events(_events_from_lines(stamped))
 
 
 def live_from_lines(lines):
     """Live calls, timeline and state for a run in progress.
 
     Takes raw stream-json lines as they land in events.jsonl.
-    Calls and timeline come from parse_claude_stream with no
-    arrival stamps, so durations stay None. live_state uses
-    the same state names as muse_log.live_state, so the page
-    banner and terminal share one vocabulary: a tool_use with
-    no matching tool_result yet is a tool running, a result
-    event is ended, anything else seen is a model call
-    running, and no events at all is idle.
+    Each line is parsed once. Durations stay None, since the
+    file holds no arrival stamps.
     """
-    parsed = parse_claude_stream([(None, line) for line in lines])
-    pending = {}
-    state = {"state": "idle", "tool": None}
-    for line in lines:
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
-        etype = e.get("type")
-        if etype == "assistant":
-            for block in _content_blocks(e):
-                if isinstance(block, dict) \
-                        and block.get("type") == "tool_use" \
-                        and block.get("id"):
-                    pending[block["id"]] = block.get("name")
-            state = {"state": "model call running", "tool": None}
-        elif etype == "user":
-            for block in _content_blocks(e):
-                if isinstance(block, dict) \
-                        and block.get("type") == "tool_result":
-                    pending.pop(block.get("tool_use_id"), None)
-            state = {"state": "model call running", "tool": None}
-        elif etype == "result":
-            state = {"state": "ended", "tool": None}
-        elif state["state"] == "idle":
-            state = {"state": "model call running", "tool": None}
-        if pending and state["state"] != "ended":
-            state = {"state": "tool running",
-                     "tool": list(pending.values())[-1]}
+    parsed = _parse_events(
+        _events_from_lines([(None, line) for line in lines]))
     return {"calls": parsed["calls"], "timeline": parsed["timeline"],
             "session_id": parsed["session_id"],
-            "live_state": state}
+            "live_state": parsed["live_state"]}
