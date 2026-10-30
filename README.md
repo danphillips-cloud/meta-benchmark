@@ -81,7 +81,7 @@ Ready for a longer build? The [getting started guide](docs/getting-started.md) h
 
 Single and Meta vs Meta use your Muse subscription. Meta vs Claude bills your API keys per token. So does Custom by default, because its default legs use Claude Code.
 
-Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) before it starts, and stops after 5 minutes. Claude Code runs print nothing until they finish, so a quiet terminal doesn't mean it's stuck ([#28](https://github.com/danphillips-cloud/meta-benchmark/issues/28)).
+Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) before it starts, and stops after 5 minutes. Claude Code runs print a line as each call lands, like `call 1 · arrived +10.8 s · 29k in`, plus the tool now running. That time is the gap since the previous stream event arrived. Claude Code reports no per call duration, so the line never claims model time. The page shows the same calls, timeline, and live state while the run is going.
 
 `--compare meta --repeat N` runs N rounds, alternating the order each round.
 

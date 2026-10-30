@@ -40,6 +40,7 @@ def load(name, path):
 
 run_muse = load("run_muse", HERE / "run-muse")
 server = load("muse_ui_server", HERE / "server.py")
+claude_stream = load("claude_stream", HERE / "claude_stream.py")
 
 SESSION_RECORD = {
     "recorded_at": 1792791769858843,
@@ -608,6 +609,125 @@ class ClaudeStreamTest(unittest.TestCase):
         self.assertIsNone(parsed["calls"][0]["cached_tokens"])
         self.assertEqual(parsed["usage_model"], "muse-wonder-1.0")
         self.assertEqual(parsed["totals"]["input_tokens"], 1370)
+
+
+class ClaudeLiveTest(unittest.TestCase):
+    def _fixture_lines(self):
+        return (HERE / "fixtures" / "claude-code-stream.jsonl") \
+            .read_text().splitlines()
+
+    def test_unstamped_parse_has_no_durations(self):
+        lines = self._fixture_lines()
+        stamped = claude_stream.parse_claude_stream(
+            [(i * 100, line) for i, line in enumerate(lines)])
+        unstamped = claude_stream.parse_claude_stream(
+            [(None, line) for line in lines])
+        self.assertEqual(unstamped["calls"], stamped["calls"])
+        self.assertEqual(unstamped["totals"], stamped["totals"])
+        self.assertTrue(all(t["duration_ms"] is None
+                            for t in unstamped["timeline"]))
+
+    def test_live_states_from_fixture_prefixes(self):
+        lines = self._fixture_lines()
+        live = claude_stream.live_from_lines(lines[:3])
+        self.assertEqual(live["live_state"],
+                         {"state": "tool running", "tool": "Bash"})
+        self.assertEqual(len(live["calls"]), 1)
+        live = claude_stream.live_from_lines(lines[:4])
+        self.assertEqual(live["live_state"]["state"],
+                         "model call running")
+        live = claude_stream.live_from_lines(lines)
+        self.assertEqual(live["live_state"]["state"], "ended")
+        self.assertEqual(len(live["calls"]), 2)
+        live = claude_stream.live_from_lines([])
+        self.assertEqual(live["live_state"]["state"], "idle")
+
+    def test_format_claude_call_line_labels_arrival(self):
+        self.assertEqual(
+            run_muse.format_claude_call_line(1, 10800, 29276),
+            "call 1 · arrived +10.8 s · 29k in")
+        self.assertEqual(
+            run_muse.format_claude_call_line(2, None, None),
+            "call 2 · arrived – · – in")
+
+    def test_watch_prints_each_call_once_as_lines_land(self):
+        import contextlib
+        lines = self._fixture_lines()
+        with tempfile.TemporaryDirectory() as td:
+            events = Path(td) / "events.jsonl"
+            events.write_text("")
+            seen = {"lines": 0, "calls": 0, "ids": set(),
+                    "tools": {}, "live": None,
+                    "started": 0.0, "last_at": None}
+            import time
+            seen["started"] = time.monotonic()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                # Batch boundaries land where real polls would:
+                # system lines first, then one event at a time.
+                written = []
+                for batch in (lines[:2], lines[2:3], lines[3:4]):
+                    written += batch
+                    events.write_text("\n".join(written) + "\n")
+                    run_muse._claude_live_watch(events, seen)
+                first = out.getvalue()
+                run_muse._claude_live_watch(events, seen)
+                self.assertEqual(out.getvalue(), first)
+                events.write_text(
+                    "\n".join(lines) + "\n" + lines[2][:20])
+                run_muse._claude_live_watch(events, seen)
+                events.write_text("\n".join(lines) + "\n")
+                run_muse._claude_live_watch(events, seen)
+            text = out.getvalue()
+        self.assertEqual(text.count("call 1 · arrived"), 1)
+        self.assertEqual(text.count("call 2 · arrived"), 1)
+        self.assertIn("tool running: Bash", text)
+        self.assertEqual(seen["calls"], 2)
+
+    def test_server_read_logs_shows_running_claude_run(self):
+        lines = self._fixture_lines()
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-live-cc").mkdir(parents=True)
+            run = {"run_id": "run-live-cc",
+                   "at": datetime.now(timezone.utc).isoformat(),
+                   "prompt": "hi", "model": "claude-sonnet-5-5",
+                   "provider": "claude-code", "status": "running",
+                   "session_id": None, "exit_code": None,
+                   "error": None, "reply": "", "wall_ms": None,
+                   "timeout_seconds": 999999, "calls": []}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            (runs / "run-live-cc" / "events.jsonl").write_text(
+                "\n".join(lines[:4]) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs("run-live-cc")
+                no_events = dict(run, run_id="run-no-file")
+                (runs / "index.jsonl").write_text(
+                    json.dumps(no_events) + "\n")
+                empty = server.read_logs("run-no-file")
+            finally:
+                server.INDEX = old
+        self.assertEqual(len(data["events"]), 1)
+        self.assertTrue(data["timeline"])
+        self.assertEqual(data["live_state"],
+                         {"state": "model call running", "tool": None})
+        picked = next(s for s in data["sessions"]
+                      if s["run_id"] == "run-live-cc")
+        self.assertEqual(picked["calls"], 1)
+        self.assertEqual(empty["events"], [])
+        self.assertIsNone(empty["live_state"])
+
+    def test_server_live_state_tool_running_mid_tool(self):
+        lines = self._fixture_lines()
+        live = server._claude_live({
+            "provider": "meta", "status": "running",
+            "run_id": "x"})
+        self.assertEqual(live["calls"], [])
+        self.assertIsNone(live["live_state"])
+        state = claude_stream.live_from_lines(lines[:3])["live_state"]
+        self.assertEqual(state["tool"], "Bash")
 
 
 class CompareScheduleTest(unittest.TestCase):
