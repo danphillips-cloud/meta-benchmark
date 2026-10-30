@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, buildRunsQuery, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, legKey, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts } from "../format.js";
+import { DID_NOT_COMPLETE, buildRunsQuery, fastestOf, filterOptions, fmt, fmtDur, fmtDurParts, fmtMs, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts } from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
-import { Chip, CopyButton, StatIcon, StatusPill } from "../components/widgets.jsx";
+import { ChevronIcon, Chip, CopyButton, CopyIconButton, StatIcon, StatusPill } from "../components/widgets.jsx";
 
 function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
@@ -96,6 +96,10 @@ export default function Overview({ data, onSelect, onGoto }) {
   const [replyExpanded, setReplyExpanded] = useState(false);
   const reply = data.reply || "";
   useEffect(() => { setReplyExpanded(false); }, [reply]);
+  const prompt = data.prompt || "";
+  const promptLong = isLongPrompt(prompt);
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  useEffect(() => { setPromptExpanded(false); }, [prompt]);
 
   const { sel, events, hasEvents, modelTotal, wall, split, baseline, diag, whatLines, detailLines } = selectedRunFacts(data);
   const share = (v) => (v != null && wall) ? Math.round(v / wall * 100) + "% of wall" : "–";
@@ -144,8 +148,48 @@ export default function Overview({ data, onSelect, onGoto }) {
   return (
     <section data-view-panel="overview">
       <section className="panel" aria-label="Selected run">
-        <div className="label">Selected run</div>
-        <div id="latestPrompt">{data.prompt || "–"}</div>
+        <div className="promptHead">
+          <div className="label">Selected run</div>
+          {prompt ? (
+            <span className="promptTools">
+              {promptLong ? <span className="promptMeta">{fmt(prompt.length) + " characters"}</span> : null}
+              {!promptLong ? <CopyIconButton text={prompt} label="Copy prompt" /> : null}
+            </span>
+          ) : null}
+        </div>
+        {promptLong ? (
+          <div className="promptWindowWrap">
+            <div
+              id="latestPrompt"
+              className={"promptLong " + (promptExpanded ? "promptExpanded" : "promptCollapsed")}
+            >{promptExpanded ? prompt : promptPreview(prompt)}</div>
+            {!promptExpanded ? (
+              <button
+                className="promptExpandHit"
+                type="button"
+                aria-label="Expand prompt"
+                aria-expanded={false}
+                aria-controls="latestPrompt"
+                title="Expand prompt"
+                onClick={() => setPromptExpanded(true)}
+              ><span className="promptChevron"><ChevronIcon expanded={false} /></span></button>
+            ) : null}
+            <div className="promptActions">
+              <CopyIconButton text={prompt} label="Copy prompt" />
+              {promptExpanded ? (
+                <button
+                  className="iconBtn"
+                  type="button"
+                  aria-label="Collapse prompt"
+                  aria-expanded={true}
+                  aria-controls="latestPrompt"
+                  title="Collapse prompt"
+                  onClick={() => setPromptExpanded(false)}
+                ><ChevronIcon expanded /></button>
+              ) : null}
+            </div>
+          </div>
+        ) : <div id="latestPrompt">{prompt || "–"}</div>}
         <div id="runChips">
           <StatusPill status={data.status || sel.status} extra={elapsed} />
           {(data.provider || data.model) ? <Chip text={(data.provider || "?") + "/" + (data.model || "?")} cls="model" /> : null}
