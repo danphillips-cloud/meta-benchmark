@@ -564,6 +564,25 @@ export function replayAt(series, offsetMs) {
   };
 }
 
+// Two series under one shared clock. Span is the longer side.
+// Offsets are the sorted union of both sides' step times, so
+// stepping lands on the next event on either side. The start gap
+// is the recorded second start minus the recorded first start.
+// A missing start gives null, never an invented zero.
+export function replayPair(a, b) {
+  const points = [...((a && a.points) || []), ...((b && b.points) || [])];
+  const offsets = [...new Set(points.map((p) => p.offset_ms))]
+    .sort((x, y) => x - y);
+  const startA = a && a.start_at ? Date.parse(a.start_at) : NaN;
+  const startB = b && b.start_at ? Date.parse(b.start_at) : NaN;
+  return {
+    span_ms: Math.max((a && a.span_ms) || 0, (b && b.span_ms) || 0),
+    offsets,
+    gap_ms: Number.isFinite(startA) && Number.isFinite(startB)
+      ? startB - startA : null,
+  };
+}
+
 // --- Context X-ray ----------------------------------------------------
 // Pure maths over recorded lane byte counts. Bytes stay bytes and are
 // never converted to tokens. Raw groups fold by lane name. A folded

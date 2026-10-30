@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { fmt, fmtDur, localTime, parseReplayStart, replayAt, replaySeries, shortText } from "../format.js";
+import { fmt, fmtDur, legKey, localTime, parseReplayStart, replayAt, replayPair, replaySeries, shortText } from "../format.js";
+import { fetchLogs } from "../api.js";
 
 const SPEEDS = [1, 4, 10, 20, 60];
 
@@ -15,7 +16,34 @@ export default function Replay({ data }) {
     () => replaySeries(data.timeline, data.events),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [runId]);
-  const span = series.span_ms;
+  // Optional second side from ?vs=<runId>. Fetched once and
+  // snapshotted, same discipline as the series above: the app poll
+  // keeps refreshing only the primary payload and never disturbs
+  // playback on either side.
+  const vsId = searchParams.get("vs") || "";
+  const [other, setOther] = useState(null);
+  useEffect(() => {
+    if (!vsId || vsId === runId) { setOther(null); return undefined; }
+    let live = true;
+    setOther({ state: "loading", data: null });
+    fetchLogs(vsId).then((d) => {
+      if (!live) return;
+      const found = d.selected === vsId
+        && (d.sessions || []).some((s) => s.run_id === vsId);
+      setOther(found ? { state: "ready", data: d }
+        : { state: "missing", data: null });
+    }).catch(() => { if (live) setOther({ state: "error", data: null }); });
+    return () => { live = false; };
+  }, [vsId, runId]);
+  const otherData = other && other.state === "ready" ? other.data : null;
+  const otherSeries = useMemo(
+    () => (otherData ? replaySeries(otherData.timeline, otherData.events) : null),
+    [otherData]);
+  const paired = Boolean(otherSeries);
+  const pair = useMemo(
+    () => (paired ? replayPair(series, otherSeries) : null),
+    [paired, series, otherSeries]);
+  const span = pair ? pair.span_ms : series.span_ms;
   const [offset, setOffset] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(10);
@@ -56,7 +84,8 @@ export default function Replay({ data }) {
   }, [playing, speed, span, seek]);
 
   const at = replayAt(series, offset);
-  const offsets = series.points.map((p) => p.offset_ms);
+  const otherAt = paired ? replayAt(otherSeries, offset) : null;
+  const offsets = pair ? pair.offsets : series.points.map((p) => p.offset_ms);
   const stepTo = useCallback((dir) => {
     setPlaying(false);
     if (dir > 0) {
@@ -67,7 +96,7 @@ export default function Replay({ data }) {
       seek(prev == null ? 0 : prev);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, span, seek]);
+  }, [offsets, span, seek]);
 
   const togglePlay = useCallback(() => {
     if (!span) return;
@@ -89,12 +118,18 @@ export default function Replay({ data }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePlay, stepTo, seek, span]);
 
-  const currentIndex = at.current ? series.points.indexOf(at.current) : -1;
+  const stepRows = useMemo(() => (paired
+    ? [...series.points.map((p) => ({ p, side: 0 })),
+      ...otherSeries.points.map((p) => ({ p, side: 1 }))]
+      .sort((x, y) => x.p.offset_ms - y.p.offset_ms || x.side - y.side)
+    : series.points.map((p) => ({ p, side: 0 }))), [paired, series, otherSeries]);
+  let lastPassedRow = -1;
+  stepRows.forEach((r, i) => { if (r.p.offset_ms <= offset) lastPassedRow = i; });
   useEffect(() => {
     if (playing && currentRowRef.current) {
       currentRowRef.current.scrollIntoView({ block: "nearest" });
     }
-  }, [playing, currentIndex]);
+  }, [playing, lastPassedRow]);
 
   const onRulerClick = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -104,6 +139,58 @@ export default function Replay({ data }) {
   };
 
   const pct = (ms) => (span ? Math.max(0, Math.min(100, (ms / span) * 100)) : 0);
+  const sideRuler = (s, segs, sideFlight, keyP) => (
+    <>
+      <div
+        className="replayRuler"
+        role="presentation"
+        title="Click to move the playhead"
+        onClick={onRulerClick}
+      >
+        {s.landings.map((l) => (l.model_start_ms != null ? (
+          <div
+            key={keyP + "bar" + l.call}
+            className={"replayModelBar" + (l.offset_ms <= offset ? " done" : "") + (sideFlight && sideFlight.call === l.call ? " flying" : "")}
+            style={{ left: pct(Math.max(0, l.model_start_ms)) + "%", width: Math.max(0.4, pct(l.offset_ms) - pct(Math.max(0, l.model_start_ms))) + "%" }}
+            title={"Call " + l.call + " · model " + fmtDur(l.model_ms) + " · landed at " + fmtDur(l.offset_ms)}
+          />
+        ) : null))}
+        {s.points.map((p, i) => (
+          <div
+            key={keyP + "tick" + i}
+            className={"replayTick kind-" + p.kind + (p.offset_ms <= offset ? " done" : "")}
+            style={{ left: pct(p.offset_ms) + "%" }}
+            title={p.label + " at " + fmtDur(p.offset_ms)}
+          />
+        ))}
+        <div className="replayPlayhead" style={{ left: pct(offset) + "%" }} />
+      </div>
+      {segs.length ? (
+        <div className="replayToolLane" role="presentation" title="Click to move the playhead" onClick={onRulerClick}>
+          {segs.map((iv, i) => (
+            <div
+              key={keyP + "seg" + i}
+              className={"replayToolSeg kind-" + iv.kind + (iv.start_ms <= offset ? " done" : "")}
+              style={{ left: pct(Math.max(0, iv.start_ms)) + "%", width: Math.max(0.2, pct(iv.start_ms + (iv.duration_ms || 0)) - pct(Math.max(0, iv.start_ms))) + "%" }}
+              title={(iv.name || "unnamed tool") + " · " + fmtDur(iv.duration_ms)
+                + " · started at " + fmtDur(iv.start_ms)
+                + (iv.wait_ms ? " · includes " + fmtDur(iv.wait_ms) + " approval wait" : "")}
+            />
+          ))}
+          <div className="replayPlayhead" style={{ left: pct(offset) + "%" }} />
+        </div>
+      ) : null}
+    </>
+  );
+  const sideStatlets = (s, sideAt) => (
+    <div className="statlets">
+      <div className="statlet"><span>Calls landed by now</span><strong>{sideAt.calls_landed + " of " + s.landings.length}</strong></div>
+      <div className="statlet"><span>Input tokens so far</span><strong>{fmt(sideAt.input_tokens)}</strong></div>
+      <div className="statlet"><span>Output tokens so far</span><strong>{fmt(sideAt.output_tokens)}</strong></div>
+      <div className="statlet"><span>Model time so far</span><strong>{fmtDur(sideAt.model_ms)}</strong></div>
+      <div className="statlet"><span>Steps passed</span><strong>{sideAt.passed_count + " of " + s.points.length}</strong></div>
+    </div>
+  );
   // Tool and approval segments share the series clock. Snapshot per
   // run like the series, aligned through its recorded start time.
   const toolSegs = useMemo(() => {
@@ -114,26 +201,62 @@ export default function Replay({ data }) {
       .filter((iv) => Number.isFinite(iv.start_ms));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
+  const otherToolSegs = useMemo(() => {
+    if (!paired || !otherSeries.start_at) return [];
+    const t0 = Date.parse(otherSeries.start_at);
+    return (((otherData.intervals || {}).intervals) || [])
+      .map((iv) => ({ ...iv, start_ms: Date.parse(iv.start_at) - t0 }))
+      .filter((iv) => Number.isFinite(iv.start_ms));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vsId, paired]);
   const unclosedNames = [
     ...(((data.intervals || {}).unclosed_tools) || []),
     ...(((data.intervals || {}).unclosed_approvals) || []),
   ];
+  const otherUnclosedNames = otherData ? [
+    ...(((otherData.intervals || {}).unclosed_tools) || []),
+    ...(((otherData.intervals || {}).unclosed_approvals) || []),
+  ] : [];
   const flight = at.in_flight_call
     ? series.landings.find((l) => l.call === at.in_flight_call) : null;
-  const wallDiffers = data.wall_ms != null && span > 0
-    && Math.abs(data.wall_ms - span) > 1000;
+  const otherFlight = otherAt && otherAt.in_flight_call
+    ? otherSeries.landings.find((l) => l.call === otherAt.in_flight_call) : null;
+  const rowOf = (id) => (data.sessions || []).find((s) => s.run_id === id) || null;
+  const legA = rowOf(runId) ? legKey(rowOf(runId)) : ((data.provider || "?") + "/" + (data.model || "?"));
+  const legB = rowOf(vsId) ? legKey(rowOf(vsId)) : vsId;
+  const gapNote = !pair ? null
+    : pair.gap_ms == null
+      ? "Start times were not both recorded. Each side starts at its own first recorded step."
+      : Math.abs(pair.gap_ms) < 1000
+        ? "Both runs started together. The clock is shared real time."
+        : Math.abs(pair.gap_ms) < 3600000
+          ? "The runs started " + fmtDur(Math.abs(pair.gap_ms)) + " apart. Each side starts at its own first recorded step."
+          : "First run started " + localTime(series.start_at) + ". Second run started " + localTime(otherSeries.start_at) + ". Each side starts at its own first recorded step.";
+  const wallDiffers = data.wall_ms != null && series.span_ms > 0
+    && Math.abs(data.wall_ms - series.span_ms) > 1000;
+  const stateLine = (sideAt, sideFlight) => (sideFlight
+    ? "Model call " + sideFlight.call + " in flight. It landed at " + fmtDur(sideFlight.offset_ms) + "."
+    : sideAt.current
+      ? "Last recorded step: " + sideAt.current.label + "."
+      : "Before the first recorded step.")
+    + (sideFlight && sideFlight.retries > 0 && sideFlight.stalled_ms != null
+      ? " Recorded for this call: stalled " + fmtDur(sideFlight.stalled_ms) + " before retry."
+      : "")
+    + (sideAt.next ? " Next: " + sideAt.next.label + " at " + fmtDur(sideAt.next.offset_ms) + "." : " End of the recorded steps.");
 
   const head = (
     <div className="viewHead">
       <span className="hint">
-        {data.selected
-          ? shortText(data.prompt || data.selected, 60) + " · " + ((data.provider || "?") + "/" + (data.model || "?"))
-          : ""}
+        {vsId
+          ? legA + " · " + legB
+          : data.selected
+            ? shortText(data.prompt || data.selected, 60) + " · " + ((data.provider || "?") + "/" + (data.model || "?"))
+            : ""}
       </span>
     </div>
   );
 
-  if (!series.points.length) {
+  if (!series.points.length && !(paired && otherSeries.points.length)) {
     return (
       <section data-view-panel="replay">
         {head}
@@ -166,65 +289,49 @@ export default function Replay({ data }) {
           <span className="replayClockOf">{" of " + fmtDur(span)}</span>
         </div>
         <div className="replayState" role="status">
-          {flight
-            ? "Model call " + flight.call + " in flight. It landed at " + fmtDur(flight.offset_ms) + "."
-            : at.current
-              ? "Last recorded step: " + at.current.label + "."
-              : "Before the first recorded step."}
-          {flight && flight.retries > 0 && flight.stalled_ms != null
-            ? " Recorded for this call: stalled " + fmtDur(flight.stalled_ms) + " before retry."
-            : ""}
-          {at.next ? " Next: " + at.next.label + " at " + fmtDur(at.next.offset_ms) + "." : " End of the recorded steps."}
+          {paired ? legA + ": " + stateLine(at, flight) : stateLine(at, flight)}
         </div>
-        <div
-          className="replayRuler"
-          role="presentation"
-          title="Click to move the playhead"
-          onClick={onRulerClick}
-        >
-          {series.landings.map((l) => (l.model_start_ms != null ? (
-            <div
-              key={"bar" + l.call}
-              className={"replayModelBar" + (l.offset_ms <= offset ? " done" : "") + (flight && flight.call === l.call ? " flying" : "")}
-              style={{ left: pct(Math.max(0, l.model_start_ms)) + "%", width: Math.max(0.4, pct(l.offset_ms) - pct(Math.max(0, l.model_start_ms))) + "%" }}
-              title={"Call " + l.call + " · model " + fmtDur(l.model_ms) + " · landed at " + fmtDur(l.offset_ms)}
-            />
-          ) : null))}
-          {series.points.map((p, i) => (
-            <div
-              key={"tick" + i}
-              className={"replayTick kind-" + p.kind + (p.offset_ms <= offset ? " done" : "")}
-              style={{ left: pct(p.offset_ms) + "%" }}
-              title={p.label + " at " + fmtDur(p.offset_ms)}
-            />
-          ))}
-          <div className="replayPlayhead" style={{ left: pct(offset) + "%" }} />
-        </div>
-        {toolSegs.length ? (
-          <div className="replayToolLane" role="presentation" title="Click to move the playhead" onClick={onRulerClick}>
-            {toolSegs.map((iv, i) => (
-              <div
-                key={"seg" + i}
-                className={"replayToolSeg kind-" + iv.kind + (iv.start_ms <= offset ? " done" : "")}
-                style={{ left: pct(Math.max(0, iv.start_ms)) + "%", width: Math.max(0.2, pct(iv.start_ms + (iv.duration_ms || 0)) - pct(Math.max(0, iv.start_ms))) + "%" }}
-                title={(iv.name || "unnamed tool") + " · " + fmtDur(iv.duration_ms)
-                  + " · started at " + fmtDur(iv.start_ms)
-                  + (iv.wait_ms ? " · includes " + fmtDur(iv.wait_ms) + " approval wait" : "")}
-              />
-            ))}
-            <div className="replayPlayhead" style={{ left: pct(offset) + "%" }} />
+        {paired ? (
+          <div className="replayState" role="status">
+            {legB + ": " + stateLine(otherAt, otherFlight)}
           </div>
         ) : null}
+        {gapNote ? <p className="note">{gapNote}</p> : null}
+        {vsId && other && other.state === "loading" ? (
+          <p className="note">Loading the second run.</p>
+        ) : null}
+        {vsId && other && other.state === "missing" ? (
+          <p className="note">{"Second run " + vsId + " was not found. Showing this run alone."}</p>
+        ) : null}
+        {vsId && other && other.state === "error" ? (
+          <p className="note">The second run could not be loaded. Showing this run alone.</p>
+        ) : null}
+        {paired && !otherSeries.points.length ? (
+          <p className="note">The second run has no timed steps, so its side stays empty.</p>
+        ) : null}
+        {paired && !series.points.length ? (
+          <p className="note">This run has no timed steps, so its side stays empty.</p>
+        ) : null}
+        {paired ? <div className="replaySideLabel">{legA}</div> : null}
+        {sideRuler(series, toolSegs, flight, "a")}
+        {paired ? <div className="replaySideLabel">{legB}</div> : null}
+        {paired ? sideRuler(otherSeries, otherToolSegs, otherFlight, "b") : null}
         <div className="legend">
           <span><span className="sw swModel"></span>model call. Bars end when the call landed. Bar starts are derived from recorded model time</span>
           <span>tick = one recorded step</span>
-          {toolSegs.length ? <span><span className="sw replayToolSw"></span>tool segment, named in its tooltip, widths true</span> : null}
-          {toolSegs.some((iv) => iv.kind === "approval") ? <span><span className="sw swStalled"></span>approval wait</span> : null}
+          {toolSegs.length || otherToolSegs.length ? <span><span className="sw replayToolSw"></span>tool segment, named in its tooltip, widths true</span> : null}
+          {[...toolSegs, ...otherToolSegs].some((iv) => iv.kind === "approval") ? <span><span className="sw swStalled"></span>approval wait</span> : null}
         </div>
         {unclosedNames.length ? (
           <p className="note">
             {[...new Set(unclosedNames)].join(", ") + " started but never recorded a finish and "
               + (unclosedNames.length === 1 ? "is" : "are") + " not drawn on the tool lane."}
+          </p>
+        ) : null}
+        {otherUnclosedNames.length ? (
+          <p className="note">
+            {legB + ": " + [...new Set(otherUnclosedNames)].join(", ") + " started but never recorded a finish and "
+              + (otherUnclosedNames.length === 1 ? "is" : "are") + " not drawn on the tool lane."}
           </p>
         ) : null}
         <div className="replayTransport">
@@ -253,27 +360,34 @@ export default function Replay({ data }) {
           aria-label="Replay position in milliseconds from the first recorded step"
           onChange={(e) => { setPlaying(false); seek(Number(e.target.value)); }}
         />
-        <div className="statlets">
-          <div className="statlet"><span>Calls landed by now</span><strong>{at.calls_landed + " of " + series.landings.length}</strong></div>
-          <div className="statlet"><span>Input tokens so far</span><strong>{fmt(at.input_tokens)}</strong></div>
-          <div className="statlet"><span>Output tokens so far</span><strong>{fmt(at.output_tokens)}</strong></div>
-          <div className="statlet"><span>Model time so far</span><strong>{fmtDur(at.model_ms)}</strong></div>
-          <div className="statlet"><span>Steps passed</span><strong>{at.passed_count + " of " + series.points.length}</strong></div>
-        </div>
+        {paired ? <div className="replaySideLabel">{legA}</div> : null}
+        {sideStatlets(series, at)}
+        {paired ? <div className="replaySideLabel">{legB}</div> : null}
+        {paired ? sideStatlets(otherSeries, otherAt) : null}
         {data.status === "running" ? (
           <p className="note">This run is still going. Replay shows the steps recorded when this run was picked. Pick it again later for the full recording.</p>
+        ) : null}
+        {otherData && otherData.status === "running" ? (
+          <p className="note">The second run is still going. Its side shows the steps recorded when it was loaded.</p>
         ) : null}
         {!series.landings.length ? (
           <p className="note">This run has no timed model call rows, so token and model counters stay as dashes. Steps still replay at their recorded times.</p>
         ) : null}
         {wallDiffers ? (
-          <p className="note">{"Stored wall time is " + fmtDur(data.wall_ms) + ". The timed steps span " + fmtDur(span) + " from first to last recorded step. The ruler uses the steps."}</p>
+          <p className="note">{"Stored wall time is " + fmtDur(data.wall_ms) + ". The timed steps span " + fmtDur(series.span_ms) + " from first to last recorded step. The ruler uses the steps."}</p>
         ) : null}
         {series.untimed.length ? (
           <p className="note">
             {series.untimed.length + (series.untimed.length === 1 ? " step has" : " steps have") + " no recorded time and "
               + (series.untimed.length === 1 ? "is" : "are") + " not on the ruler: "}
             {series.untimed.map((p) => p.label).join(", ") + "."}
+          </p>
+        ) : null}
+        {paired && otherSeries.untimed.length ? (
+          <p className="note">
+            {legB + ": " + otherSeries.untimed.length + (otherSeries.untimed.length === 1 ? " step has" : " steps have") + " no recorded time and "
+              + (otherSeries.untimed.length === 1 ? "is" : "are") + " not on the ruler: "}
+            {otherSeries.untimed.map((p) => p.label).join(", ") + "."}
           </p>
         ) : null}
       </section>
@@ -285,19 +399,21 @@ export default function Replay({ data }) {
           </div>
         </div>
         <div className="replaySteps">
-          {series.points.map((p, i) => {
-            const isCurrent = i === currentIndex;
+          {stepRows.map(({ p, side }, i) => {
+            const isCurrent = side === 0 ? p === at.current
+              : Boolean(otherAt && p === otherAt.current);
             return (
               <button
-                key={i}
+                key={side + "-" + i}
                 type="button"
-                ref={isCurrent ? currentRowRef : undefined}
+                ref={i === lastPassedRow ? currentRowRef : undefined}
                 className={"replayStep" + (p.offset_ms <= offset ? " done" : "") + (isCurrent ? " current" : "")}
                 onClick={() => { setPlaying(false); seek(p.offset_ms); }}
                 aria-label={"Move playhead to " + p.label + " at " + fmtDur(p.offset_ms)}
               >
                 <span className="replayStepAt">{fmtDur(p.offset_ms)}</span>
                 <span className={"replayStepDot kind-" + p.kind}></span>
+                {paired ? <span className="replayStepLeg">{side === 0 ? legA : legB}</span> : null}
                 <span className="replayStepLabel">{p.label}</span>
                 <span className="replayStepMeta">
                   {(p.kind === "model" ? "model " + fmtDur(p.wire_ms) + " · " : "") + localTime(p.at)}

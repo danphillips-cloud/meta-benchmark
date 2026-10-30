@@ -1,7 +1,5 @@
 # meta-benchmark
 
-<img src="docs/overview.png" width="720" alt="Overview: wall time split into model, tools, approval wait and Muse, with a plain-words summary">
-
 A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was Muse's own overhead. One command, runs locally, nothing to install beyond Muse Code. It tells you which part is slow before you guess.
 
 You can also compare models on the same prompt: two Meta models, or Meta against Anthropic.
@@ -124,10 +122,6 @@ The page refreshes every 2 seconds and follows a run in progress, so model calls
 - **X-ray** shows what Muse sent on each call, in recorded bytes.
 - **Radar** shows median wall time per prompt across Muse versions, and the change between the two newest versions with enough runs.
 - **Export** saves the selected run as CSV or JSON.
-
-<img src="docs/runs.png" width="720" alt="Runs: every run, sortable and filterable">
-
-<img src="docs/timeline.png" width="720" alt="Timeline: model calls and every step Muse recorded, in order">
 
 ## Reading the numbers
 
