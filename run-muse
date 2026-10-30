@@ -31,6 +31,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import muse_log  # noqa: E402
+from claude_stream import (  # noqa: E402,F401
+    feed_live_event, new_live_tracker, parse_claude_stream,
+    tracker_live_state)
 from muse_log import build_timeline, harvest_calls  # noqa: E402
 
 ROOT = Path(__file__).parent
@@ -420,7 +423,7 @@ def ensure_ui():
 
 
 def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
-                watch=None, stop_event=None):
+                watch=None, stop_event=None, lines_out=None):
     """Run one harness process, writing stdout to stdout_path and
     stderr to the sibling stderr.log. Returns exit state plus the
     stdout lines stamped with arrival time in ms since start.
@@ -430,10 +433,12 @@ def run_process(cmd, cwd, env, stdout_path, timeout, input_text=None,
     the result then carries needs_approval=tool. `stop_event`, when
     set by another thread, stops the process the same way Ctrl+C
     does. Race legs stop through it, since SIGINT lands only on
-    the main thread.
+    the main thread. `lines_out`, when given, is the list the
+    reader appends stamped lines to, so a watch can follow exact
+    arrivals as they land instead of re-reading the output file.
     """
     started = time.monotonic()
-    lines = []
+    lines = lines_out if lines_out is not None else []
     timed_out = False
     interrupted = False
     needs_approval = None
@@ -579,6 +584,63 @@ def _live_watch(session_id, seen, label=None):
     return None
 
 
+def format_claude_call_line(n, gap_ms, input_tokens):
+    """One landed Claude call, timed by arrival and labelled so.
+
+    gap_ms is time since the previous stream event arrived, by
+    the reader thread's own stamp. Claude Code reports no
+    per-call duration, so the line says "arrived". It never
+    claims model time.
+    """
+    gap = f"+{gap_ms / 1000:.1f} s" if gap_ms is not None else "–"
+    tok = f"{round(input_tokens / 1000)}k in" \
+        if input_tokens is not None else "– in"
+    return f"call {n} · arrived {gap} · {tok}"
+
+
+def _claude_live_watch(stamped, seen, label=None):
+    """Poll closure for run_process on Claude Code runs.
+
+    stamped is the very list the reader thread appends to, so
+    arrival stamps are exact and nothing re-reads the events
+    file. Events go through the shared tracker in
+    claude_stream, the same one the parser and the server
+    use. Prints one whole line per landed call and keeps the
+    live state line current, exactly like _live_watch does
+    for Muse runs. Always returns None. Claude Code in
+    dontAsk mode has no approval wait to stop on.
+    """
+    prefix = f"{label} · " if label else ""
+    tracker = seen["tracker"]
+    while seen["index"] < len(stamped):
+        arrival, line = stamped[seen["index"]]
+        seen["index"] += 1
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        gap_ms = None
+        if arrival is not None:
+            last = seen.get("last_arrival")
+            gap_ms = arrival - last if last is not None else arrival
+            seen["last_arrival"] = arrival
+        call = feed_live_event(tracker, e)
+        if call is not None:
+            with _PRINT_LOCK:
+                print(prefix + format_claude_call_line(
+                    len(tracker["calls"]), gap_ms,
+                    call["input_tokens"]), flush=True)
+        text_out = format_live_line(tracker_live_state(tracker))
+        if text_out != seen.get("live"):
+            seen["live"] = text_out
+            with _PRINT_LOCK:
+                if label or not sys.stdout.isatty():
+                    print(prefix + text_out, flush=True)
+                else:
+                    print("\r" + text_out + "   ", end="", flush=True)
+    return None
+
+
 def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
                   session_id=None, stop_event=None, leg_label=None):
     """Run one prompt through Muse. Returns report fields."""
@@ -686,96 +748,8 @@ def run_anthropic(prompt, run_dir, model, timeout):
             "usage_model": data.get("model"), "error_override": error}
 
 
-def _input_with_cache(usage):
-    parts = [usage.get("input_tokens"), usage.get("cache_read_input_tokens"),
-             usage.get("cache_creation_input_tokens")]
-    if all(p is None for p in parts):
-        return None
-    return sum(p or 0 for p in parts)
-
-
-def parse_claude_stream(stamped):
-    """Map stamped Claude Code stream-json lines onto report fields.
-
-    stamped holds (arrival_ms, line) pairs from run_process. One call
-    per unique assistant message.id. Claude Code reports no per-call
-    duration, and per-call output counts are partial snapshots, so
-    both stay None and output totals come from the result event.
-    result.usage.iterations only holds the last call, so it is not used.
-    """
-    events = []
-    for arrival, line in stamped:
-        try:
-            events.append((arrival, json.loads(line)))
-        except Exception:
-            continue
-    calls, timeline, seen = [], [], set()
-    result, session_id, usage_model = None, None, None
-    for i, (arrival, e) in enumerate(events):
-        session_id = session_id or e.get("session_id")
-        etype = e.get("type")
-        label = etype or "event"
-        if e.get("subtype"):
-            label += f" {e['subtype']}"
-        nxt = events[i + 1][0] if i + 1 < len(events) else None
-        timeline.append({
-            "at": e.get("timestamp"), "operation": label,
-            "duration_ms": (nxt - arrival) if nxt is not None else 0,
-            "wire_ms": None,
-        })
-        if etype == "assistant":
-            msg = e.get("message") or {}
-            mid = msg.get("id")
-            # Claude Code emits a "<synthetic>" message to carry an error.
-            # It is not a model call.
-            if msg.get("model") == "<synthetic>" or (mid and mid in seen):
-                continue
-            if mid:
-                seen.add(mid)
-            usage = msg.get("usage") or {}
-            usage_model = msg.get("model") or usage_model
-            # Meta's endpoint sends all-zero per-call usage. A real call
-            # always has input, so 0 means not reported.
-            input_tokens = _input_with_cache(usage) or None
-            calls.append({
-                "model": msg.get("model"), "duration_ms": None,
-                "input_tokens": input_tokens,
-                "output_tokens": None,
-                "cached_tokens": usage.get("cache_read_input_tokens")
-                                 if input_tokens else None,
-                "reasoning_tokens": None,
-            })
-        elif etype == "result":
-            result = e
-    parsed = {"session_id": session_id, "reply": "", "calls": calls,
-              "timeline": timeline, "usage_model": usage_model,
-              "api_ms": None, "ttft_ms": None, "num_turns": None,
-              "cost_usd": None, "totals": None, "is_error": False,
-              "api_error_status": None}
-    if result:
-        usage = result.get("usage") or {}
-        parsed.update({
-            "session_id": result.get("session_id") or session_id,
-            "reply": result.get("result") or "",
-            "api_ms": result.get("duration_api_ms"),
-            "ttft_ms": result.get("ttft_ms"),
-            "num_turns": result.get("num_turns"),
-            "cost_usd": result.get("total_cost_usd"),
-            "is_error": bool(result.get("is_error")),
-            "api_error_status": result.get("api_error_status"),
-            "totals": {
-                "input_tokens": _input_with_cache(usage),
-                "output_tokens": usage.get("output_tokens"),
-                "cached_tokens": usage.get("cache_read_input_tokens"),
-            },
-        })
-        models = list((result.get("modelUsage") or {}).keys())
-        if models and not parsed["usage_model"]:
-            parsed["usage_model"] = models[0]
-    return parsed
-
-
-def run_claude_code(prompt, run_dir, model, timeout, stop_event=None):
+def run_claude_code(prompt, run_dir, model, timeout, stop_event=None,
+                    leg_label=None):
     """Run one prompt through Claude Code in --bare mode."""
     workspace = run_dir / "workspace"
     workspace.mkdir()
@@ -801,12 +775,22 @@ def run_claude_code(prompt, run_dir, model, timeout, stop_event=None):
     env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
     env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
     env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
+    stamped = []
+    seen = {"index": 0, "tracker": new_live_tracker(),
+            "live": None, "last_arrival": None}
+    watch = lambda: _claude_live_watch(  # noqa: E731
+        stamped, seen, label=leg_label)
     try:
         proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
                            timeout, input_text=prompt,
-                           stop_event=stop_event)
+                           stop_event=stop_event, watch=watch,
+                           lines_out=stamped)
     except OSError as e:
         return _empty_result(" ".join(cmd), error=str(e))
+    watch()
+    if sys.stdout.isatty() and not leg_label \
+            and seen.get("live") is not None:
+        print(flush=True)
     parsed = parse_claude_stream(proc["lines"])
     exit_code = proc["exit_code"]
     error = None
@@ -972,15 +956,16 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     with _INDEX_LOCK, open(RUNS / "index.jsonl", "a") as f:
         f.write(json.dumps(running) + "\n")
     started = time.monotonic()
+    leg_label = f"{provider}/{recorded_model(provider, model)}" \
+        if raced else None
     try:
         if provider == "anthropic":
             r = run_anthropic(prompt, run_dir, model, timeout)
         elif provider == "claude-code":
             r = run_claude_code(prompt, run_dir, model, timeout,
-                                stop_event=stop_event)
+                                stop_event=stop_event,
+                                leg_label=leg_label)
         else:
-            leg_label = f"{provider}/{recorded_model(provider, model)}" \
-                if raced else None
             r = run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
                               session_id=live_session_id,
                               stop_event=stop_event, leg_label=leg_label)

@@ -16,11 +16,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+import claude_stream  # noqa: E402
 import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 42
+VERSION = 43
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -45,6 +46,45 @@ def live_calls(session_id):
     if not path:
         return [], []
     return muse_log.live_calls_from_log(path)
+
+
+_CLAUDE_LIVE_CACHE = {}
+
+
+def _claude_live(run):
+    """Live calls, timeline and state for a running Claude run.
+
+    Reads the run's events.jsonl, which run-muse writes and
+    flushes line by line while the harness runs. Empty values
+    when the run is not a running Claude Code run, or when the
+    file is not there yet. This server only ever reads. One
+    request can ask for the same run twice, and the page polls
+    every two seconds, so a parse is cached against the file
+    stamp and size. An appended line always changes one of
+    them, so a stale entry can never outlive new data.
+    """
+    empty = {"calls": [], "timeline": [], "live_state": None}
+    if run.get("provider") != "claude-code" \
+            or run.get("status") != "running" or not run.get("run_id"):
+        return empty
+    events_file = INDEX.parent / str(run["run_id"]) / "events.jsonl"
+    try:
+        stamp = events_file.stat()
+    except OSError:
+        return empty
+    version = (stamp.st_mtime_ns, stamp.st_size)
+    cached = _CLAUDE_LIVE_CACHE.get(run["run_id"])
+    if cached and cached[0] == version:
+        return cached[1]
+    try:
+        lines = events_file.read_text(errors="replace").splitlines()
+    except OSError:
+        return empty
+    live = claude_stream.live_from_lines(lines)
+    result = {"calls": live["calls"], "timeline": live["timeline"],
+              "live_state": live["live_state"]}
+    _CLAUDE_LIVE_CACHE[run["run_id"]] = (version, result)
+    return result
 
 
 def _is_stale_running(run):
@@ -140,6 +180,12 @@ def load_runs():
             if live:
                 r = dict(r)
                 r["calls"] = live
+        elif r.get("status") == "running" \
+                and r.get("provider") == "claude-code":
+            live = _claude_live(r)["calls"]
+            if live:
+                r = dict(r)
+                r["calls"] = live
         enriched.append(r)
     return enriched
 
@@ -189,11 +235,20 @@ def read_logs(run_id=None):
     sessions = [session_row(r) for r in reversed(runs)]
     selected = pick_selected(runs, run_id)
     live_timeline = []
+    claude_live = {"calls": [], "timeline": [], "live_state": None}
     if selected.get("status") == "running" and selected.get("session_id"):
         live, live_timeline = live_calls(selected["session_id"])
         if live:
             selected = dict(selected)
             selected["calls"] = live
+    if selected.get("status") == "running" \
+            and selected.get("provider") == "claude-code":
+        claude_live = _claude_live(selected)
+        if claude_live["calls"]:
+            selected = dict(selected)
+            selected["calls"] = claude_live["calls"]
+        if not live_timeline:
+            live_timeline = claude_live["timeline"]
     elapsed_ms = None
     if selected.get("status") == "running" and selected.get("at"):
         try:
@@ -263,6 +318,8 @@ def read_logs(run_id=None):
     live_state = None
     if selected.get("status") == "running" and selected_records is not None:
         live_state = muse_log.live_state(selected_records)
+    if live_state is None and selected.get("status") == "running":
+        live_state = claude_live["live_state"]
     xray = muse_log.input_traces(selected_records) \
         if selected_records is not None else []
     intervals = muse_log.tool_intervals(selected_records) \

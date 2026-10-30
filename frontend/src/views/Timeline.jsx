@@ -41,7 +41,7 @@ export default function Timeline({ data }) {
             <thead><tr><th className="num">#</th><th>Model</th><th className="num">Model time</th><th className="num">In</th><th className="num">Cached</th><th className="num">Out</th></tr></thead>
             <tbody>
               {!events.length
-                ? <tr><td colSpan={6} className="empty">{data.provider === "claude-code" && data.status === "running" ? "Claude Code runs appear when they finish" : "No calls yet."}</td></tr>
+                ? <tr><td colSpan={6} className="empty">No calls yet.</td></tr>
                 : events.map((ev, idx) => (
                   <tr key={idx}>
                     <td className="num">{fmt(events.length - idx)}</td>
