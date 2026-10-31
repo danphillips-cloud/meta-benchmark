@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, visibleCost,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, visibleCost,
   diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -149,6 +149,15 @@ test("shared filters: date range is inclusive and chips list active filters", ()
   assert.deepEqual(activeFilterChips({ provider: "meta", model: "", q: "hi", from: "2026-01-01", to: "", status: "", mode: "" }).map((c) => c.key),
     ["provider", "q", "date"]);
   assert.deepEqual(activeFilterChips({ provider: "", model: "", q: "", from: "", to: "" }), []);
+});
+
+test("sharedFilterCount: shared keys only, date range counts once", () => {
+  assert.equal(sharedFilterCount(null), 0);
+  assert.equal(sharedFilterCount({ q: "", provider: "", model: "", from: "", to: "" }), 0);
+  assert.equal(sharedFilterCount({ q: "", provider: "meta", model: "", from: "", to: "" }), 1);
+  assert.equal(sharedFilterCount({ q: "", provider: "", model: "", from: "2026-01-01", to: "2026-01-31" }), 1);
+  assert.equal(sharedFilterCount({ q: "hi", provider: "meta", model: "muse-x", from: "2026-01-01", to: "" }), 4);
+  assert.equal(sharedFilterCount({ q: "", provider: "", model: "", from: "", to: "", status: "failed", mode: "compare", version: "1.0" }), 0);
 });
 
 test("overviewScope: no filter keeps compare-set scoping, a filter overrides it", () => {

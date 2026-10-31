@@ -217,6 +217,12 @@ export function hasSharedFilters(f) {
   return Boolean(f && (f.q || f.provider || f.model || f.from || f.to));
 }
 
+export function sharedFilterCount(f) {
+  if (!f) return 0;
+  return [f.q, f.provider, f.model].filter(Boolean).length
+    + (f.from || f.to ? 1 : 0);
+}
+
 export function inDateRange(at, from, to) {
   if (!from && !to) return true;
   const t = at ? new Date(at).getTime() : NaN;
