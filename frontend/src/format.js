@@ -280,6 +280,67 @@ export function activeFilterChips(f) {
   });
 }
 
+// --- Getting started walkthrough -----------------------------------
+// Steps are plain data so ordering and route choices stay testable
+// without a DOM. Copy follows the issue list and the README numbers
+// language. Routes carry no query string. AppShell preserves it.
+export function walkthroughSteps({ selectedId } = {}) {
+  const overview = selectedId ? "/runs/" + encodeURIComponent(selectedId) : "/";
+  const timeline = selectedId ? "/timeline/" + encodeURIComponent(selectedId) : "/timeline";
+  return [
+    { key: "terminal", route: null, target: '[data-tour="terminal"]',
+      title: "Runs start in the terminal",
+      body: "Run ./run-muse and type a prompt. Every run appears here with its timing recorded." },
+    { key: "split", route: overview, target: '[data-tour="split"]',
+      title: "Where the time went",
+      body: "Wall is the whole run. It splits into Model, Tools, Approval wait, and Muse, all from timestamps in Muse's own log." },
+    { key: "story", route: overview, target: '[data-tour="story"]',
+      title: "The story of a run",
+      body: "Once a run exists, this panel explains what happened and why it was slow, from recorded data only. A dash means the harness did not report it. Nothing is estimated." },
+    { key: "per-call", route: overview, target: '[data-tour="per-call"]',
+      title: "Every model call in order",
+      body: "Model time and input tokens for each call in this run. One tall bar is usually where a slow run went." },
+    { key: "runs", route: "/runs", target: '[data-view-panel="runs"] .runsTable thead',
+      title: "Every run, one table",
+      body: "Sort and filter all your runs here. Click any row to open that run in Overview." },
+    { key: "compare", route: "/compare", target: '[data-view-panel="compare"] .panel',
+      title: "Same prompt, side by side",
+      body: "Compare sets line up medians over completed runs only. The fastest leg is marked fastest." },
+    { key: "timeline", route: timeline,
+      target: '[data-view-panel="timeline"] section.panel:nth-of-type(2) .panelHead',
+      title: "Every recorded step",
+      body: "Timeline lists each step Muse recorded for a run, in order. The middle column is time to the next step, not step cost." },
+  ];
+}
+
+export function shouldCloseTourOnEscape(event) {
+  if (!event || event.defaultPrevented) return false;
+  const target = event.target;
+  if (!target || typeof target.closest !== "function") return true;
+  // Native select and date controls own Escape. The shared
+  // filter panel owns it too. Its handler runs before this
+  // document listener and marks the event, but check anyway.
+  if (target.closest("select, input[type='date']")) return false;
+  if (target.closest("#overviewSharedFilters, [data-filter-toggle]")) return false;
+  return true;
+}
+
+export const WALKTHROUGH_SEEN_KEY = "muse-walkthrough-seen";
+
+export function walkthroughSeen(storage) {
+  try {
+    return Boolean(storage && storage.getItem(WALKTHROUGH_SEEN_KEY));
+  } catch (e) {
+    return false;
+  }
+}
+
+export function markWalkthroughSeen(storage) {
+  try {
+    if (storage) storage.setItem(WALKTHROUGH_SEEN_KEY, "1");
+  } catch (e) { /* seen flag is a nicety, never a blocker */ }
+}
+
 // Clicking a column header cycles asc -> desc -> back to the default.
 export function nextRunsSort(current, sortId) {
   if (current.sort !== sortId) return { sort: sortId, dir: sortId === "at" ? "desc" : "asc" };

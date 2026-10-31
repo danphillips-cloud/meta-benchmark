@@ -251,7 +251,7 @@ export default function Overview({ data, onSelect, onGoto }) {
           {"Live: " + liveStateText(data.live_state)}
         </div>
       ) : null}
-      <div className="stats">
+      <div className="stats" data-tour="split">
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
           detail={(hasEvents ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
@@ -277,7 +277,7 @@ export default function Overview({ data, onSelect, onGoto }) {
       </div>
       <p className="note" style={{ display: notes.length ? "" : "none" }}>{notes.join(" ")}</p>
       {diag ? (
-        <section className="panel" aria-label="Why was this slow" style={{ marginTop: 12 }}>
+        <section className="panel" aria-label="Why was this slow" data-tour="story" style={{ marginTop: 12 }}>
           <div className="panelHead"><div><div className="pt">Why was this slow</div><div className="ps">Recorded data only · ranked causes · no model call, no estimates</div></div></div>
           {diag.verdict ? <div className="diagVerdict">{diag.verdict}</div> : null}
           <div className="diagBuckets">
@@ -316,14 +316,14 @@ export default function Overview({ data, onSelect, onGoto }) {
           ) : null}
         </section>
       ) : whatLines.length ? (
-        <section className="panel" aria-label="What happened" style={{ marginTop: 12 }}>
+        <section className="panel" aria-label="What happened" data-tour="story" style={{ marginTop: 12 }}>
           <div className="panelHead"><div><div className="pt">What happened</div><div className="ps">Recorded data only · no estimates</div></div></div>
           <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.7, fontSize: 13.5 }}>
             {whatLines.map((line, i) => <li key={i}>{line}</li>)}
           </ul>
         </section>
       ) : null}
-      <section className="panel" aria-label="Per-call breakdown" style={{ marginTop: 12 }}>
+      <section className="panel" aria-label="Per-call breakdown" data-tour="per-call" style={{ marginTop: 12 }}>
         <div className="panelHead"><div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div><span style={{ display: "flex", gap: 14, marginLeft: "auto", flex: "none" }}><button className="viewAll" type="button" onClick={() => onGoto("replay")}>Replay this run →</button><button className="viewAll" type="button" onClick={() => onGoto("xray")}>X-ray this run →</button></span></div>
         <PerCallChart events={events} provider={data.provider || sel.provider} />
         {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span>{retryTotal > 0 ? <span><span className="sw swStalled"></span>stalled</span> : null}<span>line = input tokens</span></div> : null}

@@ -3,9 +3,10 @@ import { createRoot } from "react-dom/client";
 import {
   BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useSearchParams,
 } from "react-router";
-import { FILTER_KEYS, activeFilterChips, dataSignature, parseRunsQuery } from "./format.js";
+import { FILTER_KEYS, activeFilterChips, dataSignature, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
 import { deleteRun, download, fetchLogs } from "./api.js";
 import { MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
+import Walkthrough from "./components/walkthrough.jsx";
 import Overview from "./views/Overview.jsx";
 import Runs from "./views/Runs.jsx";
 import Compare from "./views/Compare.jsx";
@@ -68,6 +69,43 @@ function AppShell() {
   const [paused, setPaused] = useState(false);
   const [sourceText, setSourceText] = useState("Waiting for logs…");
   const [exportOpen, setExportOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourSteps, setTourSteps] = useState(null);
+  const tourButtonRef = useRef(null);
+  const tourReturnRef = useRef(null);
+  const tourAutoRef = useRef(false);
+  const tourStorage = () => {
+    try { return window.localStorage; } catch (e) { return null; }
+  };
+  const openTour = useCallback(() => {
+    if (tourOpen) return;
+    tourReturnRef.current = location.pathname + location.search;
+    // Snapshot the steps at open time. Live data can change
+    // the selection mid-tour, and step 7 must stay on the run
+    // the tour started with.
+    setTourSteps(walkthroughSteps({ selectedId: data.selected || "" }));
+    setTourOpen(true);
+  }, [tourOpen, location.pathname, location.search, data.selected]);
+  const closeTour = useCallback(() => {
+    markWalkthroughSeen(tourStorage());
+    setTourOpen(false);
+    setTourSteps(null);
+    const back = tourReturnRef.current;
+    tourReturnRef.current = null;
+    const onTourRoute = (tourSteps || []).some(
+      (s) => s.route && s.route === location.pathname);
+    if (back && onTourRoute
+        && back !== location.pathname + location.search) {
+      navigate(back, { replace: true });
+    }
+    if (tourButtonRef.current) tourButtonRef.current.focus();
+  }, [tourSteps, location.pathname, location.search, navigate]);
+  useEffect(() => {
+    if (loaded && !tourAutoRef.current) {
+      tourAutoRef.current = true;
+      if (!walkthroughSeen(tourStorage())) openTour();
+    }
+  }, [loaded, openTour]);
   const sigRef = useRef("");
   const dataRef = useRef(EMPTY);
 
@@ -218,7 +256,8 @@ function AppShell() {
               <NavIcon view={key} />{label}
             </Link>
           ))}
-          <div className="sideFoot">
+          <button ref={tourButtonRef} type="button" className="navItem" onClick={openTour}>Getting started</button>
+          <div className="sideFoot" data-tour="terminal">
             <span className={"live" + (paused ? " paused" : "")}>{paused ? "● Paused (tab hidden)" : "● Live"}</span>
             <span>{sourceText}</span><br />Runs start in the terminal: <code className="inline">./run-muse</code>
           </div>
@@ -260,6 +299,11 @@ function AppShell() {
           <p className="foot">meta-benchmark is an unofficial local tool. It is not made by, or affiliated with, Meta. All run data stays on this machine.</p>
         </div>
       </main>
+      {tourOpen && tourSteps ? (
+        <Walkthrough steps={tourSteps}
+          onNavigate={(route) => { if (route !== location.pathname) navigate(route + location.search, { replace: true }); }}
+          onClose={closeTour} />
+      ) : null}
     </>
   );
 }

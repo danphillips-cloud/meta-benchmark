@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, visibleCost,
-  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -180,6 +180,55 @@ test("shouldCloseFilterPanelOnEscape: native controls keep Escape, panel search 
   assert.equal(shouldCloseFilterPanelOnEscape(target("#overviewSharedFilters, [data-filter-toggle]")), true);
   assert.equal(shouldCloseFilterPanelOnEscape(target("select, input[type='date']", "#overviewSharedFilters, [data-filter-toggle]")), false);
   assert.equal(shouldCloseFilterPanelOnEscape(target()), false);
+});
+
+test("walkthroughSteps: seven steps in issue order with honest routes", () => {
+  const populated = walkthroughSteps({ selectedId: "run 1" });
+  assert.deepEqual(populated.map((s) => s.key),
+    ["terminal", "split", "story", "per-call", "runs", "compare", "timeline"]);
+  assert.equal(populated[0].route, null);
+  assert.equal(populated[1].route, "/runs/run%201");
+  assert.equal(populated[6].route, "/timeline/run%201");
+  const empty = walkthroughSteps();
+  assert.equal(empty[1].route, "/");
+  assert.equal(empty[6].route, "/timeline");
+  assert.ok(populated.every((s) => s.title && s.body && s.target));
+});
+
+test("walkthroughSteps: story title fits both panels and small targets stay small", () => {
+  const steps = walkthroughSteps({});
+  assert.equal(steps[2].title, "The story of a run");
+  assert.ok(steps[4].target.includes(".runsTable thead"));
+  assert.ok(steps[5].target.includes(".panel"));
+  assert.ok(steps[6].target.includes("section.panel:nth-of-type(2) .panelHead"));
+  assert.ok(!steps.some((s) => s.target === "runs" || s.target === "compare" || s.target === "timeline"));
+});
+
+test("shouldCloseTourOnEscape: owned keys pass through, plain targets close", () => {
+  const target = (...matches) => ({
+    closest: (selector) => matches.includes(selector) ? {} : null,
+  });
+  assert.equal(shouldCloseTourOnEscape(null), false);
+  assert.equal(shouldCloseTourOnEscape({ defaultPrevented: true, target: target() }), false);
+  assert.equal(shouldCloseTourOnEscape({ target: target("select, input[type='date']") }), false);
+  assert.equal(shouldCloseTourOnEscape({ target: target("#overviewSharedFilters, [data-filter-toggle]") }), false);
+  assert.equal(shouldCloseTourOnEscape({ target: target() }), true);
+  assert.equal(shouldCloseTourOnEscape({}), true);
+});
+
+test("walkthrough seen flag: round trip, missing and throwing storage", () => {
+  const store = new Map();
+  const fake = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, v),
+  };
+  assert.equal(walkthroughSeen(fake), false);
+  markWalkthroughSeen(fake);
+  assert.equal(walkthroughSeen(fake), true);
+  assert.equal(walkthroughSeen(null), false);
+  const throwing = { getItem() { throw new Error("denied"); }, setItem() { throw new Error("denied"); } };
+  assert.equal(walkthroughSeen(throwing), false);
+  markWalkthroughSeen(throwing);
 });
 
 test("overviewScope: no filter keeps compare-set scoping, a filter overrides it", () => {
