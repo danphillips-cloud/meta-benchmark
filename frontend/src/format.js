@@ -451,6 +451,48 @@ export function brushCentered(range, centerFloat, count) {
   return clampBrush([na, na + span], count);
 }
 
+// Arrow keys on a focused traveller move it one run, Home and End
+// send it to the ends. Returns null for keys the brush ignores.
+export function brushKey(range, edge, key, count) {
+  const [a, b] = clampBrush(range, count);
+  const at = edge === "left" ? a : b;
+  const to = key === "ArrowLeft" ? at - 1 : key === "ArrowRight" ? at + 1
+    : key === "Home" ? 0 : key === "End" ? count - 1 : null;
+  return to == null ? null : brushResize([a, b], edge, to, count);
+}
+
+// The brush window is stored with the run-id signature it was set
+// on. It holds while the ids are unchanged or new runs only append
+// at the end of the oldest-first order. Anything else means the
+// run set changed, so the chart falls back to the full range.
+export function brushWindow(win, sig) {
+  if (!win || !win.range) return null;
+  if (win.sig === sig || (win.sig !== "" && sig.startsWith(win.sig + "|"))) return win.range;
+  return null;
+}
+
+// Chart tooltip box: right of the point, flipped left when it would
+// spill past the chart, and clamped inside the chart box.
+export function tipPosition(x, y, w, h, width, height) {
+  let left = x + 14;
+  if (left + w > width) left = x - 14 - w;
+  return {
+    left: Math.max(0, left),
+    top: Math.min(Math.max(0, y - 12), Math.max(0, height - h)),
+  };
+}
+
+// Keyboard step through chart bars. index -1 means none is active
+// yet. Returns null for keys the chart ignores.
+export function chartKeyIndex(key, index, count) {
+  if (count <= 0) return null;
+  if (key === "ArrowRight") return index < 0 ? 0 : Math.min(count - 1, index + 1);
+  if (key === "ArrowLeft") return index < 0 ? count - 1 : Math.max(0, index - 1);
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return null;
+}
+
 export function chartDatum(s, selectedId) {
   const wall = s.wall_ms == null ? null : s.wall_ms;
   const hasModel = s.model_ms != null && s.model_ms > 0 && wall != null;

@@ -231,6 +231,7 @@
   .svgChartWrap { position:relative; }
   .svgChartWrap svg { display:block; }
   .svgChartTip { position:absolute; pointer-events:none; z-index:5; }
+  .srOnly { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
   .chartTip { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:12px; line-height:1.55; color:var(--ink); box-shadow:0 8px 22px rgba(0,0,0,.14); font-variant-numeric:tabular-nums; max-width:300px; }
   .chartTipTitle { font-weight:650; margin-bottom:2px; overflow-wrap:anywhere; }
   .chartTipPrompt { color:var(--muted); overflow-wrap:anywhere; }

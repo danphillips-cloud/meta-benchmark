@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
-  brushCentered, brushPan, brushResize, clampBrush, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  brushCentered, brushKey, brushPan, brushResize, brushWindow, chartKeyIndex, clampBrush, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -332,6 +332,47 @@ test("brush helpers: resize stops at the other handle, pan and jump keep span", 
   assert.deepEqual(brushCentered([0, 5], 20, 30), [17, 22]);
   assert.deepEqual(brushCentered([10, 15], 1, 30), [0, 5]);
   assert.deepEqual(brushCentered([0, 29], 15, 30), [0, 29]);
+});
+
+test("brushKey: arrows nudge one run, Home and End jump, handles never cross", () => {
+  assert.deepEqual(brushKey([5, 10], "left", "ArrowLeft", 30), [4, 10]);
+  assert.deepEqual(brushKey([5, 10], "left", "ArrowRight", 30), [6, 10]);
+  assert.deepEqual(brushKey([5, 10], "right", "ArrowRight", 30), [5, 11]);
+  assert.deepEqual(brushKey([5, 10], "left", "End", 30), [10, 10]);
+  assert.deepEqual(brushKey([5, 10], "right", "Home", 30), [5, 5]);
+  assert.deepEqual(brushKey([0, 10], "left", "ArrowLeft", 30), [0, 10]);
+  assert.deepEqual(brushKey([5, 29], "right", "ArrowRight", 30), [5, 29]);
+  assert.equal(brushKey([5, 10], "left", "Enter", 30), null);
+});
+
+test("brushWindow: holds on same ids and appends, resets on any other change", () => {
+  const win = { sig: "a|b|c", range: [1, 2] };
+  assert.deepEqual(brushWindow(win, "a|b|c"), [1, 2]);
+  assert.deepEqual(brushWindow(win, "a|b|c|d"), [1, 2]);
+  assert.equal(brushWindow(win, "a|b|cd"), null);
+  assert.equal(brushWindow(win, "b|c|d"), null);
+  assert.equal(brushWindow(win, "a|b"), null);
+  assert.equal(brushWindow(null, "a|b|c"), null);
+  assert.equal(brushWindow({ sig: "", range: [0, 0] }, "a"), null);
+});
+
+test("tipPosition: right of the point, flips left, clamps inside the box", () => {
+  assert.deepEqual(tipPosition(100, 50, 120, 80, 600, 232), { left: 114, top: 38 });
+  assert.deepEqual(tipPosition(550, 50, 120, 80, 600, 232), { left: 416, top: 38 });
+  assert.deepEqual(tipPosition(60, 220, 120, 80, 150, 232), { left: 0, top: 152 });
+  assert.deepEqual(tipPosition(10, 5, 120, 300, 600, 232), { left: 24, top: 0 });
+});
+
+test("chartKeyIndex: arrows step and stop at the ends, first press enters", () => {
+  assert.equal(chartKeyIndex("ArrowRight", -1, 5), 0);
+  assert.equal(chartKeyIndex("ArrowLeft", -1, 5), 4);
+  assert.equal(chartKeyIndex("ArrowRight", 2, 5), 3);
+  assert.equal(chartKeyIndex("ArrowRight", 4, 5), 4);
+  assert.equal(chartKeyIndex("ArrowLeft", 0, 5), 0);
+  assert.equal(chartKeyIndex("Home", 3, 5), 0);
+  assert.equal(chartKeyIndex("End", 0, 5), 4);
+  assert.equal(chartKeyIndex("Enter", 2, 5), null);
+  assert.equal(chartKeyIndex("ArrowRight", -1, 0), null);
 });
 
 // --- Diagnose a slow run -------------------------------------------
