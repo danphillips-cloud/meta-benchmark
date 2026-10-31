@@ -147,6 +147,8 @@ ANTHROPIC_API_KEY=your-anthropic-key
 
 The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
 
+On your first visit a short walkthrough opens and points at each part of the page in turn. After that it lives behind Getting started in the sidebar.
+
 - **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
 - **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
 - **Compare** shows medians for a compare set, with the fastest marked.
