@@ -208,19 +208,47 @@ export function buildRunsQuery({ q, provider, model, status, mode, version, sort
 // and the Runs table. Status/mode stay Runs-only extras on top of it.
 export const FILTER_KEYS = ["q", "provider", "model", "status", "mode", "version", "from", "to"];
 
+const FILTER_CHIP_SPECS = [
+  { key: "provider", shared: true, fields: ["provider"], label: (f) => f.provider ? "Provider: " + f.provider : null },
+  { key: "model", shared: true, fields: ["model"], label: (f) => f.model ? "Model: " + f.model : null },
+  { key: "q", shared: true, fields: ["q"], label: (f) => f.q ? "Prompt: " + f.q : null },
+  { key: "date", shared: true, fields: ["from", "to"], label: (f) => (f.from || f.to) ? "Date: " + (f.from || "…") + " → " + (f.to || "…") : null },
+  { key: "status", shared: false, fields: ["status"], label: (f) => f.status ? "Status: " + f.status : null },
+  { key: "mode", shared: false, fields: ["mode"], label: (f) => f.mode ? "Mode: " + f.mode : null },
+  { key: "version", shared: false, fields: ["version"], label: (f) => f.version ? "Version: " + f.version : null },
+];
+
 export function parseSharedFilters(params) {
   const s = parseRunsQuery(params);
-  return { q: s.q, provider: s.provider, model: s.model, from: s.from, to: s.to };
-}
-
-export function hasSharedFilters(f) {
-  return Boolean(f && (f.q || f.provider || f.model || f.from || f.to));
+  const shared = {};
+  FILTER_CHIP_SPECS.filter((spec) => spec.shared)
+    .flatMap((spec) => spec.fields)
+    .forEach((field) => { shared[field] = s[field]; });
+  return shared;
 }
 
 export function sharedFilterCount(f) {
   if (!f) return 0;
-  return [f.q, f.provider, f.model].filter(Boolean).length
-    + (f.from || f.to ? 1 : 0);
+  const sharedKeys = new Set(
+    FILTER_CHIP_SPECS.filter((spec) => spec.shared).map((spec) => spec.key));
+  return activeFilterChips(f).filter((chip) => sharedKeys.has(chip.key)).length;
+}
+
+export function hasSharedFilters(f) {
+  return sharedFilterCount(f) > 0;
+}
+
+export function syncedFilterPanelOpen(previous, next, open, internalChange = false) {
+  if (internalChange) return open;
+  const was = hasSharedFilters(previous);
+  const is = hasSharedFilters(next);
+  return was === is ? open : is;
+}
+
+export function shouldCloseFilterPanelOnEscape(target) {
+  if (!target || typeof target.closest !== "function") return false;
+  if (target.closest("select, input[type='date']")) return false;
+  return Boolean(target.closest("#overviewSharedFilters, [data-filter-toggle]"));
 }
 
 export function inDateRange(at, from, to) {
@@ -245,16 +273,11 @@ export function overviewScope(d, filters) {
 }
 
 export function activeFilterChips(f) {
-  const chips = [];
-  if (!f) return chips;
-  if (f.provider) chips.push({ key: "provider", label: "Provider: " + f.provider });
-  if (f.model) chips.push({ key: "model", label: "Model: " + f.model });
-  if (f.q) chips.push({ key: "q", label: "Prompt: " + f.q });
-  if (f.from || f.to) chips.push({ key: "date", label: "Date: " + (f.from || "…") + " → " + (f.to || "…") });
-  if (f.status) chips.push({ key: "status", label: "Status: " + f.status });
-  if (f.mode) chips.push({ key: "mode", label: "Mode: " + f.mode });
-  if (f.version) chips.push({ key: "version", label: "Version: " + f.version });
-  return chips;
+  if (!f) return [];
+  return FILTER_CHIP_SPECS.flatMap((spec) => {
+    const label = spec.label(f);
+    return label ? [{ key: spec.key, label }] : [];
+  });
 }
 
 // Clicking a column header cycles asc -> desc -> back to the default.
