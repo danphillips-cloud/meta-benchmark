@@ -51,25 +51,21 @@ export function CopyIconButton({ text, label = "Copy" }) {
     await copyText(text);
     setCopied(true);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(false), 2000);
+    timer.current = setTimeout(() => setCopied(false), 1500);
   };
+  // The icon never changes. A visible "Copied" bubble confirms the copy,
+  // so it shows on touch screens where a hover tooltip never appears.
+  // The status region stays mounted so screen readers announce it.
   return (
-    <button
-      className={"iconBtn" + (copied ? " copied" : "")}
-      type="button"
-      aria-label={copied ? "Copied" : label}
-      title={copied ? "Copied" : label}
-      onClick={onCopy}
-    >
-      {copied ? (
-        <svg {...svgProps}><path d="M20 6 9 17l-5-5" /></svg>
-      ) : (
+    <span className="copyWrap">
+      <button className="iconBtn" type="button" aria-label={label} title={label} onClick={onCopy}>
         <svg {...svgProps}>
           <rect x="8" y="8" width="14" height="14" rx="2" />
           <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
         </svg>
-      )}
-    </button>
+      </button>
+      <span className={"copyToast" + (copied ? " show" : "")} role="status" aria-live="polite">{copied ? "Copied" : ""}</span>
+    </span>
   );
 }
 

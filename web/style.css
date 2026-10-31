@@ -81,9 +81,11 @@
   .iconBtn { display:inline-grid; place-items:center; width:30px; height:30px; padding:0; color:var(--muted); background:var(--card); border:1px solid transparent; border-radius:7px; cursor:pointer; opacity:.75; transition:color .15s ease, background .15s ease, border-color .15s ease, opacity .15s ease; }
   .iconBtn svg { width:16px; height:16px; }
   .iconBtn:hover, .iconBtn:focus-visible { color:var(--ink); background:var(--chip); border-color:var(--line); opacity:1; }
-  .iconBtn.copied { color:var(--st-ok); background:var(--st-ok-bg); border-color:transparent; opacity:1; }
+  .copyWrap { position:relative; display:inline-flex; }
+  .copyToast { position:absolute; top:calc(100% + 6px); right:0; z-index:3; padding:3px 8px; border-radius:6px; font-size:12px; font-weight:600; color:var(--card); background:var(--ink); white-space:nowrap; pointer-events:none; opacity:0; transform:translateY(-2px); transition:opacity .15s ease, transform .15s ease; }
+  .copyToast.show { opacity:1; transform:none; }
   .promptWindowWrap:hover .iconBtn, .promptWindowWrap:focus-within .iconBtn, .promptHead:hover .iconBtn, .promptHead:focus-within .iconBtn { opacity:1; }
-  @media (prefers-reduced-motion: reduce) { #latestPrompt.promptLong, .promptChevron, .iconBtn { transition:none; } }
+  @media (prefers-reduced-motion: reduce) { #latestPrompt.promptLong, .promptChevron, .iconBtn, .copyToast { transition:none; } }
   #runChips { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
   #error { display:none; margin:12px 0 0; padding:9px 11px; border-radius:8px; background:var(--errbg); color:var(--bad); border:1px solid var(--errline); font-size:13px; }
   .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:12px; }
