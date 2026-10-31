@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, buildRunsQuery, costNote, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts, visibleCost } from "../format.js";
+import { DID_NOT_COMPLETE, buildRunsQuery, costNote, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, hasSharedFilters, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, visibleCost } from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -91,8 +91,42 @@ export default function Overview({ data, onSelect, onGoto }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const runsState = parseRunsQuery(searchParams);
   const shared = parseSharedFilters(searchParams);
-  const updateFilters = (patch) => setSearchParams(buildRunsQuery({ ...runsState, ...patch }), { replace: true });
+  const sharedSignature = JSON.stringify(shared);
+  const previousSharedRef = useRef(shared);
+  const internalSharedSignatureRef = useRef(null);
+  const updateFilters = (patch) => {
+    internalSharedSignatureRef.current = JSON.stringify({ ...shared, ...patch });
+    setSearchParams(buildRunsQuery({ ...runsState, ...patch }), { replace: true });
+  };
   const { providers, models } = filterOptions(data.sessions || []);
+  const [filtersOpen, setFiltersOpen] = useState(() => hasSharedFilters(shared));
+  const filterToggleRef = useRef(null);
+  useEffect(() => {
+    const internalChange = internalSharedSignatureRef.current === sharedSignature;
+    const nextOpen = syncedFilterPanelOpen(
+      previousSharedRef.current, shared, filtersOpen, internalChange);
+    previousSharedRef.current = shared;
+    if (internalChange) internalSharedSignatureRef.current = null;
+    if (nextOpen !== filtersOpen) {
+      setFiltersOpen(nextOpen);
+      if (!nextOpen && document.activeElement?.closest?.("#overviewSharedFilters")
+          && filterToggleRef.current) {
+        filterToggleRef.current.focus();
+      }
+    }
+  }, [shared, sharedSignature, filtersOpen]);
+  const sharedCount = sharedFilterCount(shared);
+  const closeFilters = () => {
+    setFiltersOpen(false);
+    if (filterToggleRef.current) filterToggleRef.current.focus();
+  };
+  const onScopeBarKeyDown = (e) => {
+    if (e.key === "Escape" && filtersOpen
+        && shouldCloseFilterPanelOnEscape(e.target)) {
+      e.preventDefault();
+      closeFilters();
+    }
+  };
   const [replyExpanded, setReplyExpanded] = useState(false);
   const reply = data.reply || "";
   useEffect(() => { setReplyExpanded(false); }, [reply]);
@@ -294,9 +328,19 @@ export default function Overview({ data, onSelect, onGoto }) {
         <PerCallChart events={events} provider={data.provider || sel.provider} />
         {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span>{retryTotal > 0 ? <span><span className="sw swStalled"></span>stalled</span> : null}<span>line = input tokens</span></div> : null}
       </section>
-      <section className="panel" aria-label="Shared filters" style={{ marginTop: 12, padding: "12px 16px" }}>
-        <div className="label" style={{ marginBottom: 8 }}>Filters · shared with Runs</div>
-        <FilterBar state={shared} providers={providers} models={models} onChange={updateFilters} />
+      <section className="panel scopePanel" aria-label="Shared filters" onKeyDown={onScopeBarKeyDown}>
+        <div className="scopeBar">
+          <div className="scopeBarText">
+            <span className="label">Scope</span>
+            <span className="scopeBarLabel">Shared with Runs</span>
+          </div>
+          <button ref={filterToggleRef} data-filter-toggle className="btn" type="button" aria-expanded={String(filtersOpen)} aria-controls="overviewSharedFilters" onClick={() => setFiltersOpen(!filtersOpen)}>
+            {"Filters" + (sharedCount ? " · " + sharedCount : "") + (filtersOpen ? " ▴" : " ▾")}
+          </button>
+        </div>
+        <div id="overviewSharedFilters" className="scopeFilters" hidden={!filtersOpen}>
+          <FilterBar state={shared} providers={providers} models={models} onChange={updateFilters} />
+        </div>
       </section>
       <div className="panelGrid">
         <div className="colStack">
