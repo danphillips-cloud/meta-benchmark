@@ -368,6 +368,89 @@ export const fmtSec = (ms) => (ms == null ? "–" : (ms / 1000).toFixed(3) + " s
 export const BRUSH_MIN_RUNS = 12;
 export const showBrush = (count) => count > BRUSH_MIN_RUNS;
 
+// Round axis ticks from 0 up to at least max. Steps come from a
+// 1, 2, 2.5, 5 ladder so labels stay short at any scale.
+export function linearTicks(max, intervals = 4) {
+  if (!(max > 0)) return { top: 1, ticks: [0, 1], step: 1 };
+  const raw = max / intervals;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const n = Math.ceil(max / step);
+  const ticks = Array.from({ length: n + 1 }, (_, i) => Number((i * step).toFixed(10)));
+  return { top: ticks[n], ticks, step: Number(step.toFixed(10)) };
+}
+
+// Seconds tick label with exactly the decimals the step needs, so
+// a 0.25 step reads 0.25s, 0.50s and never rounds into a wrong
+// value. Whole steps show no decimals.
+export function fmtTickSec(v, step) {
+  const s = Number((step || 0).toFixed(10));
+  let decimals = 0;
+  if (s > 0 && s < 1) decimals = -Math.floor(Math.log10(s));
+  else if (s >= 1 && s < 10) decimals = 0;
+  const mantissa = s > 0 ? s / 10 ** Math.floor(Math.log10(s)) : 0;
+  if (Math.abs(mantissa - 2.5) < 1e-9) decimals += 1;
+  if (s >= 10) decimals = 0;
+  return Number(v).toFixed(decimals) + "s";
+}
+
+// Which bar indexes get an x label. First and last always show.
+// If the last would sit closer than one label width to its
+// neighbour, the neighbour gives way so labels never collide.
+export function labelIndexes(count, plotWidth, minLabelWidth = 56) {
+  if (count <= 0) return [];
+  if (count === 1) return [0];
+  const fit = Math.max(1, Math.floor(plotWidth / minLabelWidth));
+  const stride = Math.max(1, Math.ceil(count / fit));
+  const out = [];
+  for (let i = 0; i < count; i += stride) out.push(i);
+  const last = count - 1;
+  if (out[out.length - 1] !== last) {
+    const gapPx = (last - out[out.length - 1]) * (plotWidth / count);
+    if (out.length > 1 && gapPx < minLabelWidth) out[out.length - 1] = last;
+    else out.push(last);
+  }
+  return out;
+}
+
+// Brush window as inclusive run indexes, always inside the data
+// and at least one run wide.
+export function clampBrush(range, count) {
+  if (!count || count < 1) return [0, 0];
+  let [a, b] = range || [0, count - 1];
+  a = Math.min(Math.max(0, Math.floor(a)), count - 1);
+  b = Math.min(Math.max(a, Math.floor(b)), count - 1);
+  return [a, b];
+}
+
+// Dragging one traveller. Each handle stops at the other, so a
+// drag past it pins the window to that single run instead of
+// collapsing or swapping sides.
+export function brushResize(range, edge, index, count) {
+  const [a, b] = clampBrush(range, count);
+  if (edge === "left") return clampBrush([Math.min(index, b), b], count);
+  return clampBrush([a, Math.max(index, a)], count);
+}
+
+// Dragging the window itself. grabOffset is how far into the
+// window the pointer grabbed, in fractional runs. Span is kept.
+export function brushPan(range, grabOffset, indexFloat, count) {
+  const [a, b] = clampBrush(range, count);
+  const span = b - a;
+  const na = Math.min(Math.max(0, Math.round(indexFloat - grabOffset)), count - 1 - span);
+  return clampBrush([na, na + span], count);
+}
+
+// Clicking the strip outside the window recentres the window on
+// that point, clamped at both ends. Span is kept.
+export function brushCentered(range, centerFloat, count) {
+  const [a, b] = clampBrush(range, count);
+  const span = b - a;
+  const na = Math.min(Math.max(0, Math.round(centerFloat - (span + 1) / 2)), count - 1 - span);
+  return clampBrush([na, na + span], count);
+}
+
 export function chartDatum(s, selectedId) {
   const wall = s.wall_ms == null ? null : s.wall_ms;
   const hasModel = s.model_ms != null && s.model_ms > 0 && wall != null;

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
-  diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  brushCentered, brushPan, brushResize, clampBrush, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -265,6 +265,73 @@ test("chartData: stacked seconds, no model time is overhead only, never estimate
   assert.equal(d[0].wall_ms, null); assert.equal(d[0].model_s, 0); assert.equal(d[0].greyed, true);
   assert.equal(fmtSec(2500), "2.500 s"); assert.equal(fmtSec(null), "–");
   assert.equal(showBrush(12), false); assert.equal(showBrush(13), true);
+});
+
+test("linearTicks: round steps from zero past the max", () => {
+  assert.deepEqual(linearTicks(0), { top: 1, ticks: [0, 1], step: 1 });
+  assert.deepEqual(linearTicks(-5), { top: 1, ticks: [0, 1], step: 1 });
+  assert.equal(linearTicks(84.6).step, 25);
+  assert.equal(linearTicks(0.9).step, 0.25);
+  assert.deepEqual(linearTicks(84.6).ticks, [0, 25, 50, 75, 100]);
+  assert.deepEqual(linearTicks(258).ticks, [0, 100, 200, 300]);
+  assert.deepEqual(linearTicks(0.4).ticks, [0, 0.1, 0.2, 0.3, 0.4]);
+  assert.deepEqual(linearTicks(55631).ticks, [0, 20000, 40000, 60000]);
+  assert.equal(linearTicks(10).top, 10);
+  const t = linearTicks(3.2);
+  assert.equal(t.ticks[0], 0); assert.ok(t.top >= 3.2);
+  assert.ok(t.ticks.length <= 7);
+});
+
+test("fmtTickSec: decimals follow the step, labels never misstate", () => {
+  assert.equal(fmtTickSec(0, 25), "0s");
+  assert.equal(fmtTickSec(100, 25), "100s");
+  assert.equal(fmtTickSec(2.5, 2.5), "2.5s");
+  assert.equal(fmtTickSec(1, 1), "1s");
+  // The review cases: a 1 s chart (step 0.25) and a 0.1 s chart (step 0.025).
+  assert.deepEqual([0, 0.25, 0.5, 0.75, 1].map((v) => fmtTickSec(v, 0.25)),
+    ["0.00s", "0.25s", "0.50s", "0.75s", "1.00s"]);
+  assert.deepEqual([0, 0.025, 0.05, 0.075, 0.1].map((v) => fmtTickSec(v, 0.025)),
+    ["0.000s", "0.025s", "0.050s", "0.075s", "0.100s"]);
+  assert.deepEqual([0, 0.1, 0.2].map((v) => fmtTickSec(v, 0.1)), ["0.0s", "0.1s", "0.2s"]);
+  // End to end with linearTicks on sub-second maxima.
+  const t1 = linearTicks(0.9);
+  assert.deepEqual(t1.ticks.map((v) => fmtTickSec(v, t1.step)),
+    ["0.00s", "0.25s", "0.50s", "0.75s", "1.00s"]);
+});
+
+test("labelIndexes: first and last always, thinned to fit", () => {
+  assert.deepEqual(labelIndexes(0, 600), []);
+  assert.deepEqual(labelIndexes(1, 600), [0]);
+  assert.deepEqual(labelIndexes(5, 600), [0, 1, 2, 3, 4]);
+  // Last sits closer than a label width to its neighbour: it gives way.
+  assert.deepEqual(labelIndexes(30, 560), [0, 3, 6, 9, 12, 15, 18, 21, 24, 29]);
+  assert.deepEqual(labelIndexes(39, 560), [0, 4, 8, 12, 16, 20, 24, 28, 32, 38]);
+  assert.deepEqual(labelIndexes(14, 336), [0, 3, 6, 9, 13]);
+  assert.deepEqual(labelIndexes(100, 112), [0, 99]);
+  // Wide enough that the last and its neighbour both fit.
+  assert.deepEqual(labelIndexes(11, 560), [0, 2, 4, 6, 8, 10]);
+});
+
+test("clampBrush: window stays inside the data, one run minimum", () => {
+  assert.deepEqual(clampBrush(null, 30), [0, 29]);
+  assert.deepEqual(clampBrush([0, 29], 30), [0, 29]);
+  assert.deepEqual(clampBrush([-4, 99], 30), [0, 29]);
+  assert.deepEqual(clampBrush([10, 5], 30), [10, 10]);
+  assert.deepEqual(clampBrush([3.7, 8.2], 30), [3, 8]);
+  assert.deepEqual(clampBrush([5, 9], 0), [0, 0]);
+});
+
+test("brush helpers: resize stops at the other handle, pan and jump keep span", () => {
+  assert.deepEqual(brushResize([5, 10], "left", 8, 30), [8, 10]);
+  assert.deepEqual(brushResize([5, 10], "left", 20, 30), [10, 10]);
+  assert.deepEqual(brushResize([5, 10], "right", 2, 30), [5, 5]);
+  assert.deepEqual(brushResize([5, 10], "right", 99, 30), [5, 29]);
+  assert.deepEqual(brushPan([5, 10], 2, 15, 30), [13, 18]);
+  assert.deepEqual(brushPan([5, 10], 0, -4, 30), [0, 5]);
+  assert.deepEqual(brushPan([5, 10], 5, 40, 30), [24, 29]);
+  assert.deepEqual(brushCentered([0, 5], 20, 30), [17, 22]);
+  assert.deepEqual(brushCentered([10, 15], 1, 30), [0, 5]);
+  assert.deepEqual(brushCentered([0, 29], 15, 30), [0, 29]);
 });
 
 // --- Diagnose a slow run -------------------------------------------
