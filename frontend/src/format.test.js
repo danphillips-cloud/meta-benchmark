@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, visibleCost,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, visibleCost,
   diagnoseRun, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -149,6 +149,37 @@ test("shared filters: date range is inclusive and chips list active filters", ()
   assert.deepEqual(activeFilterChips({ provider: "meta", model: "", q: "hi", from: "2026-01-01", to: "", status: "", mode: "" }).map((c) => c.key),
     ["provider", "q", "date"]);
   assert.deepEqual(activeFilterChips({ provider: "", model: "", q: "", from: "", to: "" }), []);
+});
+
+test("sharedFilterCount: shared keys only, date range counts once", () => {
+  assert.equal(sharedFilterCount(null), 0);
+  assert.equal(sharedFilterCount({ q: "", provider: "", model: "", from: "", to: "" }), 0);
+  assert.equal(sharedFilterCount({ q: "", provider: "meta", model: "", from: "", to: "" }), 1);
+  assert.equal(sharedFilterCount({ q: "", provider: "", model: "", from: "2026-01-01", to: "2026-01-31" }), 1);
+  assert.equal(sharedFilterCount({ q: "hi", provider: "meta", model: "muse-x", from: "2026-01-01", to: "" }), 4);
+  assert.equal(sharedFilterCount({ q: "", provider: "", model: "", from: "", to: "", status: "failed", mode: "compare", version: "1.0" }), 0);
+});
+
+test("syncedFilterPanelOpen: external filter transitions sync, manual and internal states stay", () => {
+  const clean = { q: "", provider: "", model: "", from: "", to: "" };
+  const filtered = { ...clean, provider: "meta" };
+  const otherFiltered = { ...clean, provider: "claude-code" };
+  assert.equal(syncedFilterPanelOpen(clean, filtered, false, false), true);
+  assert.equal(syncedFilterPanelOpen(filtered, clean, true, false), false);
+  assert.equal(syncedFilterPanelOpen(filtered, otherFiltered, false, false), false);
+  assert.equal(syncedFilterPanelOpen(clean, clean, true, false), true);
+  assert.equal(syncedFilterPanelOpen(filtered, clean, true, true), true);
+  assert.equal(syncedFilterPanelOpen(clean, filtered, false, true), false);
+});
+
+test("shouldCloseFilterPanelOnEscape: native controls keep Escape, panel search closes", () => {
+  const target = (...matches) => ({
+    closest: (selector) => matches.includes(selector) ? {} : null,
+  });
+  assert.equal(shouldCloseFilterPanelOnEscape(null), false);
+  assert.equal(shouldCloseFilterPanelOnEscape(target("#overviewSharedFilters, [data-filter-toggle]")), true);
+  assert.equal(shouldCloseFilterPanelOnEscape(target("select, input[type='date']", "#overviewSharedFilters, [data-filter-toggle]")), false);
+  assert.equal(shouldCloseFilterPanelOnEscape(target()), false);
 });
 
 test("overviewScope: no filter keeps compare-set scoping, a filter overrides it", () => {
