@@ -2,9 +2,11 @@
 
 A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was Muse's own overhead. One command, runs locally, nothing to install beyond Muse Code. It tells you which part is slow before you guess.
 
+![A fuzzy coach with a clipboard and a stopwatch, standing on a gym floor between rows of server racks](docs/images/coach.jpg)
+
 You can also compare models on the same prompt: two Meta models, or Meta against Anthropic.
 
-Work in progress. I've tested it on macOS with Muse Code 1.4.13. Expect rough edges, and open an issue if something breaks.
+Work in progress. I've tested it on macOS with Muse Code 1.4.14. Linux and Windows through WSL should work, but nobody has run them yet. Expect rough edges, and open an issue if something breaks.
 
 ## Requirements
 
@@ -27,7 +29,7 @@ That is the whole install for everything below. These runs use a Muse subscripti
 Skip `what is 2+2` as a first run. It makes one model call, so the page has almost nothing to split. Start with one proper one-shot prompt instead. One-shot means everything the agent needs sits in a single prompt, with no follow-up.
 
 ```sh
-./run-muse --minimal "Read server.py and muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
+./run-muse --minimal "Read lib/server.py and lib/muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
 ```
 
 The prompt is built to be checkable in one pass:
@@ -61,7 +63,7 @@ Then check the answer itself. Pick one claim from the reply, open the cited file
 One run is a timing. A repeat is data. Run the same command again and Overview gains your usual time for the same prompt. To put two Meta models on the same work, compare them:
 
 ```sh
-./run-muse --minimal --compare meta --repeat 3 "Read server.py and muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
+./run-muse --minimal --compare meta --repeat 3 "Read lib/server.py and lib/muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
 ```
 
 Each round is two full runs of the prompt. The Compare page reads medians over the rounds, so one slow call cannot carry the result.
@@ -195,7 +197,7 @@ Run data stays in `muse-runs/`, which is gitignored. The page is served on `127.
 ## Tests
 
 ```sh
-python3 test_tool.py
+python3 tests/test_tool.py
 ```
 
 ## Developing the UI

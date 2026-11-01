@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent / "lib"))
 import muse_log  # noqa: E402
 import pricing as list_pricing  # noqa: E402
 from claude_stream import (  # noqa: E402,F401
@@ -358,7 +358,7 @@ def paid_notice(model):
 def ui_version():
     try:
         m = re.search(r"(?m)^VERSION\s*=\s*(\d+)",
-                      (ROOT / "server.py").read_text())
+                      (ROOT / "lib" / "server.py").read_text())
         return int(m.group(1)) if m else None
     except Exception:
         return None
@@ -395,7 +395,7 @@ def start_ui():
     RUNS.mkdir(exist_ok=True)
     log = open(RUNS / "server.log", "ab")
     try:
-        subprocess.Popen([sys.executable, str(ROOT / "server.py")],
+        subprocess.Popen([sys.executable, str(ROOT / "lib" / "server.py")],
                          cwd=ROOT, stdout=log, stderr=log,
                          env={**os.environ, "PORT": str(PORT)},
                          start_new_session=True)
