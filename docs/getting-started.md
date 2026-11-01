@@ -115,7 +115,7 @@ Then run it with `./run-muse --minimal` and the full prompt in quotes.
 
 Open the app before trusting the final reply. Try the main action on each screen. Refresh once to test saved state. Break one form on purpose. Shrink the browser to phone width.
 
-Back on the results page, read the wall time split and the per-call chart. A fast run that skipped checks is a worse result than a slower run that shipped working files. The stopwatch tells you where time went. The app tells you whether the time bought anything.
+Back on the results page, read the wall time split and the per-call chart. A fast run that skipped checks is a worse result than a slower run that shipped working files. The results page tells you where time went. The app tells you whether the time bought anything.
 
 ## Source
 
