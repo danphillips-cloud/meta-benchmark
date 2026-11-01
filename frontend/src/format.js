@@ -964,7 +964,9 @@ export function selectedRunFacts(data) {
   const events = d.events || [];
   const wires = events.map((e) => e["wire_ms"]).filter((v) => v != null);
   const hasEvents = events.length > 0;
-  const modelTotal = hasEvents
+  // A model note means the server found overlapping calls, so the
+  // summed call time is not this run's. Never fall back to it.
+  const modelTotal = hasEvents && !d.model_note
     ? (d.model_ms ?? (wires.length ? wires.reduce((a, b) => a + b, 0) : null))
     : null;
   // A run with no call events (Muse logged no model call) still has

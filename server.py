@@ -26,7 +26,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 56
+VERSION = 57
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -156,12 +156,35 @@ def _is_stale_running(run):
     return age > (run.get("timeout_seconds") or 1800) + 300
 
 
+MODEL_OVERLAP_NOTE = ("A model call started before this turn, so model "
+                      "time can't be set against wall")
+
+
+def _model_overlaps(run):
+    """True when the summed call time can't belong to this run alone.
+
+    Either the import counted calls that started before the turn, or
+    an imported turn's per-call total exceeds its wall. The second
+    covers turns imported before the count existed. Single runs are
+    not judged this way: their wall wraps the whole Muse process."""
+    if run.get("calls_started_before_turn"):
+        return True
+    if run.get("provider") not in ("muse-retro", "muse-watch"):
+        return False
+    durations = [c.get("duration_ms") for c in (run.get("calls") or [])]
+    wall = run.get("wall_ms")
+    return bool(wall) and bool(durations) \
+        and all(d is not None for d in durations) and sum(durations) > wall
+
+
 def _run_model_ms(run):
     """Sum of per-call durations, or the harness-reported API total
     when calls carry none (Claude Code reports no per-call time).
     Strict: if any call is missing its duration the per-call total
     is unknown, never a partial sum. None when nothing usable was
     recorded: a dash, never an invented 0. A recorded 0 stays 0."""
+    if _model_overlaps(run):
+        return None
     durations = [c.get("duration_ms") for c in (run.get("calls") or [])]
     if durations and all(d is not None for d in durations):
         return sum(durations)
@@ -280,6 +303,7 @@ def session_row(r):
         "allowance_delta": r.get("allowance_delta"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
         "model_ms": model_ms,
+        "model_note": MODEL_OVERLAP_NOTE if _model_overlaps(r) else None,
         "overhead_ms": None if model_ms is None or r.get("wall_ms") is None
                        else max(0, r["wall_ms"] - model_ms),
         "input_tokens": _run_tokens(r, "input_tokens"),
@@ -414,6 +438,8 @@ def read_logs(run_id=None):
         "provider": selected.get("provider"),
         "harness_version": _harness_version(selected),
         "model_ms": _run_model_ms(selected),
+        "model_note": MODEL_OVERLAP_NOTE if _model_overlaps(selected)
+        else None,
         "wall_ms": selected.get("wall_ms") or elapsed_ms,
         "status": selected.get("status"),
         "elapsed_ms": elapsed_ms,

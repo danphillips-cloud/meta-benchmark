@@ -1392,6 +1392,13 @@ test("selectedRunFacts: matches the inputs Overview assembles by hand", () => {
   assert.equal(selectedRunFacts({}).wall, null);
 });
 
+test("selectedRunFacts: overlapping calls never fall back to summed call time", () => {
+  const base = PAYLOAD();
+  assert.ok(selectedRunFacts(base).modelTotal != null);
+  const f = selectedRunFacts({ ...base, model_ms: null, model_note: "overlap" });
+  assert.equal(f.modelTotal, null);
+});
+
 test("selectedRunFacts: a run with no calls keeps its recorded wall", () => {
   const sessions = [{ run_id: "r1", status: "completed", wall_ms: 2526 }];
   const f = selectedRunFacts({ selected: "r1", sessions, events: [], wall_ms: 2526 });

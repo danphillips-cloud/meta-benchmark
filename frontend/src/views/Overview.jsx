@@ -325,7 +325,7 @@ export default function Overview({ data, onSelect, onGoto }) {
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
           detail={(hasEvents || wall != null ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
-          detail={retryTotal > 0 && stalledTotal > 0
+          detail={data.model_note ? data.model_note : retryTotal > 0 && stalledTotal > 0
             ? fmtDur(stalledTotal) + " stalled before retry"
             : (data.provider === "claude-code" && modelTotal != null ? share(modelTotal) + " · reported API time" : share(modelTotal)) + usualModel} />
         <StatCard label="Tools" icon="overhead" value={toolP[0]} unit={toolP[1].trim()} title={split.tool_ms == null ? "" : fmtMs(split.tool_ms) + " ms"}
