@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Read-only meta-benchmark log viewer. Stdlib only.
+"""Meta-benchmark log viewer. Stdlib only.
 
 Prompts happen in one terminal via ./run-muse, which drives `muse exec`
-and appends each run to muse-runs/index.jsonl. This server only reads
-that file and serves it to the UI. No API key is used here.
+and appends each run to muse-runs/index.jsonl. This server reads that
+file and serves it to the UI. It writes run data only to delete runs
+the user asks to delete. No API key is used here.
 """
+import contextlib
+import fcntl
 import json
 import os
 import re
 import shutil
+import stat
 import sys
+import tempfile
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -21,19 +26,48 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 47
+VERSION = 48
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
 WEB_CSS = HERE / "web" / "style.css"
 _SESSION_LOG_CACHE = {}
+_LOG_RECORDS_CACHE = {}
+
+
+@contextlib.contextmanager
+def _index_file_lock(index_path):
+    """Exclusive cross-process lock for index.jsonl writers.
+
+    run-muse appends to the index while this server can rewrite it
+    for a delete. Every writer holds this flock on a file beside the
+    index, so an append can never land between a delete's read and
+    its rewrite and be lost. Platforms: macOS, Linux and Windows
+    via WSL. fcntl works under WSL. Native Windows Python is not
+    supported. The lock file is never deleted. The OS releases the
+    lock when its holder exits.
+    """
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = index_path.parent / (index_path.name + ".lock")
+    with open(lock_path, "a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def live_session_log(session_id):
     if not session_id:
         return None
-    if session_id in _SESSION_LOG_CACHE:
-        return _SESSION_LOG_CACHE[session_id]
+    cached = _SESSION_LOG_CACHE.get(session_id)
+    if cached is not None:
+        if Path(cached).is_file():
+            return cached
+        # Stale entry. The log is gone, so drop it and resolve
+        # again below instead of erroring every poll.
+        del _SESSION_LOG_CACHE[session_id]
+        _LOG_RECORDS_CACHE.pop(str(cached), None)
     path = muse_log.session_log_path(session_id)
     if not path:
         return None
@@ -41,11 +75,34 @@ def live_session_log(session_id):
     return path
 
 
+def _log_records(path):
+    """Parsed session log records, cached against the file stamp.
+
+    One poll used to parse the selected running log up to three
+    times. An appended line always changes the stamp or size, so
+    a hit can never outlive new data, same as _claude_live. A
+    missing file evicts and returns no records."""
+    if not path:
+        return []
+    try:
+        stamp = Path(path).stat()
+    except OSError:
+        _LOG_RECORDS_CACHE.pop(str(path), None)
+        return []
+    version = (stamp.st_mtime_ns, stamp.st_size)
+    cached = _LOG_RECORDS_CACHE.get(str(path))
+    if cached and cached[0] == version:
+        return cached[1]
+    records = muse_log.read_records(path)
+    _LOG_RECORDS_CACHE[str(path)] = (version, records)
+    return records
+
+
 def live_calls(session_id):
     path = live_session_log(session_id)
     if not path:
         return [], []
-    return muse_log.live_calls_from_log(path)
+    return muse_log.live_calls_from_records(_log_records(path))
 
 
 _CLAUDE_LIVE_CACHE = {}
@@ -102,11 +159,11 @@ def _is_stale_running(run):
 def _run_model_ms(run):
     """Sum of per-call durations, or the harness-reported API total
     when calls carry none (Claude Code reports no per-call time).
-    None when nothing was recorded: a dash, never an invented 0.
-    A recorded 0 stays 0."""
-    durations = [c.get("duration_ms") for c in (run.get("calls") or [])
-                 if c.get("duration_ms") is not None]
-    if durations:
+    Strict: if any call is missing its duration the per-call total
+    is unknown, never a partial sum. None when nothing usable was
+    recorded: a dash, never an invented 0. A recorded 0 stays 0."""
+    durations = [c.get("duration_ms") for c in (run.get("calls") or [])]
+    if durations and all(d is not None for d in durations):
         return sum(durations)
     if run.get("api_ms") is not None:
         return run.get("api_ms")
@@ -134,16 +191,23 @@ def _run_split(run, records=None):
         path = live_session_log(run["session_id"])
         if not path:
             return empty
-        records = muse_log.read_records(path)
+        records = _log_records(path)
     return muse_log.time_split(records, run.get("wall_ms"), model_ms)
 
 
 def _run_tokens(run, key):
-    """Run token total from totals when present, else summed calls."""
+    """Run token total from totals when present, else summed calls.
+
+    Strict: if any call is missing the value, or there are no
+    calls, the total is None. The page shows a dash, never a
+    partial sum dressed up as a total."""
     totals = run.get("totals")
     if totals:
         return totals.get(key)
-    return sum(c.get(key) or 0 for c in (run.get("calls") or []))
+    values = [c.get(key) for c in (run.get("calls") or [])]
+    if not values or any(v is None for v in values):
+        return None
+    return sum(values)
 
 
 def load_runs():
@@ -262,7 +326,7 @@ def read_logs(run_id=None):
     if selected.get("session_id"):
         log_path = live_session_log(selected["session_id"])
         if log_path:
-            selected_records = muse_log.read_records(log_path)
+            selected_records = _log_records(log_path)
     events, errors = [], []
     for call in selected.get("calls") or []:
         events.append({
@@ -357,27 +421,41 @@ def delete_run(run_id):
     target = (root / run_id)
     if target.parent != root:
         return False, "invalid run id"
-    latest = None
-    kept = []
-    if INDEX.is_file():
-        for line in INDEX.read_text(errors="replace").splitlines():
+    with _index_file_lock(INDEX):
+        latest = None
+        kept = []
+        if INDEX.is_file():
+            for line in INDEX.read_text(errors="replace").splitlines():
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    kept.append(line)
+                    continue
+                if entry.get("run_id") == run_id:
+                    latest = entry
+                else:
+                    kept.append(line)
+        if latest and latest.get("status") == "running" \
+                and not (target / "report.json").is_file() \
+                and not _is_stale_running(latest):
+            return False, f"run {run_id} is still running"
+        if INDEX.is_file():
+            mode = stat.S_IMODE(INDEX.stat().st_mode)
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(INDEX.parent), prefix="index-", suffix=".tmp")
             try:
-                entry = json.loads(line)
-            except Exception:
-                kept.append(line)
-                continue
-            if entry.get("run_id") == run_id:
-                latest = entry
-            else:
-                kept.append(line)
-    if latest and latest.get("status") == "running" \
-            and not (target / "report.json").is_file() \
-            and not _is_stale_running(latest):
-        return False, f"run {run_id} is still running"
-    if INDEX.is_file():
-        INDEX.write_text("".join(l + "\n" for l in kept))
-    if target.is_dir():
-        shutil.rmtree(target)
+                with os.fdopen(fd, "w") as tmp_file:
+                    tmp_file.write("".join(l + "\n" for l in kept))
+                os.chmod(tmp_name, mode)
+                os.replace(tmp_name, INDEX)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+        if target.is_dir():
+            shutil.rmtree(target)
     return True, None
 
 

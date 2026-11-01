@@ -369,13 +369,19 @@ export const BRUSH_MIN_RUNS = 12;
 export const showBrush = (count) => count > BRUSH_MIN_RUNS;
 
 // Round axis ticks from 0 up to at least max. Steps come from a
-// 1, 2, 2.5, 5 ladder so labels stay short at any scale.
-export function linearTicks(max, intervals = 4) {
+// 1, 2, 2.5, 5 ladder so labels stay short at any scale. A null
+// max means no value was recorded, so the axis gets no ticks at
+// all rather than an invented 0 to 1 scale. Integer mode (token
+// axes) only ever yields whole-number steps and ticks.
+export function linearTicks(max, intervals = 4, integer = false) {
+  if (max == null) return { top: 1, ticks: [], step: 1 };
   if (!(max > 0)) return { top: 1, ticks: [0, 1], step: 1 };
   const raw = max / intervals;
   const mag = 10 ** Math.floor(Math.log10(raw));
   const norm = raw / mag;
-  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const step = integer
+    ? Math.max(1, (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag)
+    : (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
   const n = Math.ceil(max / step);
   const ticks = Array.from({ length: n + 1 }, (_, i) => Number((i * step).toFixed(10)));
   return { top: ticks[n], ticks, step: Number(step.toFixed(10)) };
@@ -431,6 +437,40 @@ export function brushResize(range, edge, index, count) {
   const [a, b] = clampBrush(range, count);
   if (edge === "left") return clampBrush([Math.min(index, b), b], count);
   return clampBrush([a, Math.max(index, a)], count);
+}
+
+// Dragging one traveller from wherever the pointer grabbed it.
+// grabOffset is the distance from the edge (left edge at a, right
+// edge at the exclusive end b + 1), so the edge follows the pointer
+// instead of jumping to its band on the first move.
+export function brushResizeAt(range, edge, grabOffset, indexFloat, count) {
+  const target = Math.round(indexFloat - grabOffset);
+  return brushResize(range, edge, edge === "right" ? target - 1 : target, count);
+}
+
+// Pixel positions of the two 10px brush grips. Normally each sits
+// on its window edge. On a window narrower than both grips they
+// sit side by side, so neither covers the other.
+export function gripPositions(winX, winW, x, w) {
+  const clamp = (gx) => Math.min(Math.max(gx, x), Math.max(x, x + w - 10));
+  let leftX = clamp(winX);
+  let rightX = clamp(winX + winW - 10);
+  if (rightX < leftX + 10) {
+    rightX = clamp(leftX + 10);
+    if (rightX < leftX + 10) leftX = Math.max(x, rightX - 10);
+  }
+  return [leftX, rightX];
+}
+
+// Latest-request guard. Each issued request takes a token. Only
+// the newest token is current, so a response that lands after a
+// newer request was issued can be dropped.
+export function latestOnly() {
+  let latest = 0;
+  return {
+    take() { latest += 1; return latest; },
+    isCurrent(token) { return token === latest; },
+  };
 }
 
 // Dragging the window itself. grabOffset is how far into the
@@ -597,7 +637,11 @@ export function explainLines({ wall_ms, model_ms, provider, events, split } = {}
   const inSum = chrono.reduce((a, e) => a + (e["gen_ai.usage.input_tokens"] ?? 0), 0);
   const cacheSum = chrono.reduce((a, e) => a + (e["gen_ai.usage.cached_tokens"] ?? 0), 0);
   const hasCache = chrono.some((e) => e["gen_ai.usage.cached_tokens"] != null);
-  if (hasCache && inSum > 0) {
+  // Strict: a share over partly recorded calls would be an estimate.
+  const cacheComplete = chrono.length > 0
+    && chrono.every((e) => e["gen_ai.usage.input_tokens"] != null
+      && e["gen_ai.usage.cached_tokens"] != null);
+  if (cacheComplete && hasCache && inSum > 0) {
     const pct = Math.round((cacheSum / inSum) * 100);
     lines.push("Cache covered " + fmt(cacheSum) + " of " + fmt(inSum)
       + " input tokens (" + pct + "%).");
@@ -1213,6 +1257,8 @@ export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeli
   const withoutMs = [];
   const wires = chrono.map((e) => e["wire_ms"] ?? null);
   const wireTotal = wires.reduce((a, w) => a + (w || 0), 0);
+  // Strict: a slowest-call share needs every wire time recorded.
+  const allWires = wires.length > 0 && wires.every((w) => w != null);
 
   chrono.forEach((e, i) => {
     const stalled = e["stalled_ms"];
@@ -1281,7 +1327,7 @@ export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeli
   }
 
   if (provider !== "claude-code" && chrono.length >= DIAG_DOMINANT_MIN_CALLS
-      && wireTotal > 0) {
+      && allWires && wireTotal > 0) {
     let slowest = null;
     wires.forEach((w, i) => {
       if (w != null && (!slowest || w > slowest.ms)) slowest = { ms: w, call: i + 1 };
@@ -1340,7 +1386,11 @@ export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeli
   const inSum = inputs.reduce((a, n) => a + (n || 0), 0);
   const cacheSum = chrono.reduce(
     (a, e) => a + (e["gen_ai.usage.cached_tokens"] || 0), 0);
-  if (hasCache && chrono.length >= DIAG_CACHE_MIN_CALLS && inSum > 0) {
+  // Strict: same completeness rule as the explainLines cache share.
+  const cacheComplete = chrono.length > 0
+    && inputs.every((n) => n != null)
+    && chrono.every((e) => e["gen_ai.usage.cached_tokens"] != null);
+  if (cacheComplete && hasCache && chrono.length >= DIAG_CACHE_MIN_CALLS && inSum > 0) {
     const pct = Math.round((cacheSum / inSum) * 100);
     if (pct < DIAG_CACHE_MAX_PCT) {
       withoutMs.push({

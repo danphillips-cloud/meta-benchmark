@@ -56,14 +56,6 @@ def _event_kind(e):
     return ((e.get("payload") or {}).get("event") or {}).get("kind")
 
 
-def _records(path):
-    for line in path.read_text(errors="replace").splitlines():
-        try:
-            yield json.loads(line)
-        except Exception:
-            continue
-
-
 def _timeline_row(e, node):
     ts = e.get("recorded_at")
     ptype = e.get("payload_type")
@@ -110,13 +102,7 @@ def build_timeline(session_id, wall_ms):
     path = session_log_path(session_id)
     if not path:
         return []
-    rows = []
-    for e in _records(path):
-        node = next(find_model_completed(e), None)
-        row = _timeline_row(e, node)
-        if row:
-            rows.append(row)
-    return _finish_timeline(rows)
+    return _timeline_rows(read_records(path))
 
 
 def read_records(path):
@@ -447,7 +433,12 @@ def split_turns(records):
         if start_us is None or not activity:
             continue
         wall_ms = round((max(activity) - start_us) / 1000)
-        model_ms = sum(c["duration_ms"] or 0 for c in calls)
+        durations = [c["duration_ms"] for c in calls]
+        # Strict: one missing duration makes the turn total unknown,
+        # so time_split leaves muse_ms as None instead of absorbing
+        # the gap as Muse time.
+        model_ms = sum(durations) \
+            if all(d is not None for d in durations) else None
         turns.append({
             "index": n + 1,
             "prompt": _prompt_of(records[start]),
@@ -478,7 +469,7 @@ def live_calls_from_records(records):
 
 
 def live_calls_from_log(path):
-    return live_calls_from_records(list(_records(path)))
+    return live_calls_from_records(read_records(path))
 
 
 def _lane_value(node):

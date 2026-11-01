@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
-  brushCentered, brushKey, brushPan, brushResize, brushWindow, chartKeyIndex, clampBrush, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -270,6 +270,13 @@ test("chartData: stacked seconds, no model time is overhead only, never estimate
 test("linearTicks: round steps from zero past the max", () => {
   assert.deepEqual(linearTicks(0), { top: 1, ticks: [0, 1], step: 1 });
   assert.deepEqual(linearTicks(-5), { top: 1, ticks: [0, 1], step: 1 });
+  // No recorded values: no ticks, never an invented 0 to 1 axis.
+  assert.deepEqual(linearTicks(null), { top: 1, ticks: [], step: 1 });
+  assert.deepEqual(linearTicks(null, 4, true), { top: 1, ticks: [], step: 1 });
+  // Integer mode (tokens): whole numbers only, even at tiny maxima.
+  assert.deepEqual(linearTicks(3, 4, true).ticks, [0, 1, 2, 3]);
+  assert.deepEqual(linearTicks(7, 4, true).ticks, [0, 2, 4, 6, 8]);
+  assert.ok(linearTicks(250, 4, true).ticks.every((t) => Number.isInteger(t)));
   assert.equal(linearTicks(84.6).step, 25);
   assert.equal(linearTicks(0.9).step, 0.25);
   assert.deepEqual(linearTicks(84.6).ticks, [0, 25, 50, 75, 100]);
@@ -332,6 +339,48 @@ test("brush helpers: resize stops at the other handle, pan and jump keep span", 
   assert.deepEqual(brushCentered([0, 5], 20, 30), [17, 22]);
   assert.deepEqual(brushCentered([10, 15], 1, 30), [0, 5]);
   assert.deepEqual(brushCentered([0, 29], 15, 30), [0, 29]);
+});
+
+test("brushResizeAt: edge follows the grab point, no first-move jump", () => {
+  // Left edge at 5 grabbed at 5.4 (offset 0.4). A small move stays.
+  assert.deepEqual(brushResizeAt([5, 10], "left", 0.4, 5.6, 30), [5, 10]);
+  assert.deepEqual(brushResizeAt([5, 10], "left", 0.4, 4.4, 30), [4, 10]);
+  // Grabbed just left of the edge at 4.8 (offset -0.2). Still no jump.
+  assert.deepEqual(brushResizeAt([5, 10], "left", -0.2, 4.9, 30), [5, 10]);
+  // Right edge exclusive end 11 grabbed at 10.7 (offset -0.3).
+  assert.deepEqual(brushResizeAt([5, 10], "right", -0.3, 10.9, 30), [5, 10]);
+  assert.deepEqual(brushResizeAt([5, 10], "right", -0.3, 11.8, 30), [5, 11]);
+  // Handles still stop at each other.
+  assert.deepEqual(brushResizeAt([5, 10], "left", 0, 20, 30), [10, 10]);
+  assert.deepEqual(brushResizeAt([5, 10], "right", 0, 1, 30), [5, 5]);
+});
+
+test("gripPositions: both grips grabbable at any window width", () => {
+  // Wide window: grips on their edges.
+  assert.deepEqual(gripPositions(100, 80, 52, 400), [100, 170]);
+  // 12px window: side by side, never overlapping.
+  const [l, r] = gripPositions(100, 12, 52, 400);
+  assert.ok(r >= l + 10);
+  // Hard against either end: both grips stay inside the strip.
+  const end = gripPositions(448, 4, 52, 400);
+  assert.ok(end[0] >= 52 && end[1] + 10 <= 452 && end[1] >= end[0] + 10);
+  const start = gripPositions(52, 4, 52, 400);
+  assert.deepEqual(start, [52, 62]);
+});
+
+test("latestOnly: only the newest request token is current", () => {
+  const guard = latestOnly();
+  const a = guard.take();
+  assert.equal(guard.isCurrent(a), true);
+  const b = guard.take();
+  // Out-of-order completion: B lands and applies, then A lands late
+  // and must be dropped.
+  assert.equal(guard.isCurrent(b), true);
+  assert.equal(guard.isCurrent(a), false);
+  const applied = [];
+  if (guard.isCurrent(b)) applied.push("B");
+  if (guard.isCurrent(a)) applied.push("A");
+  assert.deepEqual(applied, ["B"]);
 });
 
 test("brushKey: arrows nudge one run, Home and End jump, handles never cross", () => {
@@ -417,6 +466,16 @@ test("explainLines: each line appears only when its data exists", () => {
   // No per-call time: no slowest line.
   const noWire = explainLines({ wall_ms: 8000, model_ms: 5000, provider: "meta", events: [E(null, 200, 100, 1), E(null, 100, 50, 1)] });
   assert.ok(!noWire.some((l) => l.startsWith("Slowest")));
+});
+
+test("explainLines: cache share needs every call recorded", () => {
+  // One call missing cached tokens: no cache line, never a share
+  // over a partial denominator.
+  const partialCache = explainLines({ wall_ms: 8000, model_ms: 8000, provider: "meta", events: [E(4000, 200, null, 1), E(4000, 100, 50, 1)] });
+  assert.ok(!partialCache.some((l) => l.startsWith("Cache")));
+  // One call missing input tokens: same rule.
+  const partialInput = explainLines({ wall_ms: 8000, model_ms: 8000, provider: "meta", events: [E(4000, null, 10, 1), E(4000, 100, 50, 1)] });
+  assert.ok(!partialInput.some((l) => l.startsWith("Cache")));
 });
 
 test("explainLines: Claude Code runs skip the slowest-call line", () => {
@@ -887,6 +946,8 @@ test("diagnoseRun: thresholds fire and stay silent on both sides", () => {
   }).findings.some((f) => f.kind === "dominant-call");
   assert.equal(dom([60000, 20000, 20000]), true);
   assert.equal(dom([60000, 40000]), false);
+  // One missing wire time: no dominant-call share, never a partial one.
+  assert.equal(dom([60000, 20000, null]), false);
   const usual = (wall, base) => diagnoseRun({
     wall_ms: wall, model_ms: wall, provider: "meta",
     events: [E(wall, 100, 0, 10)],

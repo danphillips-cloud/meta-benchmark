@@ -1,7 +1,7 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import {
-  brushCentered, brushKey, brushPan, brushResize, brushWindow, chartData,
-  chartKeyIndex, clampBrush, fmt, fmtSec, fmtTickSec, labelIndexes, linearTicks,
+  brushCentered, brushKey, brushPan, brushResizeAt, brushWindow, chartData,
+  chartKeyIndex, clampBrush, fmt, fmtSec, fmtTickSec, gripPositions, labelIndexes, linearTicks,
   localTime, overviewScope, perCallSeries, shortText, showBrush, tipPosition,
 } from "../format.js";
 
@@ -18,7 +18,9 @@ function useWidth() {
   const [node, setNode] = useState(null);
   const ref = React.useCallback((el) => setNode(el), []);
   const [width, setWidth] = useState(0);
-  useEffect(() => {
+  // Layout effect, so the first measure lands before first paint
+  // instead of after a blank one.
+  useLayoutEffect(() => {
     if (!node) return undefined;
     const ro = new ResizeObserver(() => setWidth(node.clientWidth));
     ro.observe(node);
@@ -59,32 +61,49 @@ function YGrid({ ticks, y, left, plotW, format }) {
 // Hover and keyboard share one active bar. State changes only when
 // the active bar changes. Pointer moves inside a bar place the open
 // tooltip straight on its DOM node, so they never re-render the chart.
+// The aria-live summary follows keyboard focus only (announcedKey),
+// never hover. Leaving the bar area clears a pointer-set bar and
+// leaves a keyboard-set one alone.
 function useChartTip(wrapNode, width, height) {
   const [activeKey, setActiveKey] = useState(null);
+  const [announcedKey, setAnnouncedKey] = useState(null);
+  const sourceRef = useRef(null);
   const tipRef = useRef(null);
   const pos = useRef({ x: 0, y: 0 });
-  const place = () => {
+  const place = React.useCallback(() => {
     const el = tipRef.current;
     if (!el) return;
     const p = tipPosition(pos.current.x, pos.current.y, el.offsetWidth, el.offsetHeight, width, height);
     el.style.left = p.left + "px";
     el.style.top = p.top + "px";
     el.style.visibility = "visible";
-  };
-  // Content or chart size can change on any render, so re-place
-  // after each one. Renders are rare now, so this stays cheap.
-  useLayoutEffect(place);
+  }, [width, height]);
+  // A new tip only appears with a new active bar, and the callback
+  // covers size changes, so these dependencies re-place it whenever
+  // its content or the chart box can have changed.
+  useLayoutEffect(place, [place, activeKey]);
   const hover = (e, k) => {
     const r = wrapNode.getBoundingClientRect();
     pos.current = { x: e.clientX - r.left, y: e.clientY - r.top };
+    sourceRef.current = "pointer";
     if (k !== activeKey) setActiveKey(k);
     else place();
   };
   const focusAt = (k, x, y) => {
     pos.current = { x, y };
+    sourceRef.current = "keyboard";
     setActiveKey(k);
+    setAnnouncedKey(k);
   };
-  return { activeKey, setActiveKey, tipRef, hover, focusAt };
+  const clearPointer = () => {
+    if (sourceRef.current === "pointer") setActiveKey(null);
+  };
+  const clearAll = () => {
+    sourceRef.current = null;
+    setActiveKey(null);
+    setAnnouncedKey(null);
+  };
+  return { activeKey, announcedKey, tipRef, hover, focusAt, clearPointer, clearAll };
 }
 
 // Tooltip box. Starts hidden and useChartTip positions and shows it
@@ -96,6 +115,81 @@ function ChartTooltip({ tipRef, children }) {
       {children}
     </div>
   );
+}
+
+// Shared frame for both bar charts: wrapper, svg, tooltip and the
+// aria-live summary. Plot children sit in one group, and leaving
+// that group (for labels, the token axis or the brush) clears a
+// pointer-set bar. The live summary renders the announced text,
+// which only keyboard focus changes. Per-chart extras such as the
+// brush, axis labels and the token line go in beforePlot/afterPlot.
+function BarChartShell({ wrapRef, width, height, ariaLabel, onKeyDown, onBlur,
+  clearPointer, tipRef, tip, announced, beforePlot, afterPlot, children }) {
+  return (
+    <div ref={wrapRef} className="svgChartWrap" style={{ width: "100%", height }}>
+      {width > 0 ? (
+        <svg width={width} height={height} role="group" tabIndex={0}
+          aria-label={ariaLabel} onKeyDown={onKeyDown} onBlur={onBlur}>
+          {beforePlot}
+          <g onMouseLeave={clearPointer}>{children}</g>
+          {afterPlot}
+        </svg>
+      ) : null}
+      <ChartTooltip tipRef={tipRef}>{tip}</ChartTooltip>
+      <span className="srOnly" aria-live="polite">{announced}</span>
+    </div>
+  );
+}
+
+// One stacked bar: optional highlight band, a plain lower segment
+// and a top-rounded upper segment. Zero-height segments draw nothing.
+function StackedBar({ bandX, band, top, plotH, active, bx, barW,
+  lowY, lowH, lowFill, upY, upH, upFill, segProps, noPointer }) {
+  return (
+    <g pointerEvents={noPointer ? "none" : undefined}>
+      {active ? (
+        <rect x={bandX} y={top} width={band} height={plotH} fill="var(--chip)" opacity={0.5} />
+      ) : null}
+      {lowH > 0 ? <rect x={bx} y={lowY} width={barW} height={lowH} fill={lowFill} {...segProps} /> : null}
+      {upH > 0 ? <path d={topRounded(bx, upY, barW, upH)} fill={upFill} {...segProps} /> : null}
+    </g>
+  );
+}
+
+// Invisible full-height bands that take hover (and click, when a
+// chart offers selection). They tile the whole plot, so moving
+// between bars never leaves the plot group above.
+function HitBands({ items, left, top, band, plotH, keyOf, hover, onPick }) {
+  return (
+    <g>
+      {items.map((d, i) => (
+        <rect key={"hit" + keyOf(d)} x={left + i * band} y={top} width={band} height={plotH}
+          fill="transparent" style={onPick ? { cursor: "pointer" } : undefined}
+          onMouseMove={(e) => hover(e, keyOf(d))}
+          onClick={onPick ? () => onPick(d) : undefined} />
+      ))}
+    </g>
+  );
+}
+
+// Shared chart keys: Escape clears, arrows step the announced bar.
+// guardTarget keeps keys on the chart itself when focusable
+// children (the brush sliders) handle their own. onEnter, when
+// given, opens the active bar.
+function makeChartKeyHandler({ activeIdx, count, focusAtIndex, clearAll, guardTarget, onEnter }) {
+  return (e) => {
+    if (guardTarget && e.target !== e.currentTarget) return;
+    if (onEnter && (e.key === "Enter" || e.key === " ") && activeIdx >= 0) {
+      e.preventDefault();
+      onEnter();
+      return;
+    }
+    if (e.key === "Escape") { clearAll(); return; }
+    const n = chartKeyIndex(e.key, activeIdx, count);
+    if (n == null) return;
+    e.preventDefault();
+    focusAtIndex(n);
+  };
 }
 
 function ChartTip({ d }) {
@@ -156,7 +250,10 @@ function BrushStrip({ data, range, onChange, x, y, w, totalMax }) {
     } else if (mode === "pan") {
       dragRef.current = { mode, off: f - a };
     } else {
-      dragRef.current = { mode };
+      // Resize keeps a grab offset like pan does, so the edge
+      // follows the pointer instead of jumping on the first move.
+      const edgeFloat = mode === "left" ? a : b + 1;
+      dragRef.current = { mode, off: f - edgeFloat };
     }
   };
   const move = (e) => {
@@ -164,7 +261,7 @@ function BrushStrip({ data, range, onChange, x, y, w, totalMax }) {
     if (!drag) return;
     const f = idxFloat(e);
     if (drag.mode === "left" || drag.mode === "right") {
-      onChange(brushResize(range, drag.mode, Math.floor(f), count));
+      onChange(brushResizeAt(range, drag.mode, drag.off, f, count));
     } else {
       onChange(brushPan(range, drag.off, f, count));
     }
@@ -173,7 +270,17 @@ function BrushStrip({ data, range, onChange, x, y, w, totalMax }) {
   const band = w / count;
   const winX = x + a * band;
   const winW = (b - a + 1) * band;
-  const clampGrip = (gx) => Math.min(Math.max(gx, x), x + w - 10);
+  const [leftGripX, rightGripX] = gripPositions(winX, winW, x, w);
+  // Mini-bars depend on the data and strip geometry only, never on
+  // the window, so a drag re-render does not rebuild every rect.
+  const miniBars = React.useMemo(() => data.map((d, i) => {
+    const bh = totalMax > 0 ? ((d.model_s + d.overhead_s) / totalMax) * (h - 4) : 0;
+    return bh > 0 ? (
+      <rect key={d.run_id} x={x + i * band + band * 0.15} y={y + h - 2 - bh}
+        width={Math.max(1, band * 0.7)} height={bh}
+        fill="var(--barover)" opacity={0.55} pointerEvents="none" />
+    ) : null;
+  }), [data, totalMax, x, y, band]);
   const grip = (gx, mode) => (
     <g onPointerDown={down(mode)} style={{ cursor: "ew-resize", touchAction: "none" }}
       role="slider" tabIndex={0}
@@ -194,19 +301,12 @@ function BrushStrip({ data, range, onChange, x, y, w, totalMax }) {
     <g onPointerMove={move} onPointerUp={up} onPointerCancel={up} style={{ touchAction: "none" }}>
       <rect ref={stripRef} x={x} y={y} width={w} height={h}
         fill="var(--pre)" stroke="var(--line)" onPointerDown={down("jump")} />
-      {data.map((d, i) => {
-        const bh = totalMax > 0 ? ((d.model_s + d.overhead_s) / totalMax) * (h - 4) : 0;
-        return bh > 0 ? (
-          <rect key={d.run_id} x={x + i * band + band * 0.15} y={y + h - 2 - bh}
-            width={Math.max(1, band * 0.7)} height={bh}
-            fill="var(--barover)" opacity={0.55} pointerEvents="none" />
-        ) : null;
-      })}
+      {miniBars}
       <rect x={winX} y={y} width={winW} height={h} fill="var(--selected)"
         fillOpacity={0.75} stroke="var(--accent)"
         onPointerDown={down("pan")} style={{ cursor: "grab", touchAction: "none" }} />
-      {grip(clampGrip(winX), "left")}
-      {grip(clampGrip(winX + winW - 10), "right")}
+      {grip(leftGripX, "left")}
+      {grip(rightGripX, "right")}
     </g>
   );
 }
@@ -217,7 +317,7 @@ export function RunsBarChart({ runs, selected, onSelect }) {
   const data = chartData(runs, selected);
   const brush = showBrush(data.length);
   const height = brush ? 264 : 232;
-  const { activeKey, setActiveKey, tipRef, hover, focusAt } = useChartTip(wrapNode, width, height);
+  const { activeKey, announcedKey, tipRef, hover, focusAt, clearPointer, clearAll } = useChartTip(wrapNode, width, height);
   if (!data.length) return <div className="empty" style={{ minHeight: 120 }}>No runs in scope.</div>;
 
   const sig = data.map((d) => d.run_id).join("|");
@@ -243,52 +343,26 @@ export function RunsBarChart({ runs, selected, onSelect }) {
   });
   const activeIdx = view.findIndex((d) => d.run_id === activeKey);
   const active = activeIdx >= 0 ? view[activeIdx] : null;
+  const announcedIdx = view.findIndex((d) => d.run_id === announcedKey);
+  const announced = announcedIdx >= 0 ? view[announcedIdx] : null;
   // Keys only count on the chart itself. The brush sliders inside it
-  // handle their own.
-  const onKey = (e) => {
-    if (e.target !== e.currentTarget) return;
-    if ((e.key === "Enter" || e.key === " ") && active) {
-      e.preventDefault();
-      if (active.run_id && onSelect) onSelect(active.run_id);
-      return;
-    }
-    if (e.key === "Escape") { setActiveKey(null); return; }
-    const n = chartKeyIndex(e.key, activeIdx, view.length);
-    if (n == null) return;
-    e.preventDefault();
-    focusAt(view[n].run_id, left + n * band + band / 2, top + plotH / 3);
-  };
+  // handle their own. Enter and click selection stay with this chart.
+  const onKey = makeChartKeyHandler({
+    activeIdx, count: view.length, clearAll, guardTarget: true,
+    focusAtIndex: (n) => focusAt(view[n].run_id, left + n * band + band / 2, top + plotH / 3),
+    onEnter: () => { if (active && active.run_id && onSelect) onSelect(active.run_id); },
+  });
 
   return (
-    <div ref={wrapRef} className="svgChartWrap" style={{ width: "100%", height }}>
-      {width > 0 ? (
-        <svg width={width} height={height} role="group" tabIndex={0}
-          aria-label={"Stacked bar chart of model and overhead seconds for " + view.length
-            + " runs. Left and right arrows step through runs, Enter opens one."}
-          onKeyDown={onKey} onBlur={() => setActiveKey(null)}
-          onMouseLeave={() => setActiveKey(null)}>
-          <YGrid ticks={ticks} y={y} left={left} plotW={plotW} format={(v) => fmtTickSec(v, yStep)} />
-          <line x1={left} x2={left + plotW} y1={base} y2={base} stroke="var(--line)" />
-          {view.map((d, i) => {
-            const bx = left + i * band + (band - barW) / 2;
-            const mH = base - y(d.model_s);
-            const oH = y(d.model_s) - y(d.model_s + d.overhead_s);
-            return (
-              <g key={d.run_id}>
-                {d.run_id === activeKey ? (
-                  <rect x={left + i * band} y={top} width={band} height={plotH} fill="var(--chip)" opacity={0.5} />
-                ) : null}
-                {mH > 0 ? <rect x={bx} y={y(d.model_s)} width={barW} height={mH} fill="var(--barmodel)" {...segProps(d)} /> : null}
-                {oH > 0 ? <path d={topRounded(bx, y(d.model_s + d.overhead_s), barW, oH)} fill="var(--barover)" {...segProps(d)} /> : null}
-              </g>
-            );
-          })}
-          {view.map((d, i) => (
-            <rect key={"hit" + d.run_id} x={left + i * band} y={top} width={band} height={plotH}
-              fill="transparent" style={{ cursor: "pointer" }}
-              onMouseMove={(e) => hover(e, d.run_id)}
-              onClick={() => { if (d.run_id && onSelect) onSelect(d.run_id); }} />
-          ))}
+    <BarChartShell wrapRef={wrapRef} width={width} height={height}
+      ariaLabel={"Stacked bar chart of model and overhead seconds for " + view.length
+        + " runs. Left and right arrows step through runs, Enter opens one."}
+      onKeyDown={onKey} onBlur={clearAll} clearPointer={clearPointer}
+      tipRef={tipRef} tip={active ? <ChartTip d={active} /> : null}
+      announced={announced ? runSummary(announced) : ""}
+      beforePlot={<YGrid ticks={ticks} y={y} left={left} plotW={plotW} format={(v) => fmtTickSec(v, yStep)} />}
+      afterPlot={(
+        <g>
           {labels.map((i) => (
             <text key={"x" + i} x={left + i * band + band / 2} y={base + 16}
               textAnchor="middle" style={TICK_STYLE}>{view[i].time}</text>
@@ -297,13 +371,21 @@ export function RunsBarChart({ runs, selected, onSelect }) {
             <BrushStrip data={data} range={range} onChange={(r) => setWin({ sig, range: r })}
               x={left} y={height - 24} w={plotW} totalMax={maxAll} />
           ) : null}
-        </svg>
-      ) : null}
-      <ChartTooltip tipRef={tipRef}>
-        {active ? <ChartTip d={active} /> : null}
-      </ChartTooltip>
-      <span className="srOnly" aria-live="polite">{active ? runSummary(active) : ""}</span>
-    </div>
+        </g>
+      )}>
+      <line x1={left} x2={left + plotW} y1={base} y2={base} stroke="var(--line)" />
+      {view.map((d, i) => (
+        <StackedBar key={d.run_id} bandX={left + i * band} band={band} top={top} plotH={plotH}
+          active={d.run_id === activeKey}
+          bx={left + i * band + (band - barW) / 2} barW={barW}
+          lowY={y(d.model_s)} lowH={base - y(d.model_s)} lowFill="var(--barmodel)"
+          upY={y(d.model_s + d.overhead_s)} upH={y(d.model_s) - y(d.model_s + d.overhead_s)}
+          upFill="var(--barover)" segProps={segProps(d)} />
+      ))}
+      <HitBands items={view} left={left} top={top} band={band} plotH={plotH}
+        keyOf={(d) => d.run_id} hover={hover}
+        onPick={(d) => { if (d.run_id && onSelect) onSelect(d.run_id); }} />
+    </BarChartShell>
   );
 }
 
@@ -315,7 +397,7 @@ export function RecentRunsChart({ data, onSelect, scope }) {
 export function PerCallChart({ events, provider }) {
   const [wrapRef, width, wrapNode] = useWidth();
   const height = 220;
-  const { activeKey, setActiveKey, tipRef, hover, focusAt } = useChartTip(wrapNode, width, height);
+  const { activeKey, announcedKey, tipRef, hover, focusAt, clearPointer, clearAll } = useChartTip(wrapNode, width, height);
   if (provider === "claude-code") {
     return <p className="note">Claude Code doesn't report per-call time</p>;
   }
@@ -332,9 +414,13 @@ export function PerCallChart({ events, provider }) {
   const plotW = Math.max(0, width - left - right);
   const plotH = height - top - 36;
   const maxTime = data.reduce((m, d) => Math.max(m, d.active_s + d.stalled_s), 0);
-  const maxTok = data.reduce((m, d) => Math.max(m, d.input_tokens || 0), 0);
+  // Only the token axis can be all-null. Time segments are always
+  // numbers above, and Runs model/overhead seconds always are too.
+  // No recorded token count means no token ticks, not a 0 to 1 axis.
+  const tokValues = data.map((d) => d.input_tokens).filter((v) => v != null);
+  const maxTok = tokValues.length ? Math.max(...tokValues) : null;
   const time = linearTicks(maxTime);
-  const tok = linearTicks(maxTok);
+  const tok = linearTicks(maxTok, 4, true);
   const yT = (v) => top + plotH - (v / time.top) * plotH;
   const yK = (v) => top + plotH - (v / tok.top) * plotH;
   const base = yT(0);
@@ -351,66 +437,57 @@ export function PerCallChart({ events, provider }) {
   }, { path: "", pen: false }).path;
   const activeIdx = data.findIndex((d) => d.call === activeKey);
   const active = activeIdx >= 0 ? data[activeIdx] : null;
-  const onKey = (e) => {
-    if (e.key === "Escape") { setActiveKey(null); return; }
-    const n = chartKeyIndex(e.key, activeIdx, data.length);
-    if (n == null) return;
-    e.preventDefault();
-    focusAt(data[n].call, left + n * band + band / 2, top + plotH / 3);
-  };
+  const announcedIdx = data.findIndex((d) => d.call === announcedKey);
+  const announced = announcedIdx >= 0 ? data[announcedIdx] : null;
+  const onKey = makeChartKeyHandler({
+    activeIdx, count: data.length, clearAll,
+    focusAtIndex: (n) => focusAt(data[n].call, left + n * band + band / 2, top + plotH / 3),
+  });
 
   return (
-    <div ref={wrapRef} className="svgChartWrap" style={{ width: "100%", height }}>
-      {width > 0 ? (
-        <svg width={width} height={height} role="group" tabIndex={0}
-          aria-label={"Per-call model time bars and input token line for " + data.length
-            + " calls. Left and right arrows step through calls."}
-          onKeyDown={onKey} onBlur={() => setActiveKey(null)}
-          onMouseLeave={() => setActiveKey(null)}>
+    <BarChartShell wrapRef={wrapRef} width={width} height={height}
+      ariaLabel={"Per-call model time bars and input token line for " + data.length
+        + " calls. Left and right arrows step through calls."}
+      onKeyDown={onKey} onBlur={clearAll} clearPointer={clearPointer}
+      tipRef={tipRef} tip={active ? <PerCallTip d={active} /> : null}
+      announced={announced ? callSummary(announced) : ""}
+      beforePlot={(
+        <g>
           <YGrid ticks={time.ticks} y={yT} left={left} plotW={plotW} format={(v) => fmtTickSec(v, time.step)} />
           {tok.ticks.map((t) => (
             <text key={"k" + t} x={left + plotW + 8} y={yK(t) + 4} textAnchor="start" style={TICK_STYLE}>
               {fmt(t)}
             </text>
           ))}
-          <line x1={left} x2={left + plotW} y1={base} y2={base} stroke="var(--line)" />
-          {data.map((d, i) => {
-            const bx = left + i * band + (band - barW) / 2;
-            const aH = base - yT(d.active_s);
-            const sH = yT(d.active_s) - yT(d.active_s + d.stalled_s);
-            return (
-              <g key={d.call} pointerEvents="none">
-                {d.call === activeKey ? (
-                  <rect x={left + i * band} y={top} width={band} height={plotH} fill="var(--chip)" opacity={0.5} />
-                ) : null}
-                {aH > 0 ? <rect x={bx} y={yT(d.active_s)} width={barW} height={aH} fill="var(--barmodel)" /> : null}
-                {sH > 0 ? <path d={topRounded(bx, yT(d.active_s + d.stalled_s), barW, sH)} fill="var(--barstalled)" /> : null}
-              </g>
-            );
-          })}
-          {linePath ? (
-            <path d={linePath} fill="none" stroke="var(--ink)" strokeWidth={2} pointerEvents="none" />
-          ) : null}
-          {data.map((d, i) => (d.input_tokens == null ? null : (
-            <circle key={"dot" + d.call} cx={left + i * band + band / 2} cy={yK(d.input_tokens)} r={3}
-              fill="var(--card)" stroke="var(--ink)" strokeWidth={2} pointerEvents="none" />
-          )))}
-          {data.map((d, i) => (
-            <rect key={"hit" + d.call} x={left + i * band} y={top} width={band} height={plotH}
-              fill="transparent"
-              onMouseMove={(e) => hover(e, d.call)} />
-          ))}
+        </g>
+      )}
+      afterPlot={(
+        <g>
           {labels.map((i) => (
             <text key={"x" + i} x={left + i * band + band / 2} y={base + 16}
               textAnchor="middle" style={TICK_STYLE}>{data[i].label}</text>
           ))}
           <text x={left + plotW / 2} y={height - 2} textAnchor="middle" style={TICK_STYLE}>call</text>
-        </svg>
+        </g>
+      )}>
+      <line x1={left} x2={left + plotW} y1={base} y2={base} stroke="var(--line)" />
+      {data.map((d, i) => (
+        <StackedBar key={d.call} bandX={left + i * band} band={band} top={top} plotH={plotH}
+          active={d.call === activeKey} noPointer
+          bx={left + i * band + (band - barW) / 2} barW={barW}
+          lowY={yT(d.active_s)} lowH={base - yT(d.active_s)} lowFill="var(--barmodel)"
+          upY={yT(d.active_s + d.stalled_s)} upH={yT(d.active_s) - yT(d.active_s + d.stalled_s)}
+          upFill="var(--barstalled)" />
+      ))}
+      {linePath ? (
+        <path d={linePath} fill="none" stroke="var(--ink)" strokeWidth={2} pointerEvents="none" />
       ) : null}
-      <ChartTooltip tipRef={tipRef}>
-        {active ? <PerCallTip d={active} /> : null}
-      </ChartTooltip>
-      <span className="srOnly" aria-live="polite">{active ? callSummary(active) : ""}</span>
-    </div>
+      {data.map((d, i) => (d.input_tokens == null ? null : (
+        <circle key={"dot" + d.call} cx={left + i * band + band / 2} cy={yK(d.input_tokens)} r={3}
+          fill="var(--card)" stroke="var(--ink)" strokeWidth={2} pointerEvents="none" />
+      )))}
+      <HitBands items={data} left={left} top={top} band={band} plotH={plotH}
+        keyOf={(d) => d.call} hover={hover} />
+    </BarChartShell>
   );
 }

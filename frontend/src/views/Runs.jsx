@@ -19,13 +19,19 @@ export function summaryText(data) {
       + " · overhead " + fmtDur(s.overhead_ms) + " · last in " + fmt(s.last_input_tokens)
       + " / out " + fmt(s.last_output_tokens) + " · cost " + fmtCost(visibleCost(s)));
   });
-  const wall = sessions.reduce((a, s) => a + (s.wall_ms || 0), 0);
-  const model = sessions.reduce((a, s) => a + (s.model_ms || 0), 0);
+  // Totals cover only runs that recorded each figure, and say so.
+  const withWall = sessions.filter((s) => s.wall_ms != null);
+  const withModel = sessions.filter((s) => s.model_ms != null);
+  const wall = withWall.reduce((a, s) => a + s.wall_ms, 0);
+  const model = withModel.reduce((a, s) => a + s.model_ms, 0);
+  const allTimed = sessions.every((s) => s.wall_ms != null && s.model_ms != null);
   const priced = sessions.map((s) => visibleCost(s)).filter((v) => v != null);
   const cost = priced.reduce((a, v) => a + v, 0);
   lines.push("");
-  lines.push("Total: " + sessions.length + " session(s) · wall " + fmtDur(wall)
-    + " · model " + fmtDur(model) + " · overhead " + fmtDur(wall - model)
+  lines.push("Total: " + sessions.length + " session(s) · wall "
+    + (withWall.length ? fmtDur(wall) + " over " + withWall.length + " timed run(s)" : "–")
+    + " · model " + (withModel.length ? fmtDur(model) + " over " + withModel.length + " timed run(s)" : "–")
+    + " · overhead " + (allTimed && sessions.length ? fmtDur(wall - model) : "–")
     + " · recorded cost " + (priced.length ? fmtCost(cost) + " over " + priced.length + " priced run(s)" : "–"));
   return lines.join("\n");
 }

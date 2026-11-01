@@ -140,7 +140,11 @@ export default function Overview({ data, onSelect, onGoto }) {
   const wallP = fmtDurParts(wall), modelP = fmtDurParts(modelTotal);
   const inSum = events.reduce((a, e) => a + (e["gen_ai.usage.input_tokens"] ?? 0), 0);
   const cacheSum = events.reduce((a, e) => a + (e["gen_ai.usage.cached_tokens"] ?? 0), 0);
-  const cacheShare = inSum ? Math.round(cacheSum / inSum * 100) + "% cached" : "cache –";
+  // Strict: only a fully recorded run gets a cache share.
+  const cacheComplete = events.length > 0
+    && events.every((e) => e["gen_ai.usage.input_tokens"] != null
+      && e["gen_ai.usage.cached_tokens"] != null);
+  const cacheShare = cacheComplete && inSum ? Math.round(cacheSum / inSum * 100) + "% cached" : "cache –";
 
   const notes = [];
   if (data.provider === "claude-code")
@@ -235,7 +239,7 @@ export default function Overview({ data, onSelect, onGoto }) {
         </div>
         <div id="error" role="alert" style={{ display: (data.errors && data.errors.length) ? "block" : "none" }}>
           {(data.errors && data.errors.length)
-            ? "Latest session error: " + data.errors.map((e) => (e.operation || "call") + ": " + (e.error_type || "failed")).join("; ")
+            ? "Latest session error: " + data.errors.map((e) => (e.operation || "call") + ": " + (e.error_type || "failed")).join(". ")
             : ""}
         </div>
         {data.selected ? (

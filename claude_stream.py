@@ -12,11 +12,15 @@ import json
 
 
 def _input_with_cache(usage):
+    """Input tokens including cache, or None.
+
+    Strict: if any part was not recorded the total is unknown,
+    never a partial sum."""
     parts = [usage.get("input_tokens"), usage.get("cache_read_input_tokens"),
              usage.get("cache_creation_input_tokens")]
-    if all(p is None for p in parts):
+    if any(p is None for p in parts):
         return None
-    return sum(p or 0 for p in parts)
+    return sum(parts)
 
 
 def _content_blocks(event):
