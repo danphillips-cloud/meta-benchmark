@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, buildRunsQuery, chartData, compareSessions, costNote, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtCost, fmtSec, hasSharedFilters, inDateRange, isLongPrompt, promptPreview, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -24,6 +24,139 @@ test("visibleCost hides reported muse cost, shows computed and plain", () => {
   assert.equal(costNote(S({ cost_usd: 1, cost_source: "computed" })), "at your rates");
   assert.equal(costNote(S({ cost_usd: 1, cost_source: "reported" })), "not a Meta price, hidden");
   assert.equal(costNote(S({ cost_usd: null })), "not recorded");
+  assert.equal(visibleCost(S({ cost_usd: 1.5, cost_source: "list" })), 1.5);
+  assert.equal(costNote(S({ cost_usd: 1, cost_source: "list" })), "at Meta list");
+});
+
+test("run cost text, units and dash reasons", () => {
+  const resetMs = new Date(2026, 0, 1, 16, 12).getTime();
+  const snap = { window: { used_percent: 10, resets_at_ms: 100 }, weekly: { used_percent: 50, resets_at_ms: 200 } };
+  assert.equal(fmtAllowance(null), "–");
+  assert.equal(fmtAllowance({ window: null, weekly: null }), "–");
+  assert.equal(fmtAllowance({ window: 2, weekly: 1 }), "+2% short-term · +1% weekly");
+  assert.equal(fmtAllowance({ window: 0, weekly: null }), "+0% short-term · – weekly");
+  assert.equal(fmtAllowance({ window: 2.5, weekly: 1 }), "+2.5% short-term · +1% weekly");
+  assert.equal(fmtResetClock(resetMs), "4:12 pm");
+  assert.equal(fmtResetClock(new Date(2026, 0, 1, 0, 5).getTime()), "12:05 am");
+  assert.equal(fmtResetClock(null), null);
+  const start = { window: { used_percent: 12, resets_at_ms: resetMs }, weekly: { used_percent: 52, resets_at_ms: 999 } };
+  const end = { window: { used_percent: 14, resets_at_ms: resetMs }, weekly: { used_percent: 53, resets_at_ms: 999 } };
+  // Card big value: short-term movement only, weekly as fallback.
+  assert.deepEqual(allowanceBig(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: 2, weekly: 1 },
+  })), { value: "+2%", unit: "short-term" });
+  assert.deepEqual(allowanceBig(S({
+    allowance_start: start, allowance_end: start,
+    allowance_delta: { window: 0, weekly: 0 },
+  })), { value: "under 1%", unit: "short-term" });
+  assert.deepEqual(allowanceBig(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: null, weekly: 1 },
+  })), { value: "+1%", unit: "weekly" });
+  assert.equal(allowanceBig(S({})), null);
+  assert.equal(allowanceBig(S({
+    allowance_delta: { window: null, weekly: null },
+  })), null);
+  // Card detail line: the other limit, plus the reset clock.
+  assert.equal(allowanceDetail(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: 2, weekly: 1 },
+  })), "Weekly +1% · resets 4:12 pm");
+  assert.equal(allowanceDetail(S({
+    allowance_start: start, allowance_end: start,
+    allowance_delta: { window: 0, weekly: 0 },
+  })), "Weekly under 1% · resets 4:12 pm");
+  assert.equal(allowanceDetail(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: null, weekly: 1 },
+  })), "Short-term – · A usage limit reset during this run");
+  assert.equal(allowanceDetail(S({})), "");
+  // Equal readings say "under 1%", never "+0%".
+  assert.equal(fmtAllowance({ window: 0, weekly: 0 }, { window: true, weekly: true }), "under 1% short-term · under 1% weekly");
+  assert.equal(runCostText(S({
+    allowance_start: start, allowance_end: start,
+    allowance_delta: { window: 0, weekly: 0 },
+  })), "under 1% short-term · under 1% weekly");
+  // The two mini-table rows, resets clock on the short-term row only.
+  const rows = allowanceRows(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: 2, weekly: 1 },
+  }));
+  assert.deepEqual(rows, [
+    { label: "Short-term limit", range: "12% → 14%", moved: "+2%", resets: "4:12 pm", reason: null },
+    { label: "Weekly limit", range: "52% → 53%", moved: "+1%", resets: null, reason: null },
+  ]);
+  const equalRows = allowanceRows(S({
+    allowance_start: start, allowance_end: start,
+    allowance_delta: { window: 0, weekly: 0 },
+  }));
+  assert.equal(equalRows[0].range, "12% → 12%");
+  assert.equal(equalRows[0].moved, "under 1%");
+  assert.equal(equalRows[1].moved, "under 1%");
+  const missingRows = allowanceRows(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: 2, weekly: null },
+  }));
+  assert.equal(missingRows[1].moved, "–");
+  assert.equal(missingRows[1].reason, "A usage limit reset during this run");
+  // Info lines and hover text.
+  assert.deepEqual(allowanceInfoLines(S({})), [
+    "Your Muse plan has a short-term limit and a weekly limit.",
+    "These show how far each moved while this run ran.",
+    "The muse usage command calls the short-term one Window.",
+    "Other Muse use at the same time counts too.",
+  ]);
+  assert.equal(allowanceInfoLines(S({ raced: true })).length, 5);
+  assert.equal(allowanceHoverText(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: 2, weekly: 1 },
+  })), "Short-term limit: 12% → 14% · +2% · resets 4:12 pm\nWeekly limit: 52% → 53% · +1%\nOther Muse use at the same time counts too.");
+  // Panel toggle: hover opens, click pins, Escape and outside close.
+  let panel = { pinned: false, hover: false };
+  assert.equal(infoPanelOpen(panel), false);
+  panel = infoPanelNext(panel, "hover-in");
+  assert.equal(infoPanelOpen(panel), true);
+  panel = infoPanelNext(panel, "hover-out");
+  assert.equal(infoPanelOpen(panel), false);
+  panel = infoPanelNext(panel, "click");
+  panel = infoPanelNext(panel, "hover-out");
+  assert.equal(infoPanelOpen(panel), true);
+  panel = infoPanelNext(panel, "escape");
+  assert.equal(infoPanelOpen(panel), false);
+  panel = infoPanelNext(panel, "click");
+  panel = infoPanelNext(panel, "outside");
+  assert.equal(infoPanelOpen(panel), false);
+  panel = infoPanelNext(panel, "click");
+  panel = infoPanelNext(panel, "click");
+  assert.equal(infoPanelOpen(panel), false);
+  panel = infoPanelNext(panel, "hover-in");
+  panel = infoPanelNext(panel, "blur-out");
+  assert.equal(infoPanelOpen(panel), false);
+  assert.equal(infoPanelNext(panel, "bogus"), panel);
+  assert.equal(costUnit(S({ provider: "anthropic" })), "usd");
+  assert.equal(costUnit(S({ provider: "meta" })), "allowance");
+  assert.equal(costUnit(S({ provider: "echo" })), "none");
+  // Recorded USD wins, then allowance, then a dash.
+  assert.equal(runCostText(S({ provider: "claude-code", cost_usd: 1.25, cost_source: "list" })), "$1.2500");
+  assert.equal(runCostText(S({ allowance_delta: { window: 2, weekly: 1 } })), "+2% short-term · +1% weekly");
+  assert.equal(runCostText(S({})), "–");
+  assert.match(allowanceHoverText(S({
+    allowance_start: start, allowance_end: end,
+    allowance_delta: { window: 2, weekly: 1 }, raced: true,
+  })), /movements overlap/);
+  // Every dash carries its own reason.
+  assert.equal(costReason(S({ provider: "echo" })), "Echo runs bill nothing");
+  assert.equal(costReason(S({ provider: "anthropic", model: "muse-wonder-full-1.0" })), "No public price for muse-wonder-full-1.0");
+  assert.equal(costReason(S({ provider: "anthropic", input_tokens: null, output_tokens: 1 })), "A token count was not recorded");
+  assert.equal(costReason(S({ provider: "anthropic", input_tokens: 10, output_tokens: 1 })), "No list cost recorded for this run");
+  assert.equal(costReason(S({ provider: "claude-code", status: "running" })), "Cost lands when the run finishes");
+  assert.equal(costReason(S({ provider: "anthropic", status: "running" })), "Cost lands when the run finishes");
+  assert.equal(costReason(S({ provider: "claude-code", cost_usd: 9.5, cost_source: "reported" })), "Claude Code priced this from Anthropic's list. That is not a Meta price, so it is hidden");
+  assert.equal(costReason(S({})), "No usage reading was recorded for this run");
+  assert.equal(costReason(S({ status: "running", allowance_start: snap })), "Usage for this run lands when it finishes");
+  assert.equal(costReason(S({ allowance_start: snap, allowance_end: snap, allowance_delta: { window: null, weekly: null } })), "A usage limit reset during this run");
+  assert.equal(costReason(S({ provider: "claude-code", cost_usd: 1, cost_source: "list", pricing: { fetched: "2026-10-31" } })), "At Meta published list. Fetched 2026-10-31");
 });
 
 test("isLongPrompt flags long text and many lines only", () => {

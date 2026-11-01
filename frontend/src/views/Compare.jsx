@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router";
-import { fastestOf, fmtCost, fmtDur, fmtMs, legKey, localTime, median, raceProgress, shortText, visibleCost } from "../format.js";
+import { fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -36,6 +36,9 @@ function CompareSet({ data, onSelect }) {
   return (
     <section className="panel">
       <div className="panelHead"><div><div className="pt">{title}</div><div className="ps">{promptLine}</div></div></div>
+      {inSet.some((s) => fmtAllowance(s.allowance_delta) !== "–") ? (
+        <p className="hint">Muse runs show how much of your plan's usage limits they used.</p>
+      ) : null}
       {racing.length ? (
         <div className="tableWrap" style={{ marginBottom: 12 }}>
           <table>
@@ -65,7 +68,14 @@ function CompareSet({ data, onSelect }) {
               const runs = all.filter((s) => s.status === "completed");
               const med = (f) => { const v = median(runs.map(f)); return v == null ? "–" : fmtMs(v); };
               const medDur = (f) => fmtDur(median(runs.map(f)));
-              const cost = fmtCost(median(runs.map((s) => visibleCost(s))));
+              const usdMedian = median(runs.map((s) => visibleCost(s)));
+              const allowMedian = {
+                window: median(runs.map((s) => (s.allowance_delta ? s.allowance_delta.window : null))),
+                weekly: median(runs.map((s) => (s.allowance_delta ? s.allowance_delta.weekly : null))),
+              };
+              const cost = usdMedian != null ? fmtCost(usdMedian) : fmtAllowance(allowMedian, {
+                window: allowMedian.window === 0, weekly: allowMedian.weekly === 0,
+              });
               const latest = [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
                 .find((s) => s.status === "completed") || [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
               const cells = [key, runs.length + "/" + all.length + " ok", medDur((s) => s.wall_ms), medDur((s) => s.model_ms),
@@ -185,6 +195,9 @@ export default function Compare({ data, onSelect }) {
           ? <div className="empty">Pick one or two more sessions to compare against the selected run (3 runs side by side).</div>
           : (
             <div>
+              {[a, ...others].some((s) => fmtAllowance(s.allowance_delta) !== "–") ? (
+                <p className="hint">Muse runs show how much of your plan's usage limits they used.</p>
+              ) : null}
               <div className="tableWrap">
                 <table>
                   <thead>
@@ -197,15 +210,15 @@ export default function Compare({ data, onSelect }) {
                   <tbody>
                     {metrics.map(([name, f, isDur]) => {
                       const isCost = name === "Cost";
-                      const show = (v) => isCost ? fmtCost(v) : isDur ? fmtDur(v) : fmtMs(v);
+                      const show = (v, s) => isCost ? runCostText(s) : isDur ? fmtDur(v) : fmtMs(v);
                       const delta = (x, y) => isCost
                         ? ((x == null || y == null) ? "–" : ((x - y) > 0 ? "+" : (x - y) < 0 ? "-" : "") + fmtCost(Math.abs(x - y)))
                         : deltaText(x, y, isDur);
                       return (
                         <tr key={name}>
                           <td>{name}</td>
-                          <td className="num">{show(f(a))}</td>
-                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s))}</td>, <td key={s.run_id + "-dv"} className="num">{delta(f(a), f(s))}</td>])}
+                          <td className="num">{show(f(a), a)}</td>
+                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s), s)}</td>, <td key={s.run_id + "-dv"} className="num">{delta(f(a), f(s))}</td>])}
                         </tr>
                       );
                     })}

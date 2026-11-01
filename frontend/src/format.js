@@ -43,7 +43,7 @@ export const fmtMs = (n) => (n == null ? "–" : fmt(Math.round(n)));
 export const visibleCost = (s) => {
   if (!s || s.cost_usd == null) return null;
   if (String(s.model || "").startsWith("muse-")
-    && s.cost_source !== "computed") return null;
+    && s.cost_source !== "computed" && s.cost_source !== "list") return null;
   return s.cost_usd;
 };
 
@@ -52,7 +52,200 @@ export const fmtCost = (n) => (n == null ? "–" : "$" + Number(n).toFixed(4));
 export const costNote = (s) => {
   if (!s || s.cost_usd == null) return "not recorded";
   if (visibleCost(s) == null) return "not a Meta price, hidden";
-  return s.cost_source === "computed" ? "at your rates" : "reported";
+  if (s.cost_source === "computed") return "at your rates";
+  if (s.cost_source === "list") return "at Meta list";
+  return "reported";
+};
+
+// The unit a run is billed in. Paid paths bill USD. Muse paths
+// bill subscription allowance. Echo bills nothing.
+export const costUnit = (s) => {
+  if (!s) return "usd";
+  if (s.provider === "anthropic" || s.provider === "claude-code") return "usd";
+  if (s.provider === "echo") return "none";
+  return "allowance";
+};
+
+const fmtMovedPct = (v, equal) => {
+  if (v == null) return "–";
+  // Equal whole-percent readings mean the limit moved less than
+  // one point. Say exactly that, never "+0%".
+  if (v === 0 && equal) return "under 1%";
+  return "+" + v + "%";
+};
+
+// Recorded plan usage movement, or a dash when neither limit moved
+// on record. A missing limit dashes on its own. Plain labels only.
+// The short-term limit's length is never stated. It is not recorded.
+// `equal` marks limits whose start and end readings match.
+export const fmtAllowance = (delta, equal) => {
+  if (!delta || (delta.window == null && delta.weekly == null)) return "–";
+  const eq = equal || {};
+  return fmtMovedPct(delta.window, eq.window) + " short-term"
+    + " · " + fmtMovedPct(delta.weekly, eq.weekly) + " weekly";
+};
+
+const allowanceEqual = (s) => {
+  const start = (s && s.allowance_start) || {};
+  const end = (s && s.allowance_end) || {};
+  const eq = (key) => !!(start[key] && end[key]
+    && start[key].used_percent === end[key].used_percent);
+  return { window: eq("window"), weekly: eq("weekly") };
+};
+
+// A recorded reset instant as a local clock time, like "4:12 pm".
+export const fmtResetClock = (ms) => {
+  if (ms == null) return null;
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+    .replace(/\s+/g, " ").toLowerCase();
+};
+
+// One-cell cost display in the run's billed unit. A recorded USD
+// figure wins, then allowance, then a dash.
+export const runCostText = (s) => {
+  const usd = visibleCost(s);
+  if (usd != null) return fmtCost(usd);
+  if (costUnit(s) === "allowance") return fmtAllowance(s.allowance_delta, allowanceEqual(s));
+  return "–";
+};
+
+// The two Overview mini-table rows, from recorded readings only.
+// A missing limit's row carries a dash and its reason.
+export const allowanceRows = (s) => {
+  const d = (s && s.allowance_delta) || {};
+  const start = (s && s.allowance_start) || {};
+  const end = (s && s.allowance_end) || {};
+  const row = (key, label, withReset) => {
+    const before = start[key] ? start[key].used_percent : null;
+    const after = end[key] ? end[key].used_percent : null;
+    if (d[key] == null || before == null || after == null) {
+      return { label, range: "–", moved: "–", resets: null, reason: costReason(s) };
+    }
+    return {
+      label,
+      range: before + "% → " + after + "%",
+      moved: d[key] === 0 ? "under 1%" : "+" + d[key] + "%",
+      resets: withReset ? fmtResetClock(end[key].resets_at_ms) : null,
+      reason: null,
+    };
+  };
+  return [row("window", "Short-term limit", true),
+    row("weekly", "Weekly limit", false)];
+};
+
+// Overview Cost card big value for allowance runs: the short-term
+// movement only, in the same shape as the other cards (number big,
+// unit small). Weekly stands in when short-term is missing.
+export const allowanceBig = (s) => {
+  const d = s && s.allowance_delta;
+  if (!d) return null;
+  const eq = allowanceEqual(s);
+  if (d.window != null) return { value: fmtMovedPct(d.window, eq.window), unit: "short-term" };
+  if (d.weekly != null) return { value: fmtMovedPct(d.weekly, eq.weekly), unit: "weekly" };
+  return null;
+};
+
+// Overview Cost card detail line for allowance runs: the limit
+// that is not in the big value, plus the short-term reset time.
+export const allowanceDetail = (s) => {
+  const d = s && s.allowance_delta;
+  if (!d) return "";
+  const bigKey = d.window != null ? "window" : d.weekly != null ? "weekly" : null;
+  if (!bigKey) return "";
+  const otherKey = bigKey === "window" ? "weekly" : "window";
+  const label = otherKey === "window" ? "Short-term" : "Weekly";
+  if (d[otherKey] == null) return label + " – · " + costReason(s);
+  let text = label + " " + fmtMovedPct(d[otherKey], allowanceEqual(s)[otherKey]);
+  const end = (s.allowance_end || {}).window;
+  const clock = end ? fmtResetClock(end.resets_at_ms) : null;
+  if (clock) text += " · resets " + clock;
+  return text;
+};
+
+// The short explanation lines behind the "Details" button.
+export const allowanceInfoLines = (s) => {
+  const lines = [
+    "Your Muse plan has a short-term limit and a weekly limit.",
+    "These show how far each moved while this run ran.",
+    "The muse usage command calls the short-term one Window.",
+    "Other Muse use at the same time counts too.",
+  ];
+  if (s && s.raced) {
+    lines.push("Legs ran at the same time, so their movements overlap.");
+  }
+  return lines;
+};
+
+// Runs hover text: the two table rows as two lines, then the notes.
+export const allowanceHoverText = (s) => {
+  const rows = allowanceRows(s).map((r) => (r.reason
+    ? r.label + ": – (" + r.reason + ")"
+    : r.label + ": " + r.range + " · " + r.moved
+      + (r.resets ? " · resets " + r.resets : "")));
+  const notes = ["Other Muse use at the same time counts too."];
+  if (s && s.raced) {
+    notes.push("Legs ran at the same time, so their movements overlap.");
+  }
+  return [...rows, ...notes].join("\n");
+};
+
+// Info panel state machine, kept pure so it can be tested without
+// a DOM. Open on hover, pinned by click, closed by Escape,
+// outside click, or focus leaving the wrapper.
+export const infoPanelOpen = (state) => !!(state && (state.pinned || state.hover));
+
+export const infoPanelNext = (state, event) => {
+  const st = state || { pinned: false, hover: false };
+  switch (event) {
+    case "hover-in": return { ...st, hover: true };
+    case "hover-out": return { ...st, hover: false };
+    case "click": return { ...st, pinned: !st.pinned };
+    case "escape":
+    case "outside":
+    case "blur-out": return { pinned: false, hover: false };
+    default: return st;
+  }
+};
+
+// Why a cost cell shows what it shows. A source label when a
+// figure exists, a short reason when the cell is a dash.
+export const costReason = (s) => {
+  if (!s) return "No cost recorded";
+  if (visibleCost(s) != null) {
+    if (s.cost_source === "list") {
+      return "At Meta published list"
+        + (s.pricing && s.pricing.fetched ? ". Fetched " + s.pricing.fetched : "");
+    }
+    if (s.cost_source === "computed") {
+      return "Computed from recorded tokens at your rates. Input and output only";
+    }
+    return "Reported by the harness";
+  }
+  const unit = costUnit(s);
+  if (unit === "none") return "Echo runs bill nothing";
+  if (unit === "allowance") {
+    if (s.allowance_start && s.allowance_end) {
+      return "A usage limit reset during this run";
+    }
+    if (s.status === "running" && s.allowance_start) {
+      return "Usage for this run lands when it finishes";
+    }
+    return "No usage reading was recorded for this run";
+  }
+  if (s.cost_usd != null) {
+    return "Claude Code priced this from Anthropic's list. That is not a Meta price, so it is hidden";
+  }
+  if (s.model === "muse-wonder-full-1.0") return "No public price for muse-wonder-full-1.0";
+  if (s.status === "running") return "Cost lands when the run finishes";
+  if (s.model === "muse-wonder-1.0") {
+    if (s.input_tokens == null || s.output_tokens == null) {
+      return "A token count was not recorded";
+    }
+    return "No list cost recorded for this run";
+  }
+  return "No cost recorded";
 };
 
 export const fmtDurParts = (n) => {
@@ -1492,6 +1685,10 @@ export function runCard(data) {
       + (visibleCost(sel) == null ? "" : " (" + costNote(sel) + ")"),
     "",
   );
+  if (fmtAllowance(sel.allowance_delta) !== "–") {
+    lines.splice(lines.length - 1, 0,
+      "- Plan usage: " + fmtAllowance(sel.allowance_delta, allowanceEqual(sel)));
+  }
   if (f.isRunning) {
     lines.push("Run in progress. Totals grow as calls land.");
   } else if (!f.hasEvents) {

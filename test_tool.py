@@ -41,6 +41,12 @@ def load(name, path):
 run_muse = load("run_muse", HERE / "run-muse")
 server = load("muse_ui_server", HERE / "server.py")
 claude_stream = load("claude_stream", HERE / "claude_stream.py")
+pricing = load("pricing", HERE / "pricing.py")
+
+# Tests never query the real allowance. Capture returns None here.
+# Tests that need a snapshot patch it back locally.
+_real_capture_allowance_start = run_muse._capture_allowance_start
+run_muse._capture_allowance_start = lambda: None
 
 SESSION_RECORD = {
     "recorded_at": 1792791769858843,
@@ -1994,6 +2000,8 @@ class PricingTest(unittest.TestCase):
         self.assertIsNone(run_muse.counted_cost("muse-x", 5, None))
         self.assertEqual(run_muse.counted_cost("muse-x", 5,
                                                  "computed"), 5)
+        self.assertEqual(run_muse.counted_cost("muse-x", 5,
+                                                 "list"), 5)
         self.assertEqual(run_muse.counted_cost("claude-y", 5,
                                                  "reported"), 5)
         self.assertIsNone(run_muse.counted_cost("claude-y", None,
@@ -2026,6 +2034,284 @@ class PricingTest(unittest.TestCase):
         row = server.session_row(base)
         self.assertEqual(row["cost_usd"], 1.25)
         self.assertEqual(row["cost_source"], "computed")
+        snap = {"window": {"used_percent": 1, "resets_at_ms": 2},
+                "weekly": {"used_percent": 3, "resets_at_ms": 4}}
+        delta = {"window": 1, "weekly": None}
+        row = server.session_row(dict(
+            base, pricing={"model": "m"}, allowance_start=snap,
+            allowance_end=snap, allowance_delta=delta))
+        self.assertEqual(row["pricing"], {"model": "m"})
+        self.assertEqual(row["allowance_start"], snap)
+        self.assertEqual(row["allowance_end"], snap)
+        self.assertEqual(row["allowance_delta"], delta)
+
+    def test_list_cost_totals_split_fresh_and_cached(self):
+        # Totals record input including cached (Claude Code shape).
+        # Fresh 700k at $4, cached 300k at $0.20, out 100k at $20.
+        cost, used = pricing.list_cost(
+            "muse-wonder-1.0",
+            {"input_tokens": 1000000, "cached_tokens": 300000,
+             "output_tokens": 100000}, None)
+        self.assertAlmostEqual(cost, 2.8 + 0.06 + 2.0)
+        self.assertEqual(used["source"], pricing.LIST_SOURCE)
+        self.assertEqual(used["fetched"], "2026-10-31")
+        self.assertEqual(used["cached_per_mtok"], 0.20)
+
+    def test_list_cost_calls_are_additive(self):
+        # Calls record input and cached separately (direct API).
+        calls = [{"input_tokens": 500000, "cached_tokens": 100000,
+                  "output_tokens": 50000},
+                 {"input_tokens": 500000, "cached_tokens": 0,
+                  "output_tokens": 50000}]
+        cost, _ = pricing.list_cost("muse-wonder-1.0", None, calls)
+        self.assertAlmostEqual(cost, 4.0 + 0.02 + 2.0)
+
+    def test_list_cost_missing_count_is_none(self):
+        model = "muse-wonder-1.0"
+        for totals in ({"input_tokens": None, "cached_tokens": 1,
+                        "output_tokens": 1},
+                       {"input_tokens": 1, "cached_tokens": None,
+                        "output_tokens": 1},
+                       {"input_tokens": 1, "cached_tokens": 1,
+                        "output_tokens": None},
+                       {"input_tokens": 1, "cached_tokens": 5,
+                        "output_tokens": 1}):
+            self.assertEqual(pricing.list_cost(model, totals, None),
+                             (None, None))
+        partial = [{"input_tokens": 1, "cached_tokens": None,
+                    "output_tokens": 1}]
+        self.assertEqual(pricing.list_cost(model, None, partial),
+                         (None, None))
+        self.assertEqual(pricing.list_cost(model, None, []),
+                         (None, None))
+        # No public price. Never borrowed from the other model.
+        self.assertEqual(pricing.list_cost(
+            "muse-wonder-full-1.0",
+            {"input_tokens": 10, "cached_tokens": 0,
+             "output_tokens": 10}, None), (None, None))
+
+    def test_allowance_snapshot_both_shapes(self):
+        cli = json.loads((HERE / "fixtures" / "muse-usage.json")
+                         .read_text())
+        snap = pricing.allowance_snapshot(cli)
+        self.assertEqual(snap, {
+            "window": {"used_percent": 12,
+                       "resets_at_ms": 1793554337000},
+            "weekly": {"used_percent": 52,
+                       "resets_at_ms": 1793577600000}})
+        stream = {"tier": None,
+                  "window": {"used_percent": 3, "resets_at_ms": 111},
+                  "weekly": {"used_percent": 19, "resets_at_ms": 222},
+                  "as_of_ms": 333, "source": "stream"}
+        self.assertEqual(pricing.allowance_snapshot(stream), {
+            "window": {"used_percent": 3, "resets_at_ms": 111},
+            "weekly": {"used_percent": 19, "resets_at_ms": 222}})
+        self.assertIsNone(pricing.allowance_snapshot(None))
+        self.assertIsNone(pricing.allowance_snapshot(
+            {"window": {"used_percent": 3}}))
+        self.assertIsNone(pricing.allowance_snapshot(
+            {"allowance": {"window": {"usedPercent": "12",
+                                       "resetsAtMs": 1},
+                            "weekly": {"usedPercent": 2,
+                                       "resetsAtMs": 2}}}))
+
+    def test_allowance_delta_and_reset_guard(self):
+        start = {"window": {"used_percent": 10, "resets_at_ms": 100},
+                 "weekly": {"used_percent": 50, "resets_at_ms": 200}}
+        end = {"window": {"used_percent": 12, "resets_at_ms": 100},
+               "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        self.assertEqual(pricing.allowance_delta(start, end),
+                         {"window": 2, "weekly": 1})
+        self.assertEqual(pricing.allowance_delta(start, start),
+                         {"window": 0, "weekly": 0})
+        reset = {"window": {"used_percent": 1, "resets_at_ms": 900},
+                 "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        self.assertEqual(pricing.allowance_delta(start, reset),
+                         {"window": None, "weekly": 1})
+        down = {"window": {"used_percent": 9, "resets_at_ms": 100},
+                "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        self.assertEqual(pricing.allowance_delta(start, down),
+                         {"window": None, "weekly": 1})
+        empty = {"window": None, "weekly": None}
+        self.assertEqual(pricing.allowance_delta(None, end), empty)
+        self.assertEqual(pricing.allowance_delta(start, None), empty)
+
+    def test_list_beats_reported_and_own_rates_win(self):
+        result = {"session_id": None, "wall_ms": 5, "exit_code": 0,
+                  "timed_out": False, "interrupted": False,
+                  "reply": "x", "calls": [], "timeline": [],
+                  "command": "fake", "usage_model": "muse-wonder-1.0",
+                  "error_override": None, "api_ms": None,
+                  "ttft_ms": None, "num_turns": None, "cost_usd": 9.5,
+                  "totals": {"input_tokens": 1000,
+                             "output_tokens": 100,
+                             "cached_tokens": 200}}
+        report = self._run_with_fake(
+            "run_claude_code", dict(result), provider="claude-code",
+            model="muse-wonder-1.0", pricing={})
+        self.assertAlmostEqual(report["cost_usd"], 0.00524)
+        self.assertEqual(report["cost_source"], "list")
+        self.assertEqual(report["pricing"]["source"],
+                         pricing.LIST_SOURCE)
+        own = run_muse.parse_pricing(
+            {"input_per_mtok": 1000000, "output_per_mtok": 1000000})
+        report = self._run_with_fake(
+            "run_claude_code", dict(result), provider="claude-code",
+            model="muse-wonder-1.0", pricing=own)
+        self.assertAlmostEqual(report["cost_usd"], 1100.0)
+        self.assertEqual(report["cost_source"], "computed")
+
+    def test_capture_allowance_start_with_fake_runner(self):
+        fixture = (HERE / "fixtures" / "muse-usage.json").read_text()
+
+        class Proc:
+            def __init__(self, code, out):
+                self.returncode, self.stdout = code, out
+
+        snap = _real_capture_allowance_start(
+            runner=lambda *a, **k: Proc(0, fixture))
+        self.assertEqual(snap["window"]["used_percent"], 12)
+        self.assertIsNone(_real_capture_allowance_start(
+            runner=lambda *a, **k: Proc(1, "")))
+        self.assertIsNone(_real_capture_allowance_start(
+            runner=lambda *a, **k: Proc(0, "not json")))
+
+        def boom(*a, **k):
+            raise OSError("no binary")
+
+        self.assertIsNone(_real_capture_allowance_start(runner=boom))
+
+    def test_end_snapshot_parsed_from_stream(self):
+        # Stub the harness process so run_muse_exec parses a
+        # recorded-style run_usage line from its event stream.
+        usage_line = json.dumps({"payload": {
+            "kind": "run_usage",
+            "models": [{"model": "muse-wonder-full-1.0"}],
+            "allowance": {
+                "tier": None,
+                "window": {"used_percent": 14, "resets_at_ms": 100},
+                "weekly": {"used_percent": 51, "resets_at_ms": 200},
+                "as_of_ms": 50, "source": "stream"}}})
+        terminal_line = json.dumps({"payload": {
+            "kind": "run_terminal", "text": "hi"}})
+
+        def fake_run_process(cmd, cwd, env, stdout_path, timeout,
+                             **kwargs):
+            Path(stdout_path).write_text(
+                usage_line + "\n" + terminal_line + "\n")
+            return {"wall_ms": 5, "exit_code": 1,
+                    "timed_out": False, "interrupted": False}
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir()
+            with mock.patch.object(run_muse, "run_process",
+                                   fake_run_process), \
+                    mock.patch.object(run_muse, "harvest_calls",
+                                      lambda sid: []):
+                result = run_muse.run_muse_exec(
+                    "hi", run_dir, "meta", "muse-wonder-full-1.0",
+                    False, 60, session_id="s-allowance-test")
+        self.assertEqual(result["allowance_end"], {
+            "window": {"used_percent": 14, "resets_at_ms": 100},
+            "weekly": {"used_percent": 51, "resets_at_ms": 200}})
+
+    def test_run_prompt_records_allowance_delta(self):
+        import contextlib
+        start = {"window": {"used_percent": 12, "resets_at_ms": 100},
+                 "weekly": {"used_percent": 50, "resets_at_ms": 200}}
+        end = {"window": {"used_percent": 14, "resets_at_ms": 100},
+               "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        result = run_muse._empty_result(
+            "fake", exit_code=0, wall_ms=5, allowance_end=end)
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            out = io.StringIO()
+            with mock.patch.object(run_muse, "RUNS", runs), \
+                    mock.patch.object(run_muse, "run_muse_exec",
+                                      lambda *a, **k: result), \
+                    mock.patch.object(
+                        run_muse, "_capture_allowance_start",
+                        lambda: start), \
+                    contextlib.redirect_stdout(out):
+                report = run_muse.run_prompt(
+                    "hi", provider="meta",
+                    model="muse-wonder-full-1.0")
+            entries = [json.loads(line) for line in
+                       (runs / "index.jsonl").read_text().splitlines()]
+        self.assertEqual(entries[0]["allowance_start"], start)
+        self.assertEqual(report["allowance_start"], start)
+        self.assertEqual(report["allowance_end"], end)
+        self.assertEqual(report["allowance_delta"],
+                         {"window": 2, "weekly": 1})
+        self.assertIn("Muse plan: used 2% of short-term limit "
+                      "(12→14%), 1% of weekly limit (50→51%)",
+                      out.getvalue())
+
+    def test_capture_failure_still_records_run(self):
+        end = {"window": {"used_percent": 14, "resets_at_ms": 100},
+               "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        result = run_muse._empty_result(
+            "fake", exit_code=0, wall_ms=5, allowance_end=end)
+        self.assertIsNone(run_muse._capture_allowance_start())
+        report = self._run_with_fake(
+            "run_muse_exec", result, provider="meta",
+            model="muse-wonder-full-1.0")
+        self.assertIsNone(report["allowance_start"])
+        self.assertEqual(report["allowance_end"], end)
+        self.assertEqual(report["allowance_delta"],
+                         {"window": None, "weekly": None})
+
+    def test_terminal_summary_list_label_and_allowance(self):
+        import contextlib
+        r = {"wall_ms": 5, "reply": "", "totals": None,
+             "calls": [{"duration_ms": 5, "input_tokens": 2,
+                        "output_tokens": 1}]}
+        base = {"provider": "claude-code", "model": "muse-wonder-1.0",
+                "status": "completed", "metrics_unavailable": False,
+                "cost_usd": 0.25, "cost_source": "list",
+                "error": None, "run_id": "x",
+                "timeout_seconds": 300,
+                "allowance_start": {
+                    "window": {"used_percent": 12, "resets_at_ms": 1},
+                    "weekly": {"used_percent": 52, "resets_at_ms": 2}},
+                "allowance_end": {
+                    "window": {"used_percent": 14, "resets_at_ms": 1},
+                    "weekly": {"used_percent": 53, "resets_at_ms": 9}},
+                "allowance_delta": {"window": 2, "weekly": None}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run_muse.print_summary(dict(base), r, Path("/tmp"))
+        text = out.getvalue()
+        self.assertIn("cost $0.2500 (at Meta list)", text)
+        # Missing weekly reading drops its clause. No dash prose.
+        self.assertIn("Muse plan: used 2% of short-term limit (12→14%)",
+                      text)
+        self.assertNotIn("weekly", text.split("Muse plan:")[1])
+
+    def test_terminal_summary_under_one_percent(self):
+        import contextlib
+        snap = {"window": {"used_percent": 12, "resets_at_ms": 1},
+                "weekly": {"used_percent": 52, "resets_at_ms": 2}}
+        report = {"provider": "meta", "model": "muse-wonder-full-1.0",
+                  "status": "completed", "metrics_unavailable": False,
+                  "cost_usd": None, "cost_source": None,
+                  "error": None, "run_id": "x",
+                  "timeout_seconds": 300,
+                  "allowance_start": snap, "allowance_end": snap,
+                  "allowance_delta": {"window": 0, "weekly": 0}}
+        r = {"wall_ms": 5, "reply": "", "totals": None,
+             "calls": [{"duration_ms": 5, "input_tokens": 2,
+                        "output_tokens": 1}]}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            run_muse.print_summary(report, r, Path("/tmp"))
+        text = out.getvalue()
+        # Equal readings moved less than one point. Exact, not "+0%".
+        self.assertIn("Muse plan: used under 1% of short-term limit "
+                      "(12→12%), under 1% of weekly limit (52→52%)",
+                      text)
+        self.assertNotIn("0% of", text)
 
 
 class ManifestTest(unittest.TestCase):

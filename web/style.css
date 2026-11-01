@@ -100,6 +100,14 @@
   .stat .big { font-size:30px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; margin-top:4px; }
   .stat .big .unit { font-size:13px; font-weight:550; color:var(--faint); letter-spacing:0; }
   .stat .detail { font-size:12px; color:var(--muted); margin-top:4px; font-variant-numeric:tabular-nums; }
+  .usageBig > span { white-space:nowrap; }
+  @media (max-width:1100px){ .stat .big.usageBig{font-size:23px; line-height:1.15;} }
+  .usageTable { border-collapse:collapse; margin:2px 0 6px; width:100%; }
+  .usageTable td { padding:1px 8px 1px 0; text-align:left; }
+  .infoWrap { position:relative; margin-top:6px; }
+  .infoBtn { background:none; border:none; padding:0; font:inherit; font-size:12px; color:var(--muted); cursor:pointer; text-decoration:underline; }
+  .infoPanel { position:absolute; left:0; top:calc(100% + 6px); z-index:30; width:320px; max-width:min(320px, calc(100vw - 48px)); box-sizing:border-box; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:9px 11px; font-size:12px; line-height:1.55; color:var(--ink); box-shadow:0 8px 22px rgba(0,0,0,.14); overflow-wrap:anywhere; }
+  .infoPanel span { display:block; }
   @media (max-width:900px){ .stats{grid-template-columns:repeat(2,1fr);} }
   @media (max-width:480px){ .stats{grid-template-columns:1fr;} .stat .big{font-size:26px;} }
   .panelGrid { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px; margin-top:12px; align-items:start; }

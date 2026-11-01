@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import muse_log  # noqa: E402
+import pricing as list_pricing  # noqa: E402
 from claude_stream import (  # noqa: E402,F401
     feed_live_event, new_live_tracker, parse_claude_stream,
     tracker_live_state)
@@ -286,13 +287,67 @@ def counted_cost(model, cost_usd, cost_source):
     page hides that figure. Budgets and the terminal must apply
     the same rule, or the three views of one run disagree. A
     computed cost uses the user's own rates and always counts.
+    A list cost is Meta's published list and also counts.
     """
     if cost_usd is None:
         return None
     if str(model or "").startswith("muse-") \
-            and cost_source != "computed":
+            and cost_source not in ("computed", "list"):
         return None
     return cost_usd
+
+
+def _capture_allowance_start(runner=None):
+    """Allowance snapshot from `muse usage --json`, or None.
+
+    A free local query with no model turn. Any failure (no
+    binary, bad output, timeout) gives None and the run carries
+    on with a dash. Never raises. The runner is injectable so
+    tests never execute anything.
+    """
+    run = runner or subprocess.run
+    try:
+        proc = run(["muse", "usage", "--json"], capture_output=True,
+                   text=True, timeout=15, env=_clean_env())
+        if proc.returncode != 0:
+            return None
+        return list_pricing.allowance_snapshot(json.loads(proc.stdout))
+    except Exception:
+        return None
+
+
+def _trim_percent(value):
+    if float(value).is_integer():
+        value = int(value)
+    return str(value)
+
+
+def _plan_usage_text(report):
+    """The "Muse plan: used ..." terminal segment, or "".
+
+    Plain labels from the recorded readings only. The
+    short-term limit's length is never stated. It is not
+    recorded.
+    """
+    delta = report.get("allowance_delta") or {}
+    start = report.get("allowance_start") or {}
+    end = report.get("allowance_end") or {}
+    parts = []
+    for key, label in (("window", "short-term"), ("weekly", "weekly")):
+        moved = delta.get(key)
+        if moved is None:
+            continue
+        # Equal whole-percent readings moved less than one point.
+        amount = "under 1%" if moved == 0 else f"{_trim_percent(moved)}%"
+        text = f"{amount} of {label} limit"
+        before = (start.get(key) or {}).get("used_percent")
+        after = (end.get(key) or {}).get("used_percent")
+        if before is not None and after is not None:
+            text += f" ({_trim_percent(before)}→{_trim_percent(after)}%)"
+        parts.append(text)
+    if not parts:
+        return ""
+    return " · Muse plan: used " + ", ".join(parts)
 
 
 def paid_notice(model):
@@ -693,7 +748,7 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
     exit_code = proc["exit_code"]
     timed_out = proc["timed_out"]
     interrupted = proc["interrupted"]
-    reply, usage_model = "", None
+    reply, usage_model, allowance_end = "", None, None
     for line in (run_dir / "events.jsonl").read_text(errors="replace").splitlines():
         try:
             e = json.loads(line)
@@ -706,6 +761,10 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
             models = payload.get("models") or []
             if models and models[0].get("model"):
                 usage_model = models[0]["model"]
+            snapshot = list_pricing.allowance_snapshot(
+                payload.get("allowance"))
+            if snapshot is not None:
+                allowance_end = snapshot
     # Read the log once even after a timeout or Ctrl+C, so finished calls
     # are kept. Only wait for a late flush when the run exited cleanly.
     calls = harvest_calls(session_id) if provider != "echo" else []
@@ -722,6 +781,7 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
         "calls": calls, "timeline": build_timeline(session_id, wall_ms),
         "command": " ".join(cmd), "usage_model": usage_model,
         "needs_approval": proc.get("needs_approval"),
+        "allowance_end": allowance_end,
     }
 
 
@@ -848,6 +908,8 @@ BASE_REPORT = {
     "exit_code": None, "reply": "", "calls": [], "timeline": [],
     "api_ms": None, "ttft_ms": None, "num_turns": None,
     "cost_usd": None, "cost_source": None, "pricing": None,
+    "allowance_start": None, "allowance_end": None,
+    "allowance_delta": None,
     "totals": None, "metrics_unavailable": False,
     "error": None, "turn_index": None, "raced": False,
 }
@@ -896,9 +958,11 @@ def _ui_suffix():
 def print_summary(report, r, run_dir):
     status = report["status"]
     label = f"{report['provider']}/{report['model']}"
+    allow_text = _plan_usage_text(report)
     if report["metrics_unavailable"]:
         print(f"[{label}] wall {r['wall_ms']} ms · "
-              "model metrics unavailable (no model records in session log)")
+              "model metrics unavailable "
+              f"(no model records in session log){allow_text}")
     else:
         # Strict totals: one missing call value makes the total
         # unknown (a dash), never a partial sum.
@@ -929,9 +993,11 @@ def print_summary(report, r, run_dir):
             cost_text = f" · cost ${shown_cost:.4f}"
             if report.get("cost_source") == "computed":
                 cost_text += " (at your rates)"
+            elif report.get("cost_source") == "list":
+                cost_text += " (at Meta list)"
         print(f"[{label}] wall {r['wall_ms']} ms · model {model_text} · "
               f"in {in_text} · out {out_text} · {len(r['calls'])} call(s)"
-              f"{cost_text} · {status}")
+              f"{cost_text}{allow_text} · {status}")
     if r["reply"]:
         print(r["reply"][:500])
         if len(r["reply"]) > 500:
@@ -976,11 +1042,17 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     context_mode = "bare" if provider == "claude-code" \
         else ("minimal" if minimal else "full")
     version = harness_version(provider)
+    # Allowance start snapshot, captured before the running row
+    # and before wall timing starts, so the free usage query
+    # never inflates the run's wall. Muse paths only.
+    allowance_start = _capture_allowance_start() \
+        if is_muse(provider) and provider != "echo" else None
     # `at` is always the start time. The final report reuses this
     # instant and records its own finish in `finished_at`.
     started_at = datetime.now(timezone.utc).isoformat()
     running = {
         "at": started_at,
+        "allowance_start": allowance_start,
         "run_id": run_id, "prompt": prompt,
         "model": recorded_model(provider, model),
         "provider": provider, "session_id": live_session_id,
@@ -1055,6 +1127,11 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "reply": r["reply"], "calls": r["calls"], "timeline": r["timeline"],
         "api_ms": r.get("api_ms"), "ttft_ms": r.get("ttft_ms"),
         "num_turns": r.get("num_turns"), "cost_usd": r.get("cost_usd"),
+        "allowance_start": allowance_start,
+        "allowance_end": r.get("allowance_end"),
+        "allowance_delta": list_pricing.allowance_delta(
+            allowance_start, r.get("allowance_end"))
+        if allowance_start or r.get("allowance_end") else None,
         "totals": r.get("totals"),
         "metrics_unavailable": status == "completed" and not r["calls"],
         "error": (f"waiting for approval: {r['needs_approval']}"
@@ -1071,7 +1148,12 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     prefer_own = reported is not None \
         and str(report["model"] or "").startswith("muse-") \
         and pricing_for(report["model"], rates) is not None
-    if reported is not None and not prefer_own:
+    # Precedence: the user's own rates, then Meta's published
+    # list (muse-wonder-1.0 on paid paths only), then a reported
+    # figure. A muse-* reported figure stays stored but hidden.
+    list_ok = provider in ("anthropic", "claude-code") \
+        and report["model"] in list_pricing.LIST_PRICES
+    if reported is not None and not prefer_own and not list_ok:
         report["cost_source"] = "reported"
     else:
         cost, used = compute_cost(
@@ -1080,8 +1162,16 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
             report["cost_usd"] = cost
             report["cost_source"] = "computed"
             report["pricing"] = used
-        elif reported is not None:
-            report["cost_source"] = "reported"
+        else:
+            listed, list_used = list_pricing.list_cost(
+                report["model"], report["totals"], report["calls"]) \
+                if list_ok else (None, None)
+            if listed is not None:
+                report["cost_usd"] = listed
+                report["cost_source"] = "list"
+                report["pricing"] = list_used
+            elif reported is not None:
+                report["cost_source"] = "reported"
     write_run(run_dir, report)
     with _PRINT_LOCK:
         print_summary(report, r, run_dir)
