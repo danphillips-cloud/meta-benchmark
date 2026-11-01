@@ -313,7 +313,7 @@ function AppShell() {
                 <li><strong>Radar</strong> lines medians up by prompt and harness version. Run <code>./run-muse --suite</code> after a Muse update to fill a new column. A change figure needs at least two completed runs on both versions and is plain arithmetic on medians. The report buttons generate those same numbers as markdown.</li>
                 <li><strong>Why was this slow</strong> ranks one run from recorded data only. Buckets show where the wall went. Findings name what stands out inside them, like a stall inside model time. Thresholds only choose what surfaces. Every number is recorded, and Watch links open Replay at that moment.</li>
               </ul>
-              <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 test_tool.py</code> tests</p>
+              <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 tests/test_tool.py</code> tests</p>
               <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>
             </div>
           </details>

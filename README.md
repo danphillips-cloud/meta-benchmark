@@ -1,10 +1,23 @@
 # meta-benchmark
 
-A stopwatch for Muse Code, Meta's coding agent. Give it a prompt and it shows where the time went: how long the model spent thinking, and how much was Muse's own overhead. One command, runs locally, nothing to install beyond Muse Code. It tells you which part is slow before you guess.
+A local benchmark tool for Muse Code, Meta's coding agent. Give it a prompt and it records where the time went, what the run cost, and how it stacks up, all on a results page that runs on your machine.
 
-You can also compare models on the same prompt: two Meta models, or Meta against Anthropic.
+I built this for the [Meta AI Developer Hackathon](https://cerebralvalley.ai/e/meta-ai-developer-hackathon).
 
-Work in progress. I've tested it on macOS with Muse Code 1.4.13. Expect rough edges, and open an issue if something breaks.
+![A fuzzy coach with a clipboard and a stopwatch, standing on a gym floor between rows of server racks](docs/images/coach.jpg)
+
+- **Time.** Where each run's time went: model, tools, approval wait, and Muse's own overhead.
+- **Cost.** In the unit you pay in: how much of your Muse plan's limits a run used, or dollars for API runs.
+- **Compare.** Two Meta models, or Meta against Anthropic, on the same prompt.
+- **Replay and X-ray.** Watch a run back on its recorded clock, and see how the context grew call by call.
+- **Radar.** A fixed set of prompts tracked across Muse versions, so you see when an update makes things slower.
+
+Nothing is estimated. If a number wasn't recorded, the page shows a dash.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.jpg">
+  <img src="docs/images/overview-light.jpg" alt="The Overview page for one recorded run: time split cards, plan usage, and a ranked explanation of where the time went">
+</picture>
 
 ## Requirements
 
@@ -24,51 +37,107 @@ That is the whole install for everything below. These runs use a Muse subscripti
 
 ### 2. Run one real test
 
-Skip `what is 2+2` as a first run. It makes one model call, so the page has almost nothing to split. Start with one proper one-shot prompt instead. One-shot means everything the agent needs sits in a single prompt, with no follow-up.
+Start with a one-shot prompt. One-shot means everything the agent needs sits in a single prompt, with no follow-up. This one builds a working stopwatch.
 
 ```sh
-./run-muse --minimal "Read server.py and muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
+./run-muse --minimal "Build a stopwatch page in a new folder named stopwatch. Create exactly index.html, style.css, and app.js. Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. List laps newest first, with the fastest lap in green and the slowest in red. Use a dark theme with one cyan accent. Use no external URLs, fonts, images, libraries, or build step. It must work by opening index.html from the filesystem. Run node --check app.js if node is available, and fix any failure. Final reply under 100 words with the controls and the check result."
 ```
 
 The prompt is built to be checkable in one pass:
 
-- **Goal first.** Trace one run from a log file to the page.
-- **Files named.** The agent reads two files, not the whole repo.
-- **Evidence demanded.** A function name and a line number for each step.
-- **Hard limits.** No file changes. Under 300 words.
-- **An honesty check.** Anything unconfirmed gets flagged, not guessed.
+- **Goal first.** One small app in a named folder.
+- **Exact files.** `index.html`, `style.css` and `app.js`, nothing else.
+- **Behaviour you can test.** Buttons, two keys, and lap colours you can see.
+- **Hard limits.** No external URLs or libraries. It runs from the filesystem.
+- **A self-check.** The agent runs `node --check` and reports the result.
 
-`--minimal` drops reminders and personal context, so a repeat of the same command measures the same work.
+`--minimal` drops reminders and personal context, so a repeat of the same command measures the same work. It doesn't make the request much smaller. Muse's own context still rides along: call 1 of this run carried 29,455 input tokens.
 
-The terminal prints each model call as it finishes, then the reply with one summary line. I recorded this run on 2026-10-29 with Muse Code 1.4.14:
+The terminal prints each model call as it finishes, then the reply with one summary line. I recorded this run on 2026-11-01 with Muse Code 1.4.14:
 
 ```text
-[meta/muse-wonder-full-1.0] wall 72978 ms · model 69696 ms · in 276136 · out 3377 · 6 call(s) · completed
+[meta/muse-wonder-full-1.0] wall 93969 ms · model 88464 ms · in 544500 · out 6258 · 15 call(s) · Muse plan: used under 1% of short-term limit (0→0%), under 1% of weekly limit (58→58%) · completed
 ```
 
-Six model calls. Model time was 69.7 s of the 73.0 s wall. Tools took 0.4 s and Muse itself 2.9 s. Your numbers will differ. The split is the point.
+Your numbers will differ. The split is the point.
 
 ### 3. Read it on the page
 
-The results page opens at http://127.0.0.1:8765 (or your `PORT`). If another app already has that port, the launcher says so and the run carries on without the page. Use another port with `PORT=8766 ./run-muse`.
+Open http://127.0.0.1:8765.
 
-Open Overview for the time split and the plain-words summary of the run. Open Timeline for every recorded step in order. Open Replay and press play to watch the run back on its recorded clock, calls landing where they landed.
+Overview, above, gives the time split and a plain-words account of where the time went.
 
-Then check the answer itself. Pick one claim from the reply, open the cited file at the cited line, and confirm it. The stopwatch says where the time went. It does not say the answer is right.
+**Timeline** charts each model call in order, with input tokens as the line, then lists every recorded step.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/timeline-dark.jpg">
+  <img src="docs/images/timeline-light.jpg" alt="Timeline: a bar per model call for the stopwatch run, input tokens as a line, and the full step list below">
+</picture>
+
+**Replay** plays the run back on its recorded clock. Calls land where they landed.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/replay-dark.jpg">
+  <img src="docs/images/replay-light.jpg" alt="Replay paused mid-run: model call 8 in flight, 7 of 15 calls landed">
+</picture>
+
+**X-ray** shows what Muse sent on each call. Here the prompt was 650 bytes of an 85,386 byte first request.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/xray-dark.jpg">
+  <img src="docs/images/xray-light.jpg" alt="X-ray: request bytes per call split into system prompt, run context, and conversation, growing over 15 calls">
+</picture>
+
+Then check the work itself. The reply links the new folder. It sits in the run's own workspace, under `muse-runs/<run id>/workspace/stopwatch/`, so nothing in the repo changes. Open its `index.html`, press Space, then L a few times. The fastest lap should turn green and the slowest red.
+
+![The stopwatch built in the recorded run, with three laps](docs/images/stopwatch.jpg)
+
+This tool says where the time went. It does not say the work is right. That part is yours.
 
 ### 4. Run it again
 
-One run is a timing. A repeat is data. Run the same command again and Overview gains your usual time for the same prompt. To put two Meta models on the same work, compare them:
+One run is an anecdote. I ran this exact prompt twice, eight minutes apart, with the same model and the same Muse version. The first run took 6 calls and 60.9 s. The second took 15 calls and 94.0 s, 54% longer for the same work. Neither number is the answer. The pattern across repeats is.
 
 ```sh
-./run-muse --minimal --compare meta --repeat 3 "Read server.py and muse_log.py in this repo. Trace how one finished Muse run gets from a session log on disk to the numbers on the Overview page. Name each function in the chain in order, with file and line numbers. Say which function works out the model, tools, approval wait and Muse time split. Do not change any files. Keep the answer under 300 words, and flag anything you could not confirm from the code."
+./run-muse --minimal "Build a stopwatch page in a new folder named stopwatch. Create exactly index.html, style.css, and app.js. Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. List laps newest first, with the fastest lap in green and the slowest in red. Use a dark theme with one cyan accent. Use no external URLs, fonts, images, libraries, or build step. It must work by opening index.html from the filesystem. Run node --check app.js if node is available, and fix any failure. Final reply under 100 words with the controls and the check result."
+```
+
+Run it three more times. From the fourth run on, Overview measures each new run against your usual for this prompt: the median of your earlier runs with the same model and context. The Wall and Model cards gain a "usual" figure, and Why was this slow opens with how far off it the run landed. One recorded example reads "Wall 9.4 s against a usual 7.0 s for this prompt (median of 6 earlier runs, +34%)". On Runs, type `stopwatch` in the filter to line up every attempt.
+
+Then put two Meta models on the same work:
+
+```sh
+./run-muse --minimal --compare meta --repeat 3 "Build a stopwatch page in a new folder named stopwatch. Create exactly index.html, style.css, and app.js. Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. List laps newest first, with the fastest lap in green and the slowest in red. Use a dark theme with one cyan accent. Use no external URLs, fonts, images, libraries, or build step. It must work by opening index.html from the filesystem. Run node --check app.js if node is available, and fix any failure. Final reply under 100 words with the controls and the check result."
 ```
 
 Each round is two full runs of the prompt. The Compare page reads medians over the rounds, so one slow call cannot carry the result.
 
-For an open-ended session, run `./run-muse` with no prompt. Type a prompt at `muse>` and press Enter. Each prompt is one run, recorded the same way.
-
 Ready for a longer build? The [getting started guide](docs/getting-started.md) has five one-shot app prompts, plus a frame for writing your own.
+
+## Reading the numbers
+
+**Wall** is the whole run. It splits into **Model** (the model thinking), **Tools** (commands Muse ran), **Approval wait**, and **Muse** (everything else Muse did). All four come from timestamps in Muse's own log. A dash means the log didn't record it.
+
+Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
+
+**Cost** shows on Overview, Runs and Compare, always in the unit the run is billed in. Your Muse plan has two usage limits, a short-term one and a weekly one. Subscription runs show how much of each limit moved while they ran, as "+N% short-term · +N% weekly". The start reading comes from `muse usage` before the run launches. The end reading comes from the run stream. Overview shows the readings before and after in a small table, plus the clock time the short-term limit resets. Muse's own `muse usage` calls the short-term one Window. Other Muse use at the same time counts too, and the hover text says so. Muse counts whole percents. A run that moved a limit by less than one point shows under 1%. A limit reset mid-run, or a missing reading, shows a dash with the reason.
+
+Paid runs show USD. Claude models keep the cost Claude Code reports. `muse-wonder-1.0` runs on the `anthropic` and `claude-code` providers are priced from their recorded tokens at [Meta's published list](https://dev.meta.ai/docs/pricing-rate-limits), as fetched on 2026-10-31, and marked "at Meta list". Input, cached and output tokens all count. Any missing count shows a dash. The figure Claude Code itself attaches to `muse-*` models comes from Anthropic's list. That is not a Meta price, so it stays hidden. Set your own rates with `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model, and your rates win over the list. A cost at your rates is marked "at your rates" and counts input and output tokens only. Suite cost budgets count list costs too. Nothing is ever estimated.
+
+> **Note:** Meta publishes no per-token price for `muse-wonder-full-1.0`. Runs on it through the `anthropic` or `claude-code` providers show a dash for cost. Subscription runs on it still show plan usage. If you have your own rate for it, set it in `BENCH_PRICING`.
+
+## The page
+
+The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
+
+On your first visit a short walkthrough opens and points at each part of the page in turn. After that it lives behind Getting started in the sidebar.
+
+- **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
+- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
+- **Compare** shows medians for a compare set, with the fastest marked.
+- **Timeline**, **Replay** and **X-ray** are shown in [step 3](#3-read-it-on-the-page).
+- **Radar** shows median wall time per prompt across Muse versions, and the change between the two newest versions with enough runs.
+- **Export** saves the selected run as CSV or JSON.
 
 ## Usage
 
@@ -81,13 +150,11 @@ Ready for a longer build? The [getting started guide](docs/getting-started.md) h
 
 Single and Meta vs Meta use your Muse subscription. Meta vs Claude bills your API keys per token. So does Custom by default, because its default legs use Claude Code.
 
-Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) before it starts, and stops after 5 minutes. Claude Code runs print a line as each call lands, like `call 1 · arrived +10.8 s · 29k in`, plus the tool now running. That time is the gap since the previous stream event arrived. Claude Code reports no per call duration, so the line never claims model time. The page shows the same calls, timeline, and live state while the run is going.
+Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) before it starts, and stops after 5 minutes. Claude Code runs print a line as each call lands.
 
 `--compare meta --repeat N` runs N rounds, alternating the order each round.
 
 `./run-muse --watch` times your own interactive Muse session, read-only. Run Muse normally in another terminal.
-
-`--minimal` drops reminders and personal context so runs repeat cleanly. It doesn't make the prompt much smaller: Muse's own system prompt is ~27k tokens either way.
 
 In the prompt loop, `/mode meta`, `/mode claude` and `/mode single` switch mode, and the prompt shows it, for example `muse[meta]>`. `/help` lists commands. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
 
@@ -124,17 +191,16 @@ Budgets stop new entries from starting. They never kill a run in flight, because
 
 `--resume` writes progress to a state file beside the manifest. Stop partway, run the same command again, and completed entries are skipped under the same suite. Failed and timed out entries run again. Add `--fresh` to ignore saved progress. Without `--resume` nothing changes from before, and no state file is written. The runner reads the manifest once at the start, so edit it only between runs.
 
-### Providers
+## Providers and keys
 
 | `--provider` | Runs |
 |---|---|
 | `meta` (default) | Muse Code |
 | `claude-code` | Claude Code headless, `--bare` |
 | `anthropic` | One raw Messages API call |
+| `echo` | No model. Echoes the prompt, free, for trying the page offline |
 
 For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anything else goes to Anthropic. Meta's API serves `muse-wonder-1.0`.
-
-### API keys
 
 Only Claude Code and raw API runs need keys. Put them in a `.env` file in the repo root. It's gitignored.
 
@@ -142,33 +208,6 @@ Only Claude Code and raw API runs need keys. Put them in a `.env` file in the re
 MODEL_API_KEY=your-meta-key
 ANTHROPIC_API_KEY=your-anthropic-key
 ```
-
-## The page
-
-The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
-
-On your first visit a short walkthrough opens and points at each part of the page in turn. After that it lives behind Getting started in the sidebar.
-
-- **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
-- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
-- **Compare** shows medians for a compare set, with the fastest marked.
-- **Timeline** lists the model calls and every step Muse recorded, in order.
-- **Replay** plays a run back on its recorded clock. Calls land where they landed, at a speed you pick.
-- **X-ray** shows what Muse sent on each call, in recorded bytes.
-- **Radar** shows median wall time per prompt across Muse versions, and the change between the two newest versions with enough runs.
-- **Export** saves the selected run as CSV or JSON.
-
-## Reading the numbers
-
-**Wall** is the whole run. It splits into **Model** (the model thinking), **Tools** (commands Muse ran), **Approval wait**, and **Muse** (everything else Muse did). All four come from timestamps in Muse's own log. A dash means the log didn't record it.
-
-Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
-
-**Cost** shows on Overview, Runs and Compare, always in the unit the run is billed in. Your Muse plan has two usage limits, a short-term one and a weekly one. Subscription runs show how much of each limit moved while they ran, as "+N% short-term · +N% weekly". The start reading comes from `muse usage` before the run launches. The end reading comes from the run stream. Overview shows the readings before and after in a small table, plus the clock time the short-term limit resets. Muse's own `muse usage` calls the short-term one Window. Other Muse use at the same time counts too, and the hover text says so. Muse counts whole percents. A run that moved a limit by less than one point shows under 1%. A limit reset mid-run, or a missing reading, shows a dash with the reason.
-
-Paid runs show USD. Claude models keep the cost Claude Code reports. `muse-wonder-1.0` runs on the `anthropic` and `claude-code` providers are priced from their recorded tokens at [Meta's published list](https://dev.meta.ai/docs/pricing-rate-limits), as fetched on 2026-10-31, and marked "at Meta list". Input, cached and output tokens all count. Any missing count shows a dash. The figure Claude Code itself attaches to `muse-*` models comes from Anthropic's list. That is not a Meta price, so it stays hidden. Set your own rates with `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model, and your rates win over the list. A cost at your rates is marked "at your rates" and counts input and output tokens only. Suite cost budgets count list costs too. Nothing is ever estimated.
-
-> **Note:** Meta publishes no per-token price for `muse-wonder-full-1.0`. Runs on it through the `anthropic` or `claude-code` providers show a dash for cost. Subscription runs on it still show plan usage. If you have your own rate for it, set it in `BENCH_PRICING`.
 
 ## Configuration
 
@@ -187,18 +226,18 @@ Paid runs show USD. Claude models keep the cost Claude Code reports. `muse-wonde
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API endpoint |
 | `MUSE_SESSIONS_DIR` | `~/.local/share/muse/sessions` | Where Muse writes session logs |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for `anthropic` runs |
-| `PORT` | `8765` | Results page port |
+| `PORT` | `8765` | Results page port. If another app holds it, the launcher says so and runs carry on without the page |
 | `RUN_MUSE_NO_UI` | unset | `1` skips the web page |
 
 Run data stays in `muse-runs/`, which is gitignored. The page is served on `127.0.0.1` only.
 
-## Tests
+## Development
+
+Run the Python tests:
 
 ```sh
-python3 test_tool.py
+python3 tests/test_tool.py
 ```
-
-## Developing the UI
 
 The page is React, built into `web/app.js`, which is committed. Users don't need Node. To change the UI, edit `frontend/src`, then rebuild and commit `web/` with your change:
 

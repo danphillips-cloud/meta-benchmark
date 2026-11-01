@@ -24,6 +24,8 @@ from pathlib import Path
 from unittest import mock
 
 HERE = Path(__file__).parent
+# The repo root: run-muse, lib/, web/ and frontend/ live there.
+ROOT = HERE.parent
 
 # Tests never start the UI, so say so once here: this keeps "UI:"
 # lines out of the test output. Tests that exercise the UI pointer
@@ -38,10 +40,10 @@ def load(name, path):
     return mod
 
 
-run_muse = load("run_muse", HERE / "run-muse")
-server = load("muse_ui_server", HERE / "server.py")
-claude_stream = load("claude_stream", HERE / "claude_stream.py")
-pricing = load("pricing", HERE / "pricing.py")
+run_muse = load("run_muse", ROOT / "run-muse")
+server = load("muse_ui_server", ROOT / "lib" / "server.py")
+claude_stream = load("claude_stream", ROOT / "lib" / "claude_stream.py")
+pricing = load("pricing", ROOT / "lib" / "pricing.py")
 
 # Tests never query the real allowance. Capture returns None here.
 # Tests that need a snapshot patch it back locally.
@@ -317,7 +319,7 @@ class StaticFilesTest(unittest.TestCase):
                 ctype = resp.getheader("Content-Type") or ""
                 conn.close()
                 return resp.status, ctype, body
-            shell = (HERE / "web" / "index.html").read_bytes()
+            shell = (ROOT / "web" / "index.html").read_bytes()
             for path in ("/", "/index.html", "/runs/20260101-abc",
                          "/compare/set1", "/timeline/run-a",
                          "/some/deep/link"):
@@ -328,12 +330,12 @@ class StaticFilesTest(unittest.TestCase):
             status, ctype, body = get("/app.js")
             self.assertEqual(status, 200)
             self.assertIn("javascript", ctype)
-            self.assertEqual(body, (HERE / "web" / "app.js").read_bytes())
+            self.assertEqual(body, (ROOT / "web" / "app.js").read_bytes())
             self.assertTrue(body)
             status, ctype, body = get("/style.css")
             self.assertEqual(status, 200)
             self.assertIn("text/css", ctype)
-            self.assertEqual(body, (HERE / "web" / "style.css").read_bytes())
+            self.assertEqual(body, (ROOT / "web" / "style.css").read_bytes())
             self.assertTrue(body)
             status, ctype, body = get("/api/logs")
             self.assertEqual(status, 200)
@@ -655,7 +657,7 @@ class DeleteAppendRaceTest(unittest.TestCase):
                                     "delete never read the index")
                     child = subprocess.Popen(
                         [sys.executable, str(child_script),
-                         str(HERE), str(runs)])
+                         str(ROOT), str(runs)])
                     # Wait until the child is about to append.
                     deadline = time.monotonic() + 15
                     while not (runs / "child-ready").exists():
@@ -905,13 +907,13 @@ class StartTimeTest(unittest.TestCase):
 class VisibleSemicolonTest(unittest.TestCase):
     def test_fixed_user_visible_strings_have_no_semicolons(self):
         spots = [
-            (HERE / "run-muse", "Run Muse normally in another terminal"),
-            (HERE / "frontend/src/App.jsx", "totals cover every call"),
-            (HERE / "frontend/src/App.jsx",
+            (ROOT / "run-muse", "Run Muse normally in another terminal"),
+            (ROOT / "frontend/src/App.jsx", "totals cover every call"),
+            (ROOT / "frontend/src/App.jsx",
              "medians over completed runs only"),
-            (HERE / "frontend/src/views/Compare.jsx",
+            (ROOT / "frontend/src/views/Compare.jsx",
              "Same prompt for every leg"),
-            (HERE / "frontend/src/views/Overview.jsx",
+            (ROOT / "frontend/src/views/Overview.jsx",
              "Latest session error"),
         ]
         for path, needle in spots:
@@ -3626,9 +3628,8 @@ class IndexHtmlTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        here = Path(__file__).parent
-        cls.html = (here / "web" / "index.html").read_text()
-        src = here / "frontend" / "src"
+        cls.html = (ROOT / "web" / "index.html").read_text()
+        src = ROOT / "frontend" / "src"
         cls.src = "\n".join(
             p.read_text() for p in sorted(src.rglob("*.jsx"))) + "\n" + \
             "\n".join(p.read_text() for p in sorted(src.rglob("*.js")))

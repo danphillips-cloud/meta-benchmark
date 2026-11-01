@@ -25,12 +25,14 @@ import claude_stream  # noqa: E402
 import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
+# The repo root: run data and the built page live there, not in lib/.
+ROOT = HERE.parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 57
-INDEX = HERE / "muse-runs" / "index.jsonl"
-WEB_INDEX = HERE / "web" / "index.html"
-WEB_APP = HERE / "web" / "app.js"
-WEB_CSS = HERE / "web" / "style.css"
+VERSION = 58
+INDEX = ROOT / "muse-runs" / "index.jsonl"
+WEB_INDEX = ROOT / "web" / "index.html"
+WEB_APP = ROOT / "web" / "app.js"
+WEB_CSS = ROOT / "web" / "style.css"
 _SESSION_LOG_CACHE = {}
 _LOG_RECORDS_CACHE = {}
 
