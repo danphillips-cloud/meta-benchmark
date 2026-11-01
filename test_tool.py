@@ -2107,13 +2107,33 @@ class PricingTest(unittest.TestCase):
             "window": {"used_percent": 3, "resets_at_ms": 111},
             "weekly": {"used_percent": 19, "resets_at_ms": 222}})
         self.assertIsNone(pricing.allowance_snapshot(None))
-        self.assertIsNone(pricing.allowance_snapshot(
-            {"window": {"used_percent": 3}}))
-        self.assertIsNone(pricing.allowance_snapshot(
-            {"allowance": {"window": {"usedPercent": "12",
-                                       "resetsAtMs": 1},
-                            "weekly": {"usedPercent": 2,
-                                       "resetsAtMs": 2}}}))
+        self.assertIsNone(pricing.allowance_snapshot({}))
+        # A malformed limit is None on its own. The other is kept.
+        partial = json.loads((HERE / "fixtures" / "muse-usage.json")
+                             .read_text())
+        del partial["allowance"]["weekly"]
+        self.assertEqual(pricing.allowance_snapshot(partial), {
+            "window": {"used_percent": 12,
+                       "resets_at_ms": 1793554337000},
+            "weekly": None})
+        partial = json.loads((HERE / "fixtures" / "muse-usage.json")
+                             .read_text())
+        partial["allowance"]["window"]["usedPercent"] = "12"
+        self.assertEqual(pricing.allowance_snapshot(partial), {
+            "window": None,
+            "weekly": {"used_percent": 52,
+                       "resets_at_ms": 1793577600000}})
+        partial = json.loads((HERE / "fixtures" / "muse-usage.json")
+                             .read_text())
+        partial["allowance"] = {"window": {"usedPercent": "x"}}
+        self.assertIsNone(pricing.allowance_snapshot(partial))
+        # Delta still lands for the surviving limit alone.
+        start = {"window": {"used_percent": 10, "resets_at_ms": 100},
+                 "weekly": None}
+        end = {"window": {"used_percent": 12, "resets_at_ms": 100},
+               "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        self.assertEqual(pricing.allowance_delta(start, end),
+                         {"window": 2, "weekly": None})
 
     def test_allowance_delta_and_reset_guard(self):
         start = {"window": {"used_percent": 10, "resets_at_ms": 100},
@@ -2248,7 +2268,63 @@ class PricingTest(unittest.TestCase):
                       "(12→14%), 1% of weekly limit (50→51%)",
                       out.getvalue())
 
+    def test_meta_run_with_rates_records_no_usd_cost(self):
+        # Own rates apply only to paid providers. A subscription
+        # run keeps its allowance fields and gets no USD cost,
+        # even with a rate set for its model.
+        start = {"window": {"used_percent": 12, "resets_at_ms": 100},
+                 "weekly": {"used_percent": 50, "resets_at_ms": 200}}
+        end = {"window": {"used_percent": 14, "resets_at_ms": 100},
+               "weekly": {"used_percent": 51, "resets_at_ms": 200}}
+        result = run_muse._empty_result(
+            "fake", exit_code=0, wall_ms=5, allowance_end=end,
+            calls=[{"duration_ms": 5, "input_tokens": 2000000,
+                    "output_tokens": 1000, "cached_tokens": 0}])
+        own = run_muse.parse_pricing(
+            {"muse-wonder-full-1.0": {"input_per_mtok": 10,
+                                      "output_per_mtok": 10}})
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            out = io.StringIO()
+            import contextlib
+            with mock.patch.object(run_muse, "RUNS", runs), \
+                    mock.patch.object(run_muse, "run_muse_exec",
+                                      lambda *a, **k: result), \
+                    mock.patch.object(
+                        run_muse, "_capture_allowance_start",
+                        lambda: start), \
+                    contextlib.redirect_stdout(out):
+                report = run_muse.run_prompt(
+                    "hi", provider="meta",
+                    model="muse-wonder-full-1.0", pricing=own)
+        self.assertIsNone(report["cost_usd"])
+        self.assertIsNone(report["cost_source"])
+        self.assertIsNone(report["pricing"])
+        self.assertEqual(report["allowance_start"], start)
+        self.assertEqual(report["allowance_end"], end)
+        self.assertEqual(report["allowance_delta"],
+                         {"window": 2, "weekly": 1})
+        self.assertNotIn("$", out.getvalue())
+
     def test_capture_failure_still_records_run(self):
+        # The real capture, with injected failing runners. Each
+        # failure mode gives None and never raises.
+        import subprocess as sp
+
+        class Proc:
+            def __init__(self, code, out):
+                self.returncode, self.stdout = code, out
+
+        capture = _real_capture_allowance_start
+        self.assertIsNone(capture(
+            runner=lambda *a, **k: Proc(1, "")))
+        self.assertIsNone(capture(
+            runner=lambda *a, **k: Proc(0, "not json")))
+
+        def timed_out(*a, **k):
+            raise sp.TimeoutExpired(cmd="muse usage", timeout=15)
+
+        self.assertIsNone(capture(runner=timed_out))
         end = {"window": {"used_percent": 14, "resets_at_ms": 100},
                "weekly": {"used_percent": 51, "resets_at_ms": 200}}
         result = run_muse._empty_result(

@@ -160,7 +160,7 @@ export const allowanceDetail = (s) => {
   let text = label + " " + fmtMovedPct(d[otherKey], allowanceEqual(s)[otherKey]);
   const end = (s.allowance_end || {}).window;
   const clock = end ? fmtResetClock(end.resets_at_ms) : null;
-  if (clock) text += " · resets " + clock;
+  if (clock) text += " · short-term resets " + clock;
   return text;
 };
 
@@ -201,12 +201,52 @@ export const infoPanelNext = (state, event) => {
   switch (event) {
     case "hover-in": return { ...st, hover: true };
     case "hover-out": return { ...st, hover: false };
-    case "click": return { ...st, pinned: !st.pinned };
+    // A click on an open panel closes it fully, hover included.
+    // A click on a closed panel pins it open.
+    case "click": return infoPanelOpen(st)
+      ? { pinned: false, hover: false }
+      : { ...st, pinned: true };
     case "escape":
     case "outside":
     case "blur-out": return { pinned: false, hover: false };
     default: return st;
   }
+};
+
+// Runs copied-summary plan usage total. Each limit sums only over
+// runs that recorded it, and says how many that was. Never a
+// missing reading dressed as 0 inside a sum. A zero total over
+// real readings prints "+0%": it is a sum, not one reading pair.
+// Raced runs stay out so overlapping legs never double count.
+export const planUsageTotalText = (sessions) => {
+  const hasDelta = (s) => s.allowance_delta
+    && (s.allowance_delta.window != null || s.allowance_delta.weekly != null);
+  const included = (sessions || []).filter((s) => hasDelta(s) && !s.raced);
+  const racedOut = (sessions || []).filter((s) => hasDelta(s) && s.raced).length;
+  const bucket = (key, label) => {
+    const values = included
+      .map((s) => s.allowance_delta[key])
+      .filter((v) => v != null);
+    if (!values.length) return null;
+    const sum = values.reduce((a, v) => a + v, 0);
+    return fmtMovedPct(sum, false) + " " + label
+      + " over " + values.length + " run(s)";
+  };
+  const parts = [bucket("window", "short-term"),
+    bucket("weekly", "weekly")].filter(Boolean);
+  let text = parts.length ? parts.join(" · ") : "–";
+  if (racedOut) text += " · " + racedOut + " raced run(s) left out";
+  return text;
+};
+
+// Short-term points between two plan-usage runs, or null. Mixed
+// units never subtract. The caller dashes on null.
+export const planDeltaText = (a, b) => {
+  const da = a && a.allowance_delta;
+  const db = b && b.allowance_delta;
+  if (!da || !db || da.window == null || db.window == null) return null;
+  const v = da.window - db.window;
+  return (v > 0 ? "+" : v < 0 ? "-" : "") + Math.abs(v) + " pts";
 };
 
 // Why a cost cell shows what it shows. A source label when a
@@ -763,6 +803,23 @@ const SORT_VALUE = {
 };
 
 export function compareSessions(a, b, sort, dir) {
+  if (sort === "cost_usd") {
+    // Cost sorts in billed-unit groups, USD first in both
+    // directions. USD runs by dollars, plan-usage runs by
+    // short-term delta, the rest last. Never rank across units.
+    const key = (s) => {
+      const usd = visibleCost(s);
+      if (usd != null) return [0, usd];
+      const d = s.allowance_delta;
+      if (d && d.window != null) return [1, d.window];
+      return [2, 0];
+    };
+    const [ga, va] = key(a);
+    const [gb, vb] = key(b);
+    if (ga !== gb) return ga - gb;
+    if (ga === 2) return 0;
+    return dir === "desc" ? vb - va : va - vb;
+  }
   const get = SORT_VALUE[sort] || SORT_VALUE.at;
   const va = get(a), vb = get(b);
   if (va == null && vb == null) return 0;

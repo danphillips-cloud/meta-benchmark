@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
-  fmt, fmtAllowance, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, runCostText, runMode, shortText, visibleCost,
+  fmt, fmtAllowance, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, planUsageTotalText, runCostText, runMode, shortText, visibleCost,
 } from "../format.js";
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -27,29 +27,14 @@ export function summaryText(data) {
   const allTimed = sessions.every((s) => s.wall_ms != null && s.model_ms != null);
   const priced = sessions.map((s) => visibleCost(s)).filter((v) => v != null);
   const cost = priced.reduce((a, v) => a + v, 0);
-  // Allowance totals stay separate from USD. Raced runs are left
-  // out so overlapping legs never double count, and say so.
-  const hasDelta = (s) => s.allowance_delta
-    && (s.allowance_delta.window != null || s.allowance_delta.weekly != null);
-  const allowRuns = sessions.filter((s) => hasDelta(s) && !s.raced);
-  const racedOut = sessions.filter((s) => hasDelta(s) && s.raced).length;
-  const allowTotals = {
-    window: allowRuns.some((s) => s.allowance_delta.window != null)
-      ? allowRuns.reduce((a, s) => a + (s.allowance_delta.window || 0), 0) : null,
-    weekly: allowRuns.some((s) => s.allowance_delta.weekly != null)
-      ? allowRuns.reduce((a, s) => a + (s.allowance_delta.weekly || 0), 0) : null,
-  };
-  const allowText = allowRuns.length
-    ? fmtAllowance(allowTotals) + " over " + allowRuns.length + " run(s)"
-    : "–";
+  const allowText = planUsageTotalText(sessions);
   lines.push("");
   lines.push("Total: " + sessions.length + " session(s) · wall "
     + (withWall.length ? fmtDur(wall) + " over " + withWall.length + " timed run(s)" : "–")
     + " · model " + (withModel.length ? fmtDur(model) + " over " + withModel.length + " timed run(s)" : "–")
     + " · overhead " + (allTimed && sessions.length ? fmtDur(wall - model) : "–")
     + " · recorded cost " + (priced.length ? fmtCost(cost) + " over " + priced.length + " priced run(s)" : "–")
-    + " · plan usage " + allowText
-    + (racedOut ? " · " + racedOut + " raced run(s) left out" : ""));
+    + " · plan usage " + allowText);
   return lines.join("\n");
 }
 

@@ -205,7 +205,7 @@ export default function Overview({ data, onSelect, onGoto }) {
     ? costNote(sel) + (sel.cost_source === "computed" ? " · input and output only" : "")
     : costBig
       ? allowanceDetail(sel)
-      : costUnit(sel) === "allowance" && sel.status === "running" && sel.allowance_start
+      : costUnit(sel) === "allowance" && sel.status === "running" && sel.allowance_start && sel.allowance_start.window
       ? "Short-term limit was at " + sel.allowance_start.window.used_percent + "% when the run started"
         + (fmtResetClock(sel.allowance_start.window.resets_at_ms)
           ? " (resets at " + fmtResetClock(sel.allowance_start.window.resets_at_ms) + ")" : "")
