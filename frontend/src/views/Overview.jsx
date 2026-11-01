@@ -323,7 +323,7 @@ export default function Overview({ data, onSelect, onGoto }) {
       ) : null}
       <div className="stats" data-tour="split">
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
-          detail={(hasEvents ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
+          detail={(hasEvents || wall != null ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
           detail={retryTotal > 0 && stalledTotal > 0
             ? fmtDur(stalledTotal) + " stalled before retry"
