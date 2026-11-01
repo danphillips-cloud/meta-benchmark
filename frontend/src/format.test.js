@@ -1287,6 +1287,16 @@ test("selectedRunFacts: matches the inputs Overview assembles by hand", () => {
   assert.match(f.diag.verdict, /98% of wall/);
   assert.equal(selectedRunFacts(PAYLOAD({ status: "running" })).diag, null);
   assert.equal(selectedRunFacts({}).hasEvents, false);
+  assert.equal(selectedRunFacts({}).wall, null);
+});
+
+test("selectedRunFacts: a run with no calls keeps its recorded wall", () => {
+  const sessions = [{ run_id: "r1", status: "completed", wall_ms: 2526 }];
+  const f = selectedRunFacts({ selected: "r1", sessions, events: [], wall_ms: 2526 });
+  assert.equal(f.wall, 2526);
+  assert.equal(f.modelTotal, null);
+  const live = [{ run_id: "r2", status: "running", wall_ms: null }];
+  assert.equal(selectedRunFacts({ selected: "r2", sessions: live, events: [], wall_ms: 900 }).wall, null);
 });
 
 test("reproPack: embeds the card body, full prompt and full reply", () => {

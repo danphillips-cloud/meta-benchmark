@@ -26,7 +26,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 49
+VERSION = 51
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -379,7 +379,9 @@ def read_logs(run_id=None):
         "ok": True,
         "error_type": None,
     } for t in (full.get("timeline") or live_timeline)]
-    if selected.get("metrics_unavailable"):
+    # Echo never calls a model, so a missing model record is expected.
+    if selected.get("metrics_unavailable") \
+            and selected.get("provider") != "echo":
         errors.append({"at": selected.get("at"),
                        "operation": selected.get("run_id"),
                        "error_type": "model metrics unavailable for this run"})

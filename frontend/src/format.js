@@ -891,7 +891,9 @@ export function selectedRunFacts(data) {
   const modelTotal = hasEvents
     ? (d.model_ms ?? (wires.length ? wires.reduce((a, b) => a + b, 0) : null))
     : null;
-  const wall = hasEvents ? (d.wall_ms ?? null) : null;
+  // A run with no call events (Muse logged no model call) still has
+  // a recorded wall time. A running run has none until it finishes.
+  const wall = hasEvents ? (d.wall_ms ?? null) : (sel.wall_ms ?? null);
   const split = d.time_split || {};
   const provider = d.provider || sel.provider;
   const isRunning = (d.status || sel.status) === "running";

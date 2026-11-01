@@ -2915,6 +2915,30 @@ class VisibilityTest(unittest.TestCase):
             self._records("session-turns.jsonl")), [])
         self.assertEqual(run_muse.muse_log.input_traces([]), [])
 
+    def test_server_metrics_banner_skips_echo(self):
+        base = {"at": datetime.now(timezone.utc).isoformat(),
+                "prompt": "hi", "model": "m", "session_id": None,
+                "context_mode": "full", "comparison_id": None,
+                "status": "completed", "timeout_seconds": 1800,
+                "wall_ms": 1000, "exit_code": 0, "reply": "hi",
+                "calls": [], "metrics_unavailable": True, "error": None}
+        with tempfile.TemporaryDirectory() as td:
+            index = Path(td) / "index.jsonl"
+            index.write_text("".join(json.dumps(dict(base, run_id=rid,
+                                                     provider=p)) + "\n"
+                                     for rid, p in (("run-echo", "echo"),
+                                                    ("run-meta", "meta"))))
+            old_index = server.INDEX
+            server.INDEX = index
+            try:
+                echo = server.read_logs("run-echo")
+                meta = server.read_logs("run-meta")
+            finally:
+                server.INDEX = old_index
+            self.assertEqual(echo["errors"], [])
+            self.assertEqual([e["error_type"] for e in meta["errors"]],
+                             ["model metrics unavailable for this run"])
+
     def test_server_xray_field_from_session_log(self):
         with tempfile.TemporaryDirectory() as td:
             runs = Path(td) / "muse-runs"
