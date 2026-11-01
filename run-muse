@@ -1151,13 +1151,16 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     # Precedence: the user's own rates, then Meta's published
     # list (muse-wonder-1.0 on paid paths only), then a reported
     # figure. A muse-* reported figure stays stored but hidden.
-    list_ok = provider in ("anthropic", "claude-code") \
-        and report["model"] in list_pricing.LIST_PRICES
+    # Own rates apply only to paid providers. Subscription runs
+    # never get a USD cost. Their unit is plan allowance.
+    paid = provider in PAID_PROVIDERS
+    list_ok = paid and report["model"] in list_pricing.LIST_PRICES
     if reported is not None and not prefer_own and not list_ok:
         report["cost_source"] = "reported"
     else:
         cost, used = compute_cost(
-            report["model"], report["totals"], report["calls"], rates)
+            report["model"], report["totals"], report["calls"], rates) \
+            if paid else (None, None)
         if cost is not None:
             report["cost_usd"] = cost
             report["cost_source"] = "computed"
@@ -1710,7 +1713,8 @@ def _entry_model(entry):
 
 
 def _priced_text(entry, pricing):
-    if pricing_for(_entry_model(entry), pricing):
+    if entry["provider"] in PAID_PROVIDERS \
+            and pricing_for(_entry_model(entry), pricing):
         return "priced"
     if entry["provider"] == "claude-code" \
             and not _entry_model(entry).startswith("muse-"):

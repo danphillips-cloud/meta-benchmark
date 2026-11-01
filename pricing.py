@@ -86,10 +86,11 @@ def allowance_snapshot(obj):
 
     Accepts a `muse usage --json` object (allowance nested,
     camelCase fields) or a raw stream allowance object
-    (snake_case). Both buckets must hold a percent and a reset
-    time, else the snapshot is unusable and the caller records
-    None. Tier and source are dropped. The raw stream line
-    stays in events.jsonl regardless.
+    (snake_case). A limit that is missing or malformed is None
+    on its own. The other limit is kept. Only when both are
+    unusable is there no snapshot at all. Tier and source are
+    dropped. The raw stream line stays in events.jsonl
+    regardless.
     """
     if not isinstance(obj, dict):
         return None
@@ -98,7 +99,7 @@ def allowance_snapshot(obj):
         return None
     window = _bucket(allowance, "window")
     weekly = _bucket(allowance, "weekly")
-    if window is None or weekly is None:
+    if window is None and weekly is None:
         return None
     return {"window": window, "weekly": weekly}
 

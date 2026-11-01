@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  DID_NOT_COMPLETE, STATUSES, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -62,11 +62,11 @@ test("run cost text, units and dash reasons", () => {
   assert.equal(allowanceDetail(S({
     allowance_start: start, allowance_end: end,
     allowance_delta: { window: 2, weekly: 1 },
-  })), "Weekly +1% · resets 4:12 pm");
+  })), "Weekly +1% · short-term resets 4:12 pm");
   assert.equal(allowanceDetail(S({
     allowance_start: start, allowance_end: start,
     allowance_delta: { window: 0, weekly: 0 },
-  })), "Weekly under 1% · resets 4:12 pm");
+  })), "Weekly under 1% · short-term resets 4:12 pm");
   assert.equal(allowanceDetail(S({
     allowance_start: start, allowance_end: end,
     allowance_delta: { window: null, weekly: 1 },
@@ -112,12 +112,21 @@ test("run cost text, units and dash reasons", () => {
     allowance_start: start, allowance_end: end,
     allowance_delta: { window: 2, weekly: 1 },
   })), "Short-term limit: 12% → 14% · +2% · resets 4:12 pm\nWeekly limit: 52% → 53% · +1%\nOther Muse use at the same time counts too.");
-  // Panel toggle: hover opens, click pins, Escape and outside close.
+  // Panel toggle: hover opens, click on open closes fully, click
+  // on closed pins, Escape and outside close.
   let panel = { pinned: false, hover: false };
   assert.equal(infoPanelOpen(panel), false);
   panel = infoPanelNext(panel, "hover-in");
   assert.equal(infoPanelOpen(panel), true);
-  panel = infoPanelNext(panel, "hover-out");
+  // Hover-then-click closes, hover state included.
+  panel = infoPanelNext(panel, "click");
+  assert.deepEqual(panel, { pinned: false, hover: false });
+  assert.equal(infoPanelOpen(panel), false);
+  // Tap-tap: first tap pins open, second tap closes.
+  panel = infoPanelNext(panel, "click");
+  assert.deepEqual(panel, { pinned: true, hover: false });
+  assert.equal(infoPanelOpen(panel), true);
+  panel = infoPanelNext(panel, "click");
   assert.equal(infoPanelOpen(panel), false);
   panel = infoPanelNext(panel, "click");
   panel = infoPanelNext(panel, "hover-out");
@@ -127,13 +136,44 @@ test("run cost text, units and dash reasons", () => {
   panel = infoPanelNext(panel, "click");
   panel = infoPanelNext(panel, "outside");
   assert.equal(infoPanelOpen(panel), false);
-  panel = infoPanelNext(panel, "click");
-  panel = infoPanelNext(panel, "click");
-  assert.equal(infoPanelOpen(panel), false);
   panel = infoPanelNext(panel, "hover-in");
   panel = infoPanelNext(panel, "blur-out");
   assert.equal(infoPanelOpen(panel), false);
   assert.equal(infoPanelNext(panel, "bogus"), panel);
+  // Plan usage totals: per-limit sums with per-limit run counts.
+  const totalSessions = [
+    S({ allowance_delta: { window: 2, weekly: 1 } }),
+    S({ allowance_delta: { window: 2, weekly: null } }),
+    S({ allowance_delta: { window: null, weekly: 5 } }),
+    S({ allowance_delta: { window: 9, weekly: 9 }, raced: true }),
+    S({}),
+  ];
+  assert.equal(planUsageTotalText(totalSessions),
+    "+4% short-term over 2 run(s) · +6% weekly over 2 run(s) · 1 raced run(s) left out");
+  assert.equal(planUsageTotalText([
+    S({ allowance_delta: { window: 0, weekly: 0 } }),
+  ]), "+0% short-term over 1 run(s) · +0% weekly over 1 run(s)");
+  assert.equal(planUsageTotalText([]), "–");
+  assert.equal(planUsageTotalText([
+    S({ allowance_delta: { window: 3, weekly: 3 }, raced: true }),
+  ]), "– · 1 raced run(s) left out");
+  assert.equal(planUsageTotalText([
+    S({ allowance_delta: { window: null, weekly: 4 } }),
+  ]), "+4% weekly over 1 run(s)");
+  // Plan delta in points. Mixed units never subtract.
+  assert.equal(planDeltaText(
+    S({ allowance_delta: { window: 5 } }),
+    S({ allowance_delta: { window: 2 } })), "+3 pts");
+  assert.equal(planDeltaText(
+    S({ allowance_delta: { window: 2 } }),
+    S({ allowance_delta: { window: 5 } })), "-3 pts");
+  assert.equal(planDeltaText(
+    S({ allowance_delta: { window: 2 } }),
+    S({ allowance_delta: { window: 2 } })), "0 pts");
+  assert.equal(planDeltaText(
+    S({ provider: "anthropic", cost_usd: 1 }),
+    S({ allowance_delta: { window: 2 } })), null);
+  assert.equal(planDeltaText(S({}), S({})), null);
   assert.equal(costUnit(S({ provider: "anthropic" })), "usd");
   assert.equal(costUnit(S({ provider: "meta" })), "allowance");
   assert.equal(costUnit(S({ provider: "echo" })), "none");
@@ -260,6 +300,20 @@ test("compareSessions sorts and keeps missing values last both ways", () => {
   assert.deepEqual(desc, ["b", "a", "c"]);
   const byTime = [a, c, b].sort((x, y) => compareSessions(x, y, "at", "desc")).map((s) => s.run_id);
   assert.deepEqual(byTime, ["b", "c", "a"]);
+});
+
+test("compareSessions cost sort groups USD before plan usage", () => {
+  const u1 = S({ run_id: "u1", provider: "anthropic", model: "claude-x", cost_usd: 1, cost_source: "reported" });
+  const u2 = S({ run_id: "u2", provider: "anthropic", model: "claude-x", cost_usd: 3, cost_source: "reported" });
+  const p1 = S({ run_id: "p1", allowance_delta: { window: 2, weekly: 1 } });
+  const p2 = S({ run_id: "p2", allowance_delta: { window: 5, weekly: 1 } });
+  const none = S({ run_id: "n" });
+  const all = [p2, none, u2, p1, u1];
+  const asc = [...all].sort((x, y) => compareSessions(x, y, "cost_usd", "asc")).map((s) => s.run_id);
+  const desc = [...all].sort((x, y) => compareSessions(x, y, "cost_usd", "desc")).map((s) => s.run_id);
+  // USD group first both ways, each group ordered by its own unit.
+  assert.deepEqual(asc, ["u1", "u2", "p1", "p2", "n"]);
+  assert.deepEqual(desc, ["u2", "u1", "p2", "p1", "n"]);
 });
 
 test("shared filters: date range is inclusive and chips list active filters", () => {

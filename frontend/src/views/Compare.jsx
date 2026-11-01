@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router";
-import { fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
+import { fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -211,14 +211,16 @@ export default function Compare({ data, onSelect }) {
                     {metrics.map(([name, f, isDur]) => {
                       const isCost = name === "Cost";
                       const show = (v, s) => isCost ? runCostText(s) : isDur ? fmtDur(v) : fmtMs(v);
-                      const delta = (x, y) => isCost
-                        ? ((x == null || y == null) ? "–" : ((x - y) > 0 ? "+" : (x - y) < 0 ? "-" : "") + fmtCost(Math.abs(x - y)))
+                      const delta = (x, y, sa, sb) => isCost
+                        ? ((x != null && y != null)
+                          ? ((x - y) > 0 ? "+" : (x - y) < 0 ? "-" : "") + fmtCost(Math.abs(x - y))
+                          : (planDeltaText(sa, sb) ?? "–"))
                         : deltaText(x, y, isDur);
                       return (
                         <tr key={name}>
                           <td>{name}</td>
                           <td className="num">{show(f(a), a)}</td>
-                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s), s)}</td>, <td key={s.run_id + "-dv"} className="num">{delta(f(a), f(s))}</td>])}
+                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s), s)}</td>, <td key={s.run_id + "-dv"} className="num">{delta(f(a), f(s), a, s)}</td>])}
                         </tr>
                       );
                     })}
