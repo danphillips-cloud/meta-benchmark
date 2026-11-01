@@ -17,15 +17,20 @@ test("visibleCost hides reported muse cost, shows computed and plain", () => {
   assert.equal(visibleCost(S({ cost_usd: null })), null);
   assert.equal(visibleCost(S({ cost_usd: 1.5, cost_source: "reported" })), null);
   assert.equal(visibleCost(S({ cost_usd: 1.5 })), null);
-  assert.equal(visibleCost(S({ cost_usd: 1.5, cost_source: "computed" })), 1.5);
-  assert.equal(visibleCost(S({ model: "claude-sonnet-5-5", cost_usd: 2, cost_source: "reported" })), 2);
+  assert.equal(visibleCost(S({ provider: "anthropic", cost_usd: 1.5, cost_source: "computed" })), 1.5);
+  assert.equal(visibleCost(S({ provider: "claude-code", model: "claude-sonnet-5-5", cost_usd: 2, cost_source: "reported" })), 2);
+  // A subscription run never shows USD, even an old record that
+  // stored a cost at the user's rates. Echo never shows USD either.
+  assert.equal(visibleCost(S({ provider: "meta", cost_usd: 1.5, cost_source: "computed" })), null);
+  assert.equal(visibleCost(S({ provider: "echo", cost_usd: 1.5, cost_source: "computed" })), null);
   assert.equal(fmtCost(null), "–");
   assert.equal(fmtCost(0.01084), "$0.0108");
-  assert.equal(costNote(S({ cost_usd: 1, cost_source: "computed" })), "at your rates");
-  assert.equal(costNote(S({ cost_usd: 1, cost_source: "reported" })), "not a Meta price, hidden");
+  assert.equal(costNote(S({ provider: "anthropic", cost_usd: 1, cost_source: "computed" })), "at your rates");
+  assert.equal(costNote(S({ provider: "claude-code", cost_usd: 1, cost_source: "reported" })), "not a Meta price, hidden");
+  assert.equal(costNote(S({ cost_usd: 1, cost_source: "computed" })), "not billed in USD");
   assert.equal(costNote(S({ cost_usd: null })), "not recorded");
-  assert.equal(visibleCost(S({ cost_usd: 1.5, cost_source: "list" })), 1.5);
-  assert.equal(costNote(S({ cost_usd: 1, cost_source: "list" })), "at Meta list");
+  assert.equal(visibleCost(S({ provider: "anthropic", cost_usd: 1.5, cost_source: "list" })), 1.5);
+  assert.equal(costNote(S({ provider: "anthropic", cost_usd: 1, cost_source: "list" })), "at Meta list");
 });
 
 test("run cost text, units and dash reasons", () => {
@@ -70,6 +75,12 @@ test("run cost text, units and dash reasons", () => {
   assert.equal(allowanceDetail(S({
     allowance_start: start, allowance_end: end,
     allowance_delta: { window: null, weekly: 1 },
+  })), "Short-term – · No usage reading was recorded for this limit");
+  // A changed reset time on that limit is a real reset.
+  const resetEnd = { ...end, window: { used_percent: 3, resets_at_ms: resetMs + 18000000 } };
+  assert.equal(allowanceDetail(S({
+    allowance_start: start, allowance_end: resetEnd,
+    allowance_delta: { window: null, weekly: 1 },
   })), "Short-term – · A usage limit reset during this run");
   assert.equal(allowanceDetail(S({})), "");
   // Equal readings say "under 1%", never "+0%".
@@ -99,7 +110,7 @@ test("run cost text, units and dash reasons", () => {
     allowance_delta: { window: 2, weekly: null },
   }));
   assert.equal(missingRows[1].moved, "–");
-  assert.equal(missingRows[1].reason, "A usage limit reset during this run");
+  assert.equal(missingRows[1].reason, "No usage reading was recorded for this limit");
   // Info lines and hover text.
   assert.deepEqual(allowanceInfoLines(S({})), [
     "Your Muse plan has a short-term limit and a weekly limit.",
@@ -112,20 +123,29 @@ test("run cost text, units and dash reasons", () => {
     allowance_start: start, allowance_end: end,
     allowance_delta: { window: 2, weekly: 1 },
   })), "Short-term limit: 12% → 14% · +2% · resets 4:12 pm\nWeekly limit: 52% → 53% · +1%\nOther Muse use at the same time counts too.");
-  // Panel toggle: hover opens, click on open closes fully, click
-  // on closed pins, Escape and outside close.
+  // Panel toggle. Desktop: hover opens, click pins so it stays open
+  // after the mouse leaves, a second click closes it.
   let panel = { pinned: false, hover: false };
   assert.equal(infoPanelOpen(panel), false);
   panel = infoPanelNext(panel, "hover-in");
   assert.equal(infoPanelOpen(panel), true);
-  // Hover-then-click closes, hover state included.
+  panel = infoPanelNext(panel, "click");
+  assert.deepEqual(panel, { pinned: true, hover: true });
+  panel = infoPanelNext(panel, "hover-out");
+  assert.equal(infoPanelOpen(panel), true);
+  panel = infoPanelNext(panel, "hover-in");
   panel = infoPanelNext(panel, "click");
   assert.deepEqual(panel, { pinned: false, hover: false });
   assert.equal(infoPanelOpen(panel), false);
-  // Tap-tap: first tap pins open, second tap closes.
+  // Touch: a tap fires hover-in then click. One tap opens it,
+  // a second tap closes it.
+  panel = infoPanelNext(infoPanelNext(panel, "hover-in"), "click");
+  assert.equal(infoPanelOpen(panel), true);
+  panel = infoPanelNext(infoPanelNext(panel, "hover-in"), "click");
+  assert.equal(infoPanelOpen(panel), false);
+  // Keyboard: Enter is a click with no hover.
   panel = infoPanelNext(panel, "click");
   assert.deepEqual(panel, { pinned: true, hover: false });
-  assert.equal(infoPanelOpen(panel), true);
   panel = infoPanelNext(panel, "click");
   assert.equal(infoPanelOpen(panel), false);
   panel = infoPanelNext(panel, "click");
@@ -195,7 +215,15 @@ test("run cost text, units and dash reasons", () => {
   assert.equal(costReason(S({ provider: "claude-code", cost_usd: 9.5, cost_source: "reported" })), "Claude Code priced this from Anthropic's list. That is not a Meta price, so it is hidden");
   assert.equal(costReason(S({})), "No usage reading was recorded for this run");
   assert.equal(costReason(S({ status: "running", allowance_start: snap })), "Usage for this run lands when it finishes");
-  assert.equal(costReason(S({ allowance_start: snap, allowance_end: snap, allowance_delta: { window: null, weekly: null } })), "A usage limit reset during this run");
+  // Both readings present with the same reset times is not a reset.
+  assert.equal(costReason(S({ allowance_start: snap, allowance_end: snap, allowance_delta: { window: null, weekly: null } })), "No usage reading was recorded for this run");
+  const snapReset = { ...snap, window: { used_percent: 1, resets_at_ms: 500 } };
+  assert.equal(costReason(S({ allowance_start: snap, allowance_end: snapReset, allowance_delta: { window: null, weekly: 0 } })), "A usage limit reset during this run");
+  assert.equal(costReason(S({ allowance_start: snap, allowance_end: snapReset }), "weekly"), "No usage reading was recorded for this limit");
+  // One limit missing on each side is missing, not a reset.
+  const startOnlyWindow = { window: snap.window, weekly: null };
+  const endOnlyWeekly = { window: null, weekly: snap.weekly };
+  assert.equal(costReason(S({ allowance_start: startOnlyWindow, allowance_end: endOnlyWeekly, allowance_delta: { window: null, weekly: null } })), "No usage reading was recorded for this run");
   assert.equal(costReason(S({ provider: "claude-code", cost_usd: 1, cost_source: "list", pricing: { fetched: "2026-10-31" } })), "At Meta published list. Fetched 2026-10-31");
 });
 

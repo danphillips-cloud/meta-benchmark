@@ -42,6 +42,9 @@ export const fmtMs = (n) => (n == null ? "–" : fmt(Math.round(n)));
 // rates, so it is shown for any model.
 export const visibleCost = (s) => {
   if (!s || s.cost_usd == null) return null;
+  // Subscription and echo runs never show USD, even an old record
+  // that stored a cost at the user's rates.
+  if (costUnit(s) !== "usd") return null;
   if (String(s.model || "").startsWith("muse-")
     && s.cost_source !== "computed" && s.cost_source !== "list") return null;
   return s.cost_usd;
@@ -51,6 +54,7 @@ export const fmtCost = (n) => (n == null ? "–" : "$" + Number(n).toFixed(4));
 
 export const costNote = (s) => {
   if (!s || s.cost_usd == null) return "not recorded";
+  if (costUnit(s) !== "usd") return "not billed in USD";
   if (visibleCost(s) == null) return "not a Meta price, hidden";
   if (s.cost_source === "computed") return "at your rates";
   if (s.cost_source === "list") return "at Meta list";
@@ -121,7 +125,7 @@ export const allowanceRows = (s) => {
     const before = start[key] ? start[key].used_percent : null;
     const after = end[key] ? end[key].used_percent : null;
     if (d[key] == null || before == null || after == null) {
-      return { label, range: "–", moved: "–", resets: null, reason: costReason(s) };
+      return { label, range: "–", moved: "–", resets: null, reason: costReason(s, key) };
     }
     return {
       label,
@@ -156,7 +160,7 @@ export const allowanceDetail = (s) => {
   if (!bigKey) return "";
   const otherKey = bigKey === "window" ? "weekly" : "window";
   const label = otherKey === "window" ? "Short-term" : "Weekly";
-  if (d[otherKey] == null) return label + " – · " + costReason(s);
+  if (d[otherKey] == null) return label + " – · " + costReason(s, otherKey);
   let text = label + " " + fmtMovedPct(d[otherKey], allowanceEqual(s)[otherKey]);
   const end = (s.allowance_end || {}).window;
   const clock = end ? fmtResetClock(end.resets_at_ms) : null;
@@ -201,9 +205,10 @@ export const infoPanelNext = (state, event) => {
   switch (event) {
     case "hover-in": return { ...st, hover: true };
     case "hover-out": return { ...st, hover: false };
-    // A click on an open panel closes it fully, hover included.
-    // A click on a closed panel pins it open.
-    case "click": return infoPanelOpen(st)
+    // A click pins the panel, even one already open by hover. A
+    // click on a pinned panel closes it fully, hover included. A tap
+    // fires hover-in then click, so tap-tap opens then closes.
+    case "click": return st.pinned
       ? { pinned: false, hover: false }
       : { ...st, pinned: true };
     case "escape":
@@ -251,7 +256,7 @@ export const planDeltaText = (a, b) => {
 
 // Why a cost cell shows what it shows. A source label when a
 // figure exists, a short reason when the cell is a dash.
-export const costReason = (s) => {
+export const costReason = (s, limit) => {
   if (!s) return "No cost recorded";
   if (visibleCost(s) != null) {
     if (s.cost_source === "list") {
@@ -267,7 +272,16 @@ export const costReason = (s) => {
   if (unit === "none") return "Echo runs bill nothing";
   if (unit === "allowance") {
     if (s.allowance_start && s.allowance_end) {
-      return "A usage limit reset during this run";
+      // A reset is on record only when a limit has readings on both
+      // sides with different reset times. Otherwise it is missing.
+      const keys = limit ? [limit] : ["window", "weekly"];
+      const reset = keys.some((k) => {
+        const a = s.allowance_start[k], b = s.allowance_end[k];
+        return a && b && a.resets_at_ms !== b.resets_at_ms;
+      });
+      return reset ? "A usage limit reset during this run"
+        : limit ? "No usage reading was recorded for this limit"
+        : "No usage reading was recorded for this run";
     }
     if (s.status === "running" && s.allowance_start) {
       return "Usage for this run lands when it finishes";
