@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, buildRunsQuery, costNote, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, hasSharedFilters, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, visibleCost } from "../format.js";
+import { DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows, buildRunsQuery, costNote, costReason, costUnit, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext, infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, visibleCost } from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -87,6 +87,58 @@ function StatCard({ label, icon, value, unit, detail, title, hero }) {
   );
 }
 
+// The "Details" overlay beside the Cost card detail line: the two
+// readings rows, then the notes. Opens on hover, pins on click or
+// tap, closes on Escape, outside click, or focus leaving the
+// wrapper. Toggle maths lives in format.js.
+function UsageInfo({ sel }) {
+  const [state, setState] = useState({ pinned: false, hover: false });
+  const wrapRef = useRef(null);
+  const btnRef = useRef(null);
+  const open = infoPanelOpen(state);
+  const send = (event) => setState((st) => infoPanelNext(st, event));
+  useEffect(() => {
+    if (!state.pinned) return undefined;
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) send("outside");
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [state.pinned]);
+  return (
+    <div className="infoWrap" ref={wrapRef}
+      onMouseEnter={() => send("hover-in")}
+      onMouseLeave={() => send("hover-out")}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          send("escape");
+          if (btnRef.current) btnRef.current.focus();
+        }
+      }}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) send("blur-out");
+      }}>
+      <button type="button" className="infoBtn" ref={btnRef}
+        aria-expanded={open} aria-controls="usageInfoPanel"
+        onClick={() => send("click")}>ⓘ Details</button>
+      {open ? (
+        <div className="infoPanel" id="usageInfoPanel" role="note" tabIndex={0}>
+          <table className="usageTable"><tbody>
+            {allowanceRows(sel).map((r) => (r.reason
+              ? <tr key={r.label}><td>{r.label}</td><td colSpan={3}>{"– " + r.reason}</td></tr>
+              : <tr key={r.label}><td>{r.label}</td><td>{r.range}</td><td>{r.moved}</td><td>{r.resets ? "resets " + r.resets : ""}</td></tr>))}
+          </tbody></table>
+          {allowanceInfoLines(sel).map((line) => (
+            <span key={line}>{line.startsWith("The muse usage command")
+              ? <>The <code>muse usage</code> command calls the short-term one Window.</>
+              : line}</span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function Overview({ data, onSelect, onGoto }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const runsState = parseRunsQuery(searchParams);
@@ -145,6 +197,20 @@ export default function Overview({ data, onSelect, onGoto }) {
     && events.every((e) => e["gen_ai.usage.input_tokens"] != null
       && e["gen_ai.usage.cached_tokens"] != null);
   const cacheShare = cacheComplete && inSum ? Math.round(cacheSum / inSum * 100) + "% cached" : "cache –";
+  const costBig = visibleCost(sel) == null && costUnit(sel) === "allowance"
+    ? allowanceBig(sel) : null;
+  const showUsageDetails = visibleCost(sel) == null
+    && costUnit(sel) === "allowance" && !!sel.allowance_end;
+  const costDetail = visibleCost(sel) != null
+    ? costNote(sel) + (sel.cost_source === "computed" ? " · input and output only" : "")
+    : costBig
+      ? allowanceDetail(sel)
+      : costUnit(sel) === "allowance" && sel.status === "running" && sel.allowance_start
+      ? "Short-term limit was at " + sel.allowance_start.window.used_percent + "% when the run started"
+        + (fmtResetClock(sel.allowance_start.window.resets_at_ms)
+          ? " (resets at " + fmtResetClock(sel.allowance_start.window.resets_at_ms) + ")" : "")
+        + ". How much this run uses lands when it finishes"
+      : costReason(sel);
 
   const notes = [];
   if (data.provider === "claude-code")
@@ -275,8 +341,11 @@ export default function Overview({ data, onSelect, onGoto }) {
         </div>
         <div className="stat">
           <div className="statTop"><small>Cost</small><StatIcon kind="cost" /></div>
-          <div className="big"><span>{fmtCost(visibleCost(sel))}</span></div>
-          <div className="detail">{costNote(sel) + (sel.cost_source === "computed" ? " · input and output only" : "")}</div>
+          {costBig ? (
+            <div className="big usageBig"><span>{costBig.value}</span> <span className="unit">{costBig.unit}</span></div>
+          ) : <div className="big"><span>{runCostText(sel)}</span></div>}
+          <div className="detail">{costDetail}</div>
+          {showUsageDetails ? <UsageInfo sel={sel} /> : null}
         </div>
       </div>
       <p className="note" style={{ display: notes.length ? "" : "none" }}>{notes.join(" ")}</p>

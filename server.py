@@ -26,7 +26,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 48
+VERSION = 49
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -268,6 +268,10 @@ def session_row(r):
         "harness_version": r.get("harness_version"),
         "cost_usd": r.get("cost_usd"),
         "cost_source": r.get("cost_source"),
+        "pricing": r.get("pricing"),
+        "allowance_start": r.get("allowance_start"),
+        "allowance_end": r.get("allowance_end"),
+        "allowance_delta": r.get("allowance_delta"),
         "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
         "model_ms": model_ms,
         "overhead_ms": None if model_ms is None or r.get("wall_ms") is None

@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 import { useSearchParams } from "react-router";
 import {
-  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, buildRunsQuery, compareSessions, filterOptions, filterSessions,
-  fmt, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, runMode, shortText, visibleCost,
+  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
+  fmt, fmtAllowance, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, runCostText, runMode, shortText, visibleCost,
 } from "../format.js";
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -17,7 +17,7 @@ export function summaryText(data) {
       + (s.comparison_id ? " · compare set " + s.comparison_id : "") + (s.status ? " · " + s.status : ""));
     lines.push("  " + s.calls + " call(s) · wall " + fmtDur(s.wall_ms) + " · model " + fmtDur(s.model_ms)
       + " · overhead " + fmtDur(s.overhead_ms) + " · last in " + fmt(s.last_input_tokens)
-      + " / out " + fmt(s.last_output_tokens) + " · cost " + fmtCost(visibleCost(s)));
+      + " / out " + fmt(s.last_output_tokens) + " · cost " + runCostText(s));
   });
   // Totals cover only runs that recorded each figure, and say so.
   const withWall = sessions.filter((s) => s.wall_ms != null);
@@ -27,12 +27,29 @@ export function summaryText(data) {
   const allTimed = sessions.every((s) => s.wall_ms != null && s.model_ms != null);
   const priced = sessions.map((s) => visibleCost(s)).filter((v) => v != null);
   const cost = priced.reduce((a, v) => a + v, 0);
+  // Allowance totals stay separate from USD. Raced runs are left
+  // out so overlapping legs never double count, and say so.
+  const hasDelta = (s) => s.allowance_delta
+    && (s.allowance_delta.window != null || s.allowance_delta.weekly != null);
+  const allowRuns = sessions.filter((s) => hasDelta(s) && !s.raced);
+  const racedOut = sessions.filter((s) => hasDelta(s) && s.raced).length;
+  const allowTotals = {
+    window: allowRuns.some((s) => s.allowance_delta.window != null)
+      ? allowRuns.reduce((a, s) => a + (s.allowance_delta.window || 0), 0) : null,
+    weekly: allowRuns.some((s) => s.allowance_delta.weekly != null)
+      ? allowRuns.reduce((a, s) => a + (s.allowance_delta.weekly || 0), 0) : null,
+  };
+  const allowText = allowRuns.length
+    ? fmtAllowance(allowTotals) + " over " + allowRuns.length + " run(s)"
+    : "–";
   lines.push("");
   lines.push("Total: " + sessions.length + " session(s) · wall "
     + (withWall.length ? fmtDur(wall) + " over " + withWall.length + " timed run(s)" : "–")
     + " · model " + (withModel.length ? fmtDur(model) + " over " + withModel.length + " timed run(s)" : "–")
     + " · overhead " + (allTimed && sessions.length ? fmtDur(wall - model) : "–")
-    + " · recorded cost " + (priced.length ? fmtCost(cost) + " over " + priced.length + " priced run(s)" : "–"));
+    + " · recorded cost " + (priced.length ? fmtCost(cost) + " over " + priced.length + " priced run(s)" : "–")
+    + " · plan usage " + allowText
+    + (racedOut ? " · " + racedOut + " raced run(s) left out" : ""));
   return lines.join("\n");
 }
 
@@ -54,7 +71,7 @@ function cellValue(s, id) {
   if (id === "status") return <StatusPill status={s.status} />;
   if (id === "harness_version") return s.harness_version || "–";
   if (id === "calls") return fmt(s.calls);
-  if (id === "cost_usd") return (<span title={s.cost_source === "computed" ? "Computed from recorded tokens at your rates. Input and output only" : visibleCost(s) == null && s.cost_usd != null ? "Claude Code priced this from Anthropic's list. That is not a Meta price, so it is hidden" : s.cost_source === "reported" ? "Reported by the harness" : "No cost recorded"}>{fmtCost(visibleCost(s))}</span>);
+  if (id === "cost_usd") return (<span title={costUnit(s) === "allowance" && fmtAllowance(s.allowance_delta) !== "–" ? allowanceHoverText(s) : costReason(s)}>{runCostText(s)}</span>);
   return fmtDur(s[id]);
 }
 
@@ -110,6 +127,9 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
           </select>
         </>
       )} />
+      {page.some((s) => fmtAllowance(s.allowance_delta) !== "–") ? (
+        <p className="hint">Muse runs show how much of your plan's usage limits they used.</p>
+      ) : null}
       <div className="tableWrap">
         <table className="runsTable">
           <thead>
