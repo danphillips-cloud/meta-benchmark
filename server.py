@@ -26,7 +26,7 @@ import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 54
+VERSION = 56
 INDEX = HERE / "muse-runs" / "index.jsonl"
 WEB_INDEX = HERE / "web" / "index.html"
 WEB_APP = HERE / "web" / "app.js"
@@ -254,6 +254,12 @@ def load_runs():
     return enriched
 
 
+def _harness_version(r):
+    # Echo runs no harness. Older echo records stored the Muse
+    # version by mistake, so it is dropped here, not rewritten.
+    return None if r.get("provider") == "echo" else r.get("harness_version")
+
+
 def session_row(r):
     model_ms = _run_model_ms(r)
     return {
@@ -265,7 +271,7 @@ def session_row(r):
         "compare_mode": r.get("compare_mode"),
         "raced": bool(r.get("raced")),
         "suite_id": r.get("suite_id"), "suite_prompt": r.get("suite_prompt"),
-        "harness_version": r.get("harness_version"),
+        "harness_version": _harness_version(r),
         "cost_usd": r.get("cost_usd"),
         "cost_source": r.get("cost_source"),
         "pricing": r.get("pricing"),
@@ -406,7 +412,7 @@ def read_logs(run_id=None):
         "prompt": selected.get("prompt"),
         "reply": selected.get("reply"),
         "provider": selected.get("provider"),
-        "harness_version": selected.get("harness_version"),
+        "harness_version": _harness_version(selected),
         "model_ms": _run_model_ms(selected),
         "wall_ms": selected.get("wall_ms") or elapsed_ms,
         "status": selected.get("status"),

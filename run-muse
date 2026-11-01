@@ -145,10 +145,11 @@ def harness_version(provider):
     """Harness version for this provider, read once per process.
 
     Muse runs use `muse --version`, Claude Code runs use
-    `claude --version`, raw API runs store None. A failed version
-    command stores None instead of failing the run.
+    `claude --version`, raw API and echo runs store None (echo
+    runs no harness). A failed version command stores None instead
+    of failing the run.
     """
-    if provider == "anthropic":
+    if provider in ("anthropic", "echo"):
         return None
     if provider in _harness_version_cache:
         return _harness_version_cache[provider]
@@ -1713,11 +1714,19 @@ def _entry_model(entry):
 
 
 def _priced_text(entry, pricing):
-    if entry["provider"] in PAID_PROVIDERS \
-            and pricing_for(_entry_model(entry), pricing):
-        return "priced"
-    if entry["provider"] == "claude-code" \
-            and not _entry_model(entry).startswith("muse-"):
+    # Mirrors the cost precedence in run_prompt: own rates, then
+    # Meta's list, then Claude Code's report. Subscription runs are
+    # measured in plan usage, never USD.
+    provider, model = entry["provider"], _entry_model(entry)
+    if provider == "echo":
+        return "bills nothing"
+    if provider not in PAID_PROVIDERS:
+        return "plan usage"
+    if pricing_for(model, pricing):
+        return "priced at your rates"
+    if model in list_pricing.LIST_PRICES:
+        return "priced at Meta list"
+    if provider == "claude-code" and not model.startswith("muse-"):
         return "cost reported by Claude Code"
     return "unpriced"
 

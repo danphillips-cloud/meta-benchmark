@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
-  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -289,6 +289,26 @@ test("parseRunsQuery defaults and validation", () => {
     { q: "hi", provider: "meta", model: "", status: "", mode: "", version: "", sort: "wall_ms", dir: "asc", from: "", to: "" });
   // Unknown sort/dir fall back to the safe default, never crash.
   assert.equal(parseRunsQuery(new URLSearchParams("sort=bogus&dir=sideways")).sort, "at");
+  // Header clicks cycle first direction, other direction, default.
+  // Time starts newest first, so clicking it on the default sort
+  // must flip to oldest first, not stay put.
+  let st = { ...parseRunsQuery(""), sort: "at", dir: "desc" };
+  st = nextRunsSort(st, "at");
+  assert.deepEqual([st.sort, st.dir], ["at", "asc"]);
+  st = nextRunsSort(st, "at");
+  assert.deepEqual([st.sort, st.dir], ["at", "desc"]);
+  st = nextRunsSort(st, "cost_usd");
+  assert.deepEqual([st.sort, st.dir], ["cost_usd", "asc"]);
+  st = nextRunsSort(st, "cost_usd");
+  assert.deepEqual([st.sort, st.dir], ["cost_usd", "desc"]);
+  st = nextRunsSort(st, "cost_usd");
+  assert.deepEqual([st.sort, st.dir], ["at", "desc"]);
+  // Every sortable Runs column must survive the URL round trip, or a
+  // header click is silently dropped back to the default sort.
+  for (const id of ["at", "prompt", "provider_model", "mode", "status", "harness_version", "calls", "wall_ms", "model_ms", "overhead_ms", "cost_usd"]) {
+    const q = buildRunsQuery({ ...parseRunsQuery(""), sort: id, dir: "asc" });
+    assert.equal(parseRunsQuery(new URLSearchParams(q)).sort, id, id);
+  }
   assert.equal(parseRunsQuery(new URLSearchParams("sort=bogus&dir=sideways")).dir, "desc");
   assert.equal(parseRunsQuery("status=failed").status, "failed");
 });

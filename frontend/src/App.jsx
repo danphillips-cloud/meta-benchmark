@@ -273,6 +273,16 @@ function AppShell() {
           </div>
         </nav>
         <div className="content">
+          {/* Until the first load lands, every view would show its empty
+              state ("No sessions yet", "nothing to replay"), which is a
+              false claim. Say it is loading instead. */}
+          {!loaded ? (
+            <section className="panel" aria-live="polite">
+              <p className="note">{paused
+                ? "Paused while this tab is hidden. Runs load when you come back to it."
+                : "Loading runs…"}</p>
+            </section>
+          ) : (
           <Routes>
             <Route path="/" element={<Overview data={data} onSelect={selectRun} onGoto={goto} />} />
             <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} />} />
@@ -288,6 +298,7 @@ function AppShell() {
             <Route path="/radar" element={<Radar data={data} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          )}
           <details className="helpBox">
             <summary>How to read this · commands · SDK docs</summary>
             <div className="panel">
