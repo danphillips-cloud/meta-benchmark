@@ -1206,6 +1206,8 @@ def record_watch_turn(turn, session_id, provider="muse-watch",
         "wall_ms": turn["wall_ms"], "exit_code": 0,
         "calls": turn["calls"], "timeline": turn.get("timeline") or [],
         "turn_index": turn["index"],
+        "calls_started_before_turn":
+            turn.get("calls_started_before_turn") or 0,
     })
     write_run(run_dir, report)
     if quiet:

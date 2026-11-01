@@ -2943,6 +2943,43 @@ class VisibilityTest(unittest.TestCase):
         self.assertIsNone(turns[0]["split"]["model_ms"])
         self.assertIsNone(turns[0]["split"]["muse_ms"])
 
+    def test_call_started_before_turn_makes_model_time_unknown(self):
+        import copy
+        records = copy.deepcopy(self._records("session-turns.jsonl"))
+        turns = run_muse.muse_log.split_turns(records)
+        self.assertEqual([t["calls_started_before_turn"] for t in turns],
+                         [0, 0])
+        # Turn 2 opens at 60.1 s. Its call lands at 65.3 s. At 9 s
+        # long it started at 56.3 s, inside turn 1.
+        records[10]["payload"]["event"]["duration_ms"] = 9000
+        turns = run_muse.muse_log.split_turns(records)
+        self.assertEqual(turns[1]["calls_started_before_turn"], 1)
+        self.assertIsNone(turns[1]["split"]["model_ms"])
+        self.assertIsNone(turns[1]["split"]["muse_ms"])
+        self.assertEqual(turns[0]["calls_started_before_turn"], 0)
+        self.assertEqual(turns[0]["split"]["model_ms"], 5000)
+
+    def test_server_dashes_model_time_when_calls_overlap(self):
+        calls = [{"duration_ms": 53509, "input_tokens": 1}]
+        flagged = {"run_id": "a", "provider": "muse-retro", "wall_ms": 60000,
+                   "calls": calls, "calls_started_before_turn": 1}
+        old = {"run_id": "b", "provider": "muse-retro", "wall_ms": 13632,
+               "calls": calls}
+        fine = {"run_id": "c", "provider": "muse-retro", "wall_ms": 60000,
+                "calls": calls}
+        for r in (flagged, old):
+            row = server.session_row(r)
+            self.assertIsNone(row["model_ms"])
+            self.assertIsNone(row["overhead_ms"])
+            self.assertEqual(row["model_note"], server.MODEL_OVERLAP_NOTE)
+        row = server.session_row(fine)
+        self.assertEqual(row["model_ms"], 53509)
+        self.assertIsNone(row["model_note"])
+        # A single run is not judged by sum against wall.
+        single = dict(old, run_id="d", provider="meta")
+        self.assertEqual(server.session_row(single)["model_ms"], 53509)
+        self.assertIsNone(server.session_row(single)["model_note"])
+
     def test_missing_pair_shows_dash_never_an_estimate(self):
         turns = run_muse.muse_log.split_turns(
             self._records("session-missing-pair.jsonl"))

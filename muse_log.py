@@ -434,11 +434,24 @@ def split_turns(records):
             continue
         wall_ms = round((max(activity) - start_us) / 1000)
         durations = [c["duration_ms"] for c in calls]
+        # A call that was already running when the user sent this
+        # turn's message started in the previous turn. Its full
+        # duration would be counted here, so model time can exceed
+        # wall. Count such calls from recorded timestamps only.
+        early = 0
+        for e in seg:
+            done_us = e.get("recorded_at")
+            for node in find_model_completed(e):
+                dur = node.get("duration_ms")
+                if done_us is not None and dur is not None \
+                        and done_us - dur * 1000 < start_us:
+                    early += 1
         # Strict: one missing duration makes the turn total unknown,
         # so time_split leaves muse_ms as None instead of absorbing
-        # the gap as Muse time.
+        # the gap as Muse time. An early call makes it unknown too.
         model_ms = sum(durations) \
-            if all(d is not None for d in durations) else None
+            if all(d is not None for d in durations) and not early \
+            else None
         turns.append({
             "index": n + 1,
             "prompt": _prompt_of(records[start]),
@@ -448,6 +461,7 @@ def split_turns(records):
             "timeline": _timeline_rows(seg),
             "split": time_split(seg, wall_ms, model_ms),
             "model": meta["model"], "version": meta["version"],
+            "calls_started_before_turn": early,
         })
     return turns
 
