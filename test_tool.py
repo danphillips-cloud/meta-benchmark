@@ -3491,6 +3491,36 @@ class HarnessVersionTest(unittest.TestCase):
             self.assertIsNone(run_muse.harness_version("anthropic"))
         self.assertEqual(fake.calls, [])
 
+    def test_dry_run_cost_labels_match_what_a_run_records(self):
+        label = lambda provider, model, pricing=None: run_muse._priced_text(
+            {"provider": provider, "model": model}, pricing or {})
+        self.assertEqual(label("meta", "muse-wonder-full-1.0"), "plan usage")
+        self.assertEqual(label("meta", "muse-wonder-full-1.0",
+                               {"muse-wonder-full-1.0": {"input": 1, "output": 1}}),
+                         "plan usage")
+        self.assertEqual(label("echo", None), "bills nothing")
+        self.assertEqual(label("anthropic", "muse-wonder-1.0"),
+                         "priced at Meta list")
+        self.assertEqual(label("anthropic", "muse-wonder-1.0",
+                               {"muse-wonder-1.0": {"input": 1, "output": 1}}),
+                         "priced at your rates")
+        self.assertEqual(label("claude-code", "muse-wonder-full-1.0"),
+                         "unpriced")
+        self.assertEqual(label("claude-code", "claude-sonnet-5-5"),
+                         "cost reported by Claude Code")
+
+    def test_echo_stores_no_version_and_old_echo_rows_hide_it(self):
+        fake = self._fake_run("Muse Code 1.4.14\n")
+        with mock.patch.object(run_muse.subprocess, "run", fake):
+            self.assertIsNone(run_muse.harness_version("echo"))
+        self.assertEqual(fake.calls, [])
+        old_echo = {"run_id": "e", "provider": "echo", "calls": [],
+                    "harness_version": "Muse Code 1.4.14"}
+        self.assertIsNone(server.session_row(old_echo)["harness_version"])
+        muse = dict(old_echo, provider="meta")
+        self.assertEqual(server.session_row(muse)["harness_version"],
+                         "Muse Code 1.4.14")
+
     def test_failed_version_command_stores_null_and_never_raises(self):
         fake = self._fake_run("", returncode=1)
         with mock.patch.object(run_muse.subprocess, "run", fake):

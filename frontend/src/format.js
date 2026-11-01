@@ -409,7 +409,7 @@ export function scopedRuns(d) {
 // always sort last, never as 0).
 
 export const RUNS_PAGE_SIZE = 50;
-export const RUNS_SORTS = ["at", "prompt", "provider_model", "mode", "status", "harness_version", "calls", "wall_ms", "model_ms", "overhead_ms"];
+export const RUNS_SORTS = ["at", "prompt", "provider_model", "mode", "status", "harness_version", "calls", "wall_ms", "model_ms", "overhead_ms", "cost_usd"];
 export const RUNS_DEFAULT_SORT = { sort: "at", dir: "desc" };
 
 export function runMode(s) {
@@ -589,9 +589,14 @@ export function markWalkthroughSeen(storage) {
 }
 
 // Clicking a column header cycles asc -> desc -> back to the default.
+// Header click cycle: first direction, then the other, then back to
+// the default. Time starts newest first, so its cycle is desc, asc.
+// Without that, clicking Time on the default sort changed nothing.
 export function nextRunsSort(current, sortId) {
-  if (current.sort !== sortId) return { sort: sortId, dir: sortId === "at" ? "desc" : "asc" };
-  if (current.dir === "asc") return { sort: sortId, dir: "desc" };
+  const first = sortId === "at" ? "desc" : "asc";
+  const second = first === "asc" ? "desc" : "asc";
+  if (current.sort !== sortId) return { sort: sortId, dir: first };
+  if (current.dir === first) return { sort: sortId, dir: second };
   return { ...RUNS_DEFAULT_SORT };
 }
 
