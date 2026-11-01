@@ -85,6 +85,134 @@ class HarvestTest(unittest.TestCase):
         self.assertEqual(run_muse.harvest_calls("no-such-session"), [])
 
 
+class LogParsingFixTest(unittest.TestCase):
+    def test_out_of_order_log_parses_like_ordered(self):
+        # The shuffled fixture is the retry fixture reversed, so
+        # file order and sequence order disagree on every line.
+        log = run_muse.muse_log
+        ordered = HERE / "fixtures" / "session-retry.jsonl"
+        shuffled = HERE / "fixtures" / "session-out-of-order.jsonl"
+        ordered_calls, ordered_tl = log.live_calls_from_log(ordered)
+        shuffled_calls, shuffled_tl = log.live_calls_from_log(shuffled)
+        self.assertEqual(shuffled_calls, ordered_calls)
+        self.assertEqual(shuffled_tl, ordered_tl)
+        self.assertTrue(all(t["duration_ms"] >= 0 for t in shuffled_tl))
+        with tempfile.TemporaryDirectory() as td:
+            sid = "test-session-order"
+            target = Path(td) / sid / "session.jsonl"
+            target.parent.mkdir(parents=True)
+            target.write_text(shuffled.read_text())
+            old = os.environ.get("MUSE_SESSIONS_DIR")
+            os.environ["MUSE_SESSIONS_DIR"] = td
+            try:
+                timeline = log.build_timeline(sid, 0)
+            finally:
+                if old is None:
+                    os.environ.pop("MUSE_SESSIONS_DIR", None)
+                else:
+                    os.environ["MUSE_SESSIONS_DIR"] = old
+        self.assertEqual(timeline, ordered_tl)
+
+    def _running_setup(self, td):
+        sessions = Path(td) / "sessions"
+        sid = "test-session-poll"
+        log_file = sessions / sid / "session.jsonl"
+        log_file.parent.mkdir(parents=True)
+        log_file.write_text(
+            (HERE / "fixtures" / "session-retry.jsonl").read_text())
+        runs = Path(td) / "muse-runs"
+        (runs / "run-live").mkdir(parents=True)
+        run = {"run_id": "run-live",
+               "at": datetime.now(timezone.utc).isoformat(),
+               "prompt": "hi", "model": "m", "provider": "meta",
+               "session_id": sid, "status": "running",
+               "timeout_seconds": 1800, "exit_code": None,
+               "error": None, "reply": "", "wall_ms": None,
+               "calls": []}
+        (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+        return sessions, sid, log_file, runs
+
+    def test_selected_log_parsed_once_per_poll(self):
+        with tempfile.TemporaryDirectory() as td:
+            sessions, sid, log_file, runs = self._running_setup(td)
+            old_env = os.environ.get("MUSE_SESSIONS_DIR")
+            old_index = server.INDEX
+            os.environ["MUSE_SESSIONS_DIR"] = str(sessions)
+            server.INDEX = runs / "index.jsonl"
+            server._SESSION_LOG_CACHE.clear()
+            server._LOG_RECORDS_CACHE.clear()
+            real = server.muse_log.read_records
+            calls = []
+
+            def counting(path):
+                calls.append(str(path))
+                return real(path)
+
+            try:
+                with mock.patch.object(server.muse_log,
+                                       "read_records", counting):
+                    data = server.read_logs("run-live")
+            finally:
+                server.INDEX = old_index
+                if old_env is None:
+                    os.environ.pop("MUSE_SESSIONS_DIR", None)
+                else:
+                    os.environ["MUSE_SESSIONS_DIR"] = old_env
+                server._SESSION_LOG_CACHE.clear()
+                server._LOG_RECORDS_CACHE.clear()
+            self.assertEqual(data["selected"], "run-live")
+            self.assertEqual(len(calls), 1, calls)
+
+    def test_deleted_log_still_answers(self):
+        import http.client
+        import threading
+        from http.server import HTTPServer
+        with tempfile.TemporaryDirectory() as td:
+            sessions, sid, log_file, runs = self._running_setup(td)
+            old_env = os.environ.get("MUSE_SESSIONS_DIR")
+            old_index = server.INDEX
+            old_port = server.PORT
+            os.environ["MUSE_SESSIONS_DIR"] = str(sessions)
+            server.INDEX = runs / "index.jsonl"
+            server._SESSION_LOG_CACHE.clear()
+            server._LOG_RECORDS_CACHE.clear()
+            httpd = HTTPServer(("127.0.0.1", 0), server.Handler)
+            server.PORT = httpd.server_address[1]
+            thread = threading.Thread(target=httpd.serve_forever,
+                                      daemon=True)
+            thread.start()
+            try:
+                primed = server.read_logs("run-live")
+                self.assertEqual(primed["selected"], "run-live")
+                self.assertIn(sid, server._SESSION_LOG_CACHE)
+                log_file.unlink()
+                after = server.read_logs("run-live")
+                self.assertEqual(len(after["sessions"]), 1)
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", server.PORT, timeout=5)
+                conn.request("GET", "/api/logs",
+                             headers={"Host":
+                                      f"127.0.0.1:{server.PORT}"})
+                resp = conn.getresponse()
+                body = resp.read()
+                conn.close()
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(json.loads(body)["selected"],
+                                 "run-live")
+                self.assertNotIn(sid, server._SESSION_LOG_CACHE)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                server.PORT = old_port
+                server.INDEX = old_index
+                if old_env is None:
+                    os.environ.pop("MUSE_SESSIONS_DIR", None)
+                else:
+                    os.environ["MUSE_SESSIONS_DIR"] = old_env
+                server._SESSION_LOG_CACHE.clear()
+                server._LOG_RECORDS_CACHE.clear()
+
+
 class ReadLogsTest(unittest.TestCase):
     def test_selection_scopes_events_and_loads_timeline(self):
         with tempfile.TemporaryDirectory() as td:
@@ -458,6 +586,121 @@ class DeleteRunTest(unittest.TestCase):
                 server.INDEX = old
 
 
+class DeleteAppendRaceTest(unittest.TestCase):
+    def test_append_during_delete_blocks_and_survives(self):
+        # Force the overlap: pause delete_run right after it reads the
+        # index, then start a real run-muse append from a second
+        # process. The append must block until the delete finishes,
+        # and its line must survive the rewrite.
+        import subprocess
+        import threading
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-done").mkdir(parents=True)
+            (runs / "run-keep").mkdir(parents=True)
+            done = {"run_id": "run-done", "status": "completed"}
+            keep = {"run_id": "run-keep", "status": "completed"}
+            index = runs / "index.jsonl"
+            index.write_text(json.dumps(done) + "\n"
+                             + json.dumps(keep) + "\n")
+            child_script = Path(td) / "append_child.py"
+            child_script.write_text(
+                "import importlib.util, sys\n"
+                "from importlib.machinery import SourceFileLoader\n"
+                "from pathlib import Path\n"
+                "root, runs = Path(sys.argv[1]), Path(sys.argv[2])\n"
+                "spec = importlib.util.spec_from_loader(\n"
+                "    'run_muse', SourceFileLoader('run_muse',\n"
+                "                                 str(root / 'run-muse')))\n"
+                "mod = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(mod)\n"
+                "mod.RUNS = runs\n"
+                "(runs / 'run-new').mkdir(exist_ok=True)\n"
+                "(runs / 'child-ready').write_text('ready')\n"
+                "mod.write_run(runs / 'run-new',\n"
+                "              {'run_id': 'run-new', 'status': 'completed'})\n")
+            old_index = server.INDEX
+            server.INDEX = index
+            read_done = threading.Event()
+            release = threading.Event()
+            orig_read_text = Path.read_text
+
+            def pausing_read_text(self, *args, **kwargs):
+                text = orig_read_text(self, *args, **kwargs)
+                if self == index and not read_done.is_set():
+                    read_done.set()
+                    release.wait(timeout=15)
+                return text
+
+            result = {}
+
+            def run_delete():
+                result["value"] = server.delete_run("run-done")
+
+            child = None
+            try:
+                with mock.patch.object(Path, "read_text",
+                                       pausing_read_text):
+                    deleter = threading.Thread(target=run_delete,
+                                               daemon=True)
+                    deleter.start()
+                    self.assertTrue(read_done.wait(timeout=10),
+                                    "delete never read the index")
+                    child = subprocess.Popen(
+                        [sys.executable, str(child_script),
+                         str(HERE), str(runs)])
+                    # Wait until the child is about to append.
+                    deadline = time.monotonic() + 15
+                    while not (runs / "child-ready").exists():
+                        self.assertIsNone(child.poll(),
+                                          "child died before appending")
+                        self.assertLess(time.monotonic(), deadline,
+                                        "child never became ready")
+                        time.sleep(0.02)
+                    # Give an unblocked append time to land.
+                    time.sleep(1.5)
+                    blocked = child.poll() is None \
+                        and "run-new" not in orig_read_text(index)
+                    release.set()
+                    deleter.join(timeout=15)
+                    child.wait(timeout=15)
+                self.assertFalse(deleter.is_alive(), "delete hung")
+                self.assertEqual(child.returncode, 0)
+                self.assertTrue(
+                    blocked,
+                    "append did not block while delete held the index")
+                ok, reason = result["value"]
+                self.assertTrue(ok, reason)
+                ids = [json.loads(line)["run_id"] for line in
+                       orig_read_text(index).splitlines() if line.strip()]
+                self.assertEqual(sorted(ids), ["run-keep", "run-new"])
+            finally:
+                release.set()
+                if child is not None and child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=10)
+                server.INDEX = old_index
+
+    def test_delete_preserves_index_file_mode(self):
+        import stat
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-done").mkdir(parents=True)
+            done = {"run_id": "run-done", "status": "completed"}
+            index = runs / "index.jsonl"
+            index.write_text(json.dumps(done) + "\n")
+            os.chmod(index, 0o640)
+            old = server.INDEX
+            server.INDEX = index
+            try:
+                ok, reason = server.delete_run("run-done")
+            finally:
+                server.INDEX = old
+            self.assertTrue(ok, reason)
+            self.assertEqual(stat.S_IMODE(index.stat().st_mode), 0o640)
+
+
 class NoInventedZerosTest(unittest.TestCase):
     def _read(self, run):
         td = tempfile.TemporaryDirectory()
@@ -523,6 +766,154 @@ class NoInventedZerosTest(unittest.TestCase):
             run_muse.print_summary(report, r, Path(td))
         self.assertIn("model –", out.getvalue())
         self.assertNotIn("model 0 ms", out.getvalue())
+
+    def test_strict_totals_one_missing_value_is_none(self):
+        # One call recorded, one missing. Every total is unknown,
+        # never a partial sum. api_ms still serves as model time.
+        data = self._read({
+            "run_id": "run-mixed", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "m", "provider": "meta",
+            "exit_code": 0, "error": None, "reply": "", "wall_ms": 900,
+            "status": "completed",
+            "calls": [{"duration_ms": 100, "input_tokens": 5,
+                       "output_tokens": 2},
+                      {"duration_ms": None, "input_tokens": None,
+                       "output_tokens": 3}]})
+        row = data["sessions"][0]
+        self.assertIsNone(row["model_ms"])
+        self.assertIsNone(row["input_tokens"])
+        self.assertEqual(row["output_tokens"], 5)
+        with_api = dict(self._read({
+            "run_id": "run-mixed-api", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "m", "provider": "meta",
+            "exit_code": 0, "error": None, "reply": "", "wall_ms": 900,
+            "status": "completed", "api_ms": 700,
+            "calls": [{"duration_ms": 100, "input_tokens": 5,
+                       "output_tokens": 2},
+                      {"duration_ms": None, "input_tokens": 5,
+                       "output_tokens": 3}]})["sessions"][0])
+        self.assertEqual(with_api["model_ms"], 700)
+
+    def test_token_totals_none_zero_and_sum(self):
+        none_data = self._read({
+            "run_id": "run-notok", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "m", "provider": "meta",
+            "exit_code": 0, "error": None, "reply": "", "wall_ms": 900,
+            "status": "completed",
+            "calls": [{"duration_ms": 1, "input_tokens": None,
+                       "output_tokens": None}]})
+        self.assertIsNone(none_data["sessions"][0]["input_tokens"])
+        self.assertIsNone(none_data["sessions"][0]["output_tokens"])
+        zero_data = self._read({
+            "run_id": "run-zerotok", "at": "2026-01-01T00:00:00+00:00",
+            "prompt": "hi", "model": "m", "provider": "meta",
+            "exit_code": 0, "error": None, "reply": "", "wall_ms": 900,
+            "status": "completed",
+            "calls": [{"duration_ms": 1, "input_tokens": 0,
+                       "output_tokens": 0}]})
+        self.assertEqual(zero_data["sessions"][0]["input_tokens"], 0)
+        self.assertEqual(zero_data["sessions"][0]["output_tokens"], 0)
+
+    def test_terminal_summary_prints_token_dashes_when_unrecorded(self):
+        import contextlib
+        report = {"status": "completed", "provider": "meta",
+                  "model": "m", "metrics_unavailable": False,
+                  "error": None, "timeout_seconds": 5, "run_id": "r-y"}
+        r = {"wall_ms": 5000,
+             "calls": [{"duration_ms": 10, "input_tokens": 5,
+                        "output_tokens": None}],
+             "api_ms": None, "totals": None, "reply": "",
+             "needs_approval": None}
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as td, \
+                contextlib.redirect_stdout(out):
+            run_muse.print_summary(report, r, Path(td))
+        text = out.getvalue()
+        self.assertIn("in 5", text)
+        self.assertIn("out –", text)
+        self.assertNotIn("out 0", text)
+        self.assertNotIn("out None", text)
+
+    def test_input_with_cache_is_strict(self):
+        full = {"input_tokens": 4, "cache_read_input_tokens": 10,
+                "cache_creation_input_tokens": 2}
+        self.assertEqual(claude_stream._input_with_cache(full), 16)
+        self.assertEqual(claude_stream._input_with_cache(
+            {"input_tokens": 0, "cache_read_input_tokens": 0,
+             "cache_creation_input_tokens": 0}), 0)
+        self.assertIsNone(claude_stream._input_with_cache(
+            {"input_tokens": 4, "cache_read_input_tokens": 10}))
+        self.assertIsNone(claude_stream._input_with_cache({}))
+
+
+class StartTimeTest(unittest.TestCase):
+    def test_at_is_start_and_finished_at_is_recorded(self):
+        # Stubbed provider call. Nothing runs and nothing is billed.
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            old_runs = run_muse.RUNS
+            old_fn = run_muse.run_anthropic
+            run_muse.RUNS = runs
+            run_muse.run_anthropic = lambda *a, **k: \
+                run_muse._empty_result("fake", exit_code=0, wall_ms=5)
+            before = datetime.now(timezone.utc)
+            try:
+                report = run_muse.run_prompt(
+                    "hi", provider="anthropic", model="m")
+            finally:
+                run_muse.RUNS, run_muse.run_anthropic = old_runs, old_fn
+            after = datetime.now(timezone.utc)
+            entries = [json.loads(line) for line in
+                       (runs / "index.jsonl").read_text().splitlines()]
+            self.assertEqual(len(entries), 2)
+            running, final = entries
+            self.assertEqual(running["at"], final["at"])
+            self.assertEqual(report["at"], final["at"])
+            started = datetime.fromisoformat(final["at"])
+            finished = datetime.fromisoformat(final["finished_at"])
+            self.assertLessEqual(before, started)
+            self.assertLessEqual(started, finished)
+            self.assertLessEqual(finished, after)
+
+    def test_old_record_without_finished_at_still_loads(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            (runs / "run-old").mkdir(parents=True)
+            old = {"run_id": "run-old",
+                   "at": "2026-01-01T00:05:00+00:00",
+                   "prompt": "hi", "model": "m", "provider": "meta",
+                   "exit_code": 0, "error": None, "reply": "",
+                   "wall_ms": 900, "status": "completed", "calls": []}
+            (runs / "index.jsonl").write_text(json.dumps(old) + "\n")
+            old_index = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs("run-old")
+            finally:
+                server.INDEX = old_index
+            self.assertEqual(data["selected"], "run-old")
+            self.assertEqual(data["sessions"][0]["at"],
+                             "2026-01-01T00:05:00+00:00")
+
+
+class VisibleSemicolonTest(unittest.TestCase):
+    def test_fixed_user_visible_strings_have_no_semicolons(self):
+        spots = [
+            (HERE / "run-muse", "Run Muse normally in another terminal"),
+            (HERE / "frontend/src/App.jsx", "totals cover every call"),
+            (HERE / "frontend/src/App.jsx",
+             "medians over completed runs only"),
+            (HERE / "frontend/src/views/Compare.jsx",
+             "Same prompt for every leg"),
+            (HERE / "frontend/src/views/Overview.jsx",
+             "Latest session error"),
+        ]
+        for path, needle in spots:
+            lines = [line for line in path.read_text(errors="replace")
+                     .splitlines() if needle in line]
+            self.assertTrue(lines, f"{needle} not found in {path}")
+            for line in lines:
+                self.assertNotIn(";", line, f"{path}: {line}")
 
 
 class OverheadClampTest(unittest.TestCase):
@@ -608,7 +999,9 @@ class ClaudeStreamTest(unittest.TestCase):
         self.assertIsNone(parsed["calls"][0]["input_tokens"])
         self.assertIsNone(parsed["calls"][0]["cached_tokens"])
         self.assertEqual(parsed["usage_model"], "muse-wonder-1.0")
-        self.assertEqual(parsed["totals"]["input_tokens"], 1370)
+        # Strict: the result usage omits the cache parts, so the
+        # input total including cache is unknown. Never 1370 alone.
+        self.assertIsNone(parsed["totals"]["input_tokens"])
 
 
 class ClaudeLiveTest(unittest.TestCase):
@@ -2163,6 +2556,30 @@ class VisibilityTest(unittest.TestCase):
             "model_ms": 5000, "tool_ms": 0,
             "approval_ms": 0, "muse_ms": 200})
         self.assertEqual(turns[0]["version"], "0.0.0-test")
+
+    def test_missing_duration_makes_turn_model_and_muse_none(self):
+        # Strict: blank every recorded duration in a copy of the
+        # turns fixture. The turn total is then unknown, and the
+        # gap must not be absorbed as Muse time.
+        import copy
+
+        def blank(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key == "duration_ms":
+                        node[key] = None
+                    else:
+                        blank(value)
+            elif isinstance(node, list):
+                for value in node:
+                    blank(value)
+
+        records = copy.deepcopy(self._records("session-turns.jsonl"))
+        blank(records)
+        turns = run_muse.muse_log.split_turns(records)
+        self.assertEqual(len(turns), 2)
+        self.assertIsNone(turns[0]["split"]["model_ms"])
+        self.assertIsNone(turns[0]["split"]["muse_ms"])
 
     def test_missing_pair_shows_dash_never_an_estimate(self):
         turns = run_muse.muse_log.split_turns(

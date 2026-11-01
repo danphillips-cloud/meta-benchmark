@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useSearchParams,
 } from "react-router";
-import { FILTER_KEYS, activeFilterChips, dataSignature, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
+import { FILTER_KEYS, activeFilterChips, dataSignature, latestOnly, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
 import { deleteRun, download, fetchLogs } from "./api.js";
 import { MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
 import Walkthrough from "./components/walkthrough.jsx";
@@ -108,6 +108,8 @@ function AppShell() {
   }, [loaded, openTour]);
   const sigRef = useRef("");
   const dataRef = useRef(EMPTY);
+  const requestGuardRef = useRef(null);
+  if (!requestGuardRef.current) requestGuardRef.current = latestOnly();
 
   const runDetail = matchPath("/runs/:id", location.pathname);
   const timelineDetail = matchPath("/timeline/:id", location.pathname);
@@ -126,8 +128,15 @@ function AppShell() {
 
   const refresh = useCallback(async (runId) => {
     if (document.hidden) { setPaused(true); return; }
+    // Only the latest issued request may apply its result. A late
+    // response for an earlier run must never paint under a newer
+    // run's URL. The token is taken after the hidden check, so a
+    // skipped poll does not invalidate a fetch already in flight.
+    const guard = requestGuardRef.current;
+    const token = guard.take();
     try {
       const d = await fetchLogs(runId ?? routeRunRef.current);
+      if (!guard.isCurrent(token)) return;
       dataRef.current = d;
       setLoaded(true);
       setPaused(false);
@@ -139,6 +148,7 @@ function AppShell() {
       sigRef.current = sig;
       setData(d);
     } catch (e) {
+      if (!guard.isCurrent(token)) return;
       setSourceText("Could not reach the local server: " + e.message);
     }
   }, []);
@@ -283,9 +293,9 @@ function AppShell() {
             <div className="panel">
               <ul>
                 <li><strong>Wall</strong> is the whole run. It splits into <strong>Model</strong> (the model thinking), <strong>Tools</strong> (commands Muse ran), <strong>Approval wait</strong>, and <strong>Muse</strong> (everything else Muse did). All four come from timestamps in Muse's own log.</li>
-                <li><strong>Model time</strong> is one model call, start to finish. Labels say their scope: <em>run</em> totals cover every call; <em>last call</em> figures describe only the final call.</li>
+                <li><strong>Model time</strong> is one model call, start to finish. Labels say their scope. <em>Run</em> totals cover every call. <em>Last call</em> figures describe only the final call.</li>
                 <li><strong>–</strong> means the harness did not report it. It is never estimated, and no chart is drawn for it. Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.</li>
-                <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only; every round stays visible in the matrix.</li>
+                <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only. Every round stays visible in the matrix.</li>
                 <li>Timeline middle column is time to the next step, not step cost.</li>
                 <li><strong>Replay</strong> plays the selected run back at its recorded step times. Counters count only calls that had landed by the playhead. Model bar starts are derived from recorded model time. Steps with no recorded time stay off the ruler. The thin lane under the ruler holds named tool and approval segments at true width, so short tools are slivers.</li>
                 <li><strong>X-ray</strong> shows what Muse sent on each model call, lane by lane, in recorded bytes. Bytes are not tokens and are never converted. The token table under the bars is a separate unit. A partial note means the log omitted some lane groups for that call.</li>

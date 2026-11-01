@@ -13,6 +13,8 @@ the Muse subscription login. Direct API providers use their own key.
 """
 import argparse
 import concurrent.futures
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -68,6 +70,28 @@ RUNS = ROOT / "muse-runs"
 # whole lines whole when leg threads write at the same moment.
 _INDEX_LOCK = threading.Lock()
 _PRINT_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _index_file_lock(index_path):
+    """Exclusive cross-process lock for index.jsonl writers.
+
+    This launcher appends to the index while server.py can rewrite
+    it for a delete. Every writer holds this flock on a file beside
+    the index, so an append can never land between a delete's read
+    and its rewrite and be lost. Platforms: macOS, Linux and
+    Windows via WSL. fcntl works under WSL. Native Windows Python
+    is not supported. The lock file is never deleted. The OS
+    releases the lock when its holder exits.
+    """
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = index_path.parent / (index_path.name + ".lock")
+    with open(lock_path, "a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 PORT = int(os.environ.get("PORT", "8765"))
 UI_URL = f"http://127.0.0.1:{PORT}/"
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
@@ -813,7 +837,8 @@ def run_claude_code(prompt, run_dir, model, timeout, stop_event=None,
 
 
 BASE_REPORT = {
-    "at": None, "run_id": None, "prompt": "", "model": None,
+    "at": None, "finished_at": None,
+    "run_id": None, "prompt": "", "model": None,
     "provider": None, "session_id": None, "context_mode": None,
     "comparison_id": None, "round": None, "compare_mode": None,
     "suite_id": None, "suite_prompt": None,
@@ -844,7 +869,8 @@ def new_run_dir():
 def write_run(run_dir, report):
     (run_dir / "report.json").write_text(json.dumps(report, indent=2))
     summary = {k: v for k, v in report.items() if k != "timeline"}
-    with _INDEX_LOCK, open(RUNS / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, _index_file_lock(RUNS / "index.jsonl"), \
+            open(RUNS / "index.jsonl", "a") as f:
         f.write(json.dumps(summary) + "\n")
 
 
@@ -874,15 +900,27 @@ def print_summary(report, r, run_dir):
         print(f"[{label}] wall {r['wall_ms']} ms · "
               "model metrics unavailable (no model records in session log)")
     else:
-        durations = [c["duration_ms"] for c in r["calls"]
-                     if c.get("duration_ms") is not None]
-        model_ms = sum(durations) if durations else r.get("api_ms")
+        # Strict totals: one missing call value makes the total
+        # unknown (a dash), never a partial sum.
+        durations = [c.get("duration_ms") for c in r["calls"]]
+        model_ms = sum(durations) \
+            if durations and all(d is not None for d in durations) \
+            else r.get("api_ms")
         model_text = "–" if model_ms is None else f"{model_ms} ms"
         totals = r.get("totals") or {}
-        in_tok = totals.get("input_tokens") if totals else \
-            sum(c["input_tokens"] or 0 for c in r["calls"])
-        out_tok = totals.get("output_tokens") if totals else \
-            sum(c["output_tokens"] or 0 for c in r["calls"])
+
+        def summed(key):
+            values = [c.get(key) for c in r["calls"]]
+            if not values or any(v is None for v in values):
+                return None
+            return sum(values)
+
+        in_tok = totals.get("input_tokens") if totals \
+            else summed("input_tokens")
+        out_tok = totals.get("output_tokens") if totals \
+            else summed("output_tokens")
+        in_text = "–" if in_tok is None else str(in_tok)
+        out_text = "–" if out_tok is None else str(out_tok)
         cost_text = ""
         shown_cost = counted_cost(report.get("model"),
                                   report.get("cost_usd"),
@@ -892,7 +930,7 @@ def print_summary(report, r, run_dir):
             if report.get("cost_source") == "computed":
                 cost_text += " (at your rates)"
         print(f"[{label}] wall {r['wall_ms']} ms · model {model_text} · "
-              f"in {in_tok} · out {out_tok} · {len(r['calls'])} call(s)"
+              f"in {in_text} · out {out_text} · {len(r['calls'])} call(s)"
               f"{cost_text} · {status}")
     if r["reply"]:
         print(r["reply"][:500])
@@ -938,8 +976,11 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     context_mode = "bare" if provider == "claude-code" \
         else ("minimal" if minimal else "full")
     version = harness_version(provider)
+    # `at` is always the start time. The final report reuses this
+    # instant and records its own finish in `finished_at`.
+    started_at = datetime.now(timezone.utc).isoformat()
     running = {
-        "at": datetime.now(timezone.utc).isoformat(),
+        "at": started_at,
         "run_id": run_id, "prompt": prompt,
         "model": recorded_model(provider, model),
         "provider": provider, "session_id": live_session_id,
@@ -953,7 +994,8 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
         "wall_ms": None, "exit_code": None, "reply": "",
         "calls": [], "metrics_unavailable": False, "error": None,
     }
-    with _INDEX_LOCK, open(RUNS / "index.jsonl", "a") as f:
+    with _INDEX_LOCK, _index_file_lock(RUNS / "index.jsonl"), \
+            open(RUNS / "index.jsonl", "a") as f:
         f.write(json.dumps(running) + "\n")
     started = time.monotonic()
     leg_label = f"{provider}/{recorded_model(provider, model)}" \
@@ -987,14 +1029,15 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     if r.get("session_id") and is_muse(provider):
         log_path = muse_log.session_log_path(r["session_id"])
         if log_path:
-            dur = [c["duration_ms"] for c in r["calls"]
-                   if c.get("duration_ms") is not None]
+            dur = [c.get("duration_ms") for c in r["calls"]]
             split = muse_log.time_split(
                 muse_log.read_records(log_path), r["wall_ms"],
-                sum(dur) if dur else None)
+                sum(dur) if dur and all(d is not None for d in dur)
+                else None)
     report = dict(BASE_REPORT)
     report.update({
-        "at": datetime.now(timezone.utc).isoformat(),
+        "at": started_at,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id, "prompt": prompt,
         "model": r.get("usage_model") or recorded_model(provider, model),
         "provider": provider, "session_id": r["session_id"],
@@ -1098,7 +1141,7 @@ def run_watch(session_arg=None):
         print("No Muse session log found to watch.", file=sys.stderr)
         return
     print(f"Watching session {session_id} read-only. "
-          f"Run Muse normally in another terminal; Ctrl+C stops "
+          f"Run Muse normally in another terminal. Ctrl+C stops "
           f"watching.{_ui_suffix()}", flush=True)
     recorded = set()
     try:
@@ -1187,7 +1230,8 @@ def run_retro():
         turns = muse_log.split_turns(records)
         if not turns:
             continue
-        first = min((e.get("recorded_at") or 0) for e in records)
+        first = min((e.get("recorded_at") for e in records
+                     if e.get("recorded_at") is not None), default=0)
         sessions.append((first, session_id, turns))
     sessions.sort(key=lambda s: (s[0], s[1]))
     plan = retro_plan(_index_entries(),

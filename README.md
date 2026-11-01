@@ -8,7 +8,7 @@ Work in progress. I've tested it on macOS with Muse Code 1.4.13. Expect rough ed
 
 ## Requirements
 
-Python 3.9 or newer on macOS or Linux, and Muse Code. Claude Code runs also need the `claude` CLI.
+Python 3.9 or newer on macOS or Linux, and Muse Code. Windows works through WSL. Native Windows Python is not supported. Claude Code runs also need the `claude` CLI.
 
 ## Getting started
 

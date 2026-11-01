@@ -24,7 +24,7 @@ function CompareSet({ data, onSelect }) {
   const prompts = [...new Set(inSet.map((s) => s.prompt || ""))];
   const allRaced = inSet.length > 0 && inSet.every((s) => s.raced);
   const promptLine = (prompts.length === 1
-    ? "Same prompt for every leg: “" + shortText(prompts[0], 140) + "”. Run each way in the terminal with ./run-muse --compare …; this panel lines the legs up side by side."
+    ? "Same prompt for every leg: “" + shortText(prompts[0], 140) + "”. Run each way in the terminal with ./run-muse --compare … This panel lines the legs up side by side."
     : "Heads up: legs in this set do not all share one prompt, so treat side-by-side times with care.")
     + (allRaced ? " Legs ran at the same time." : "");
   const racing = raceProgress(inSet, Date.now());
