@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { shouldCloseTourOnEscape } from "../format.js";
+import { needsScroll, shouldCloseTourOnEscape } from "../format.js";
 
 // Non-modal tour card. Steps arrive as plain data from
 // walkthroughSteps in format.js, already snapshotted by the
@@ -127,11 +127,22 @@ export default function Walkthrough({ steps, onNavigate, onClose }) {
       raf = requestAnimationFrame(() => { raf = 0; measure(true); });
     };
 
+    // The target can change size after it is found (the sidebar
+    // footer grows when its status text loads), so watch it.
+    let observer = null;
     const find = () => {
       if (cancelled) return;
       const el = measure(false);
       if (el) {
-        el.scrollIntoView({ block: "center" });
+        if (typeof ResizeObserver === "function") {
+          observer = new ResizeObserver(scheduleMeasure);
+          observer.observe(el);
+        }
+        // A target already on screen stays put. The sidebar footer
+        // is always visible, and centring it would scroll the page.
+        if (needsScroll(el.getBoundingClientRect(), window.innerHeight)) {
+          el.scrollIntoView({ block: "center" });
+        }
         // Measure now and again next frame. A hidden tab may
         // throttle animation frames, and the card must not stay
         // invisible at its placeholder position meanwhile.
@@ -145,13 +156,16 @@ export default function Walkthrough({ steps, onNavigate, onClose }) {
     };
     find();
     window.addEventListener("resize", scheduleMeasure);
-    window.addEventListener("scroll", scheduleMeasure, { passive: true });
+    // Capture catches scrolls inside panels too, like the sidebar
+    // list, which never reach window on their own.
+    window.addEventListener("scroll", scheduleMeasure, { passive: true, capture: true });
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
       if (raf) cancelAnimationFrame(raf);
       window.removeEventListener("resize", scheduleMeasure);
-      window.removeEventListener("scroll", scheduleMeasure);
+      window.removeEventListener("scroll", scheduleMeasure, { capture: true });
+      if (observer) observer.disconnect();
     };
   }, [index, step]);
 

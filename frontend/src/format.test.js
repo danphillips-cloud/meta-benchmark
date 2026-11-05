@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, META_MODELS, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -1490,4 +1490,38 @@ test("reproPack: long timeline truncates with a plain count note", () => {
 test("reproPack: empty payload and missing reply degrade in plain words", () => {
   assert.match(reproPack({}), /No run selected/);
   assert.match(reproPack(PAYLOAD({ reply: "" })), /No reply recorded/);
+});
+
+test("runLabel: first non-blank prompt line, then run id", () => {
+  assert.equal(runLabel(S({ prompt: "\n  fix the tests  \nmore" })), "fix the tests");
+  assert.equal(runLabel(S({ prompt: "", run_id: "r1" })), "r1");
+  assert.equal(runLabel(null), "Untitled run");
+});
+
+test("recentRuns: newest n, label and status only", () => {
+  const rows = [1, 2, 3].map((i) => S({ run_id: "r" + i, prompt: "p" + i, status: "completed" }));
+  assert.deepEqual(recentRuns(rows, 2), [
+    { run_id: "r1", label: "p1", status: "completed" },
+    { run_id: "r2", label: "p2", status: "completed" },
+  ]);
+  assert.equal(recentRuns(null).length, 0);
+  assert.equal(recentRuns(Array.from({ length: 12 }, (_, i) => S({ run_id: "x" + i }))).length, 8);
+});
+
+test("breadcrumb: run views end with the run, others stand alone", () => {
+  const run = S({ run_id: "r1", prompt: "what is 2+2" });
+  assert.deepEqual(breadcrumb("overview", run), [
+    { label: "Runs", to: "/runs" }, { label: "what is 2+2", to: null }]);
+  assert.deepEqual(breadcrumb("replay", run), [
+    { label: "Replay", to: null }, { label: "what is 2+2", to: null }]);
+  assert.deepEqual(breadcrumb("radar", run), [{ label: "Radar", to: null }]);
+  assert.deepEqual(breadcrumb("overview", {}), [{ label: "Overview", to: null }]);
+  assert.deepEqual(breadcrumb("nope", null), [{ label: "Overview", to: null }]);
+});
+
+test("needsScroll: only targets outside the viewport scroll", () => {
+  assert.equal(needsScroll({ top: 700, bottom: 780 }, 800), false);
+  assert.equal(needsScroll({ top: 760, bottom: 840 }, 800), true);
+  assert.equal(needsScroll({ top: -10, bottom: 40 }, 800), true);
+  assert.equal(needsScroll(null, 800), false);
 });
