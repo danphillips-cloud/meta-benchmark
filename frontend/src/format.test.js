@@ -1508,15 +1508,10 @@ test("recentRuns: newest n, label and status only", () => {
   assert.equal(recentRuns(Array.from({ length: 12 }, (_, i) => S({ run_id: "x" + i }))).length, 8);
 });
 
-test("breadcrumb: run views end with the run, others stand alone", () => {
-  const run = S({ run_id: "r1", prompt: "what is 2+2" });
-  assert.deepEqual(breadcrumb("overview", run), [
-    { label: "Runs", to: "/runs" }, { label: "what is 2+2", to: null }]);
-  assert.deepEqual(breadcrumb("replay", run), [
-    { label: "Replay", to: null }, { label: "what is 2+2", to: null }]);
-  assert.deepEqual(breadcrumb("radar", run), [{ label: "Radar", to: null }]);
-  assert.deepEqual(breadcrumb("overview", {}), [{ label: "Overview", to: null }]);
-  assert.deepEqual(breadcrumb("nope", null), [{ label: "Overview", to: null }]);
+test("breadcrumb: page name only, Overview by default", () => {
+  assert.deepEqual(breadcrumb("replay"), [{ label: "Replay", to: null }]);
+  assert.deepEqual(breadcrumb("xray"), [{ label: "X-ray", to: null }]);
+  assert.deepEqual(breadcrumb("nope"), [{ label: "Overview", to: null }]);
 });
 
 test("needsScroll: only targets outside the viewport scroll", () => {

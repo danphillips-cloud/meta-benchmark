@@ -243,7 +243,7 @@ function AppShell() {
     ]],
   ];
   const recents = recentRuns(sessions);
-  const crumbs = breadcrumb(view, selSession);
+  const crumbs = breadcrumb(view);
   return (
     <>
       <div className={"app" + (drawerOpen ? " drawerOpen" : "")}>
