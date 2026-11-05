@@ -379,11 +379,18 @@ export function fastestOf(rows) {
   };
 }
 
+// The only Meta models the benchmark UI lists. Order matches
+// the model picker and run-muse META_MODELS.
+export const META_MODELS = ["muse-wonder-1.0", "muse-wonder-full-1.0",
+  "muse-spark-1.3", "muse-spark-1.2"];
+
 export function filterOptions(sessions) {
   const all = sessions || [];
+  // Model filter shows only the Meta models, even for old runs
+  // recorded with other models. Providers still come from data.
   return {
     providers: [...new Set(all.map((s) => s.provider).filter(Boolean))].sort(),
-    models: [...new Set(all.map((s) => s.model).filter(Boolean))].sort(),
+    models: [...META_MODELS],
   };
 }
 

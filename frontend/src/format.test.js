@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  DID_NOT_COMPLETE, STATUSES, META_MODELS, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -868,15 +868,17 @@ test("status constants: DID_NOT_COMPLETE is every known status that did not fini
   assert.ok(!DID_NOT_COMPLETE.includes("completed") && !DID_NOT_COMPLETE.includes("running"));
 });
 
-test("filterOptions: sorted unique providers and models, blanks dropped", () => {
+test("filterOptions: providers from data, only Meta models listed", () => {
   const rows = [
-    S({ provider: "meta", model: "m2" }),
-    S({ provider: "claude-code", model: "m1" }),
-    S({ provider: "meta", model: "m2" }),
+    S({ provider: "meta", model: "muse-wonder-1.0" }),
+    S({ provider: "claude-code", model: "claude-sonnet-5-5" }),
+    S({ provider: "meta", model: "muse-wonder-1.0" }),
     S({ provider: null, model: null }),
   ];
-  assert.deepEqual(filterOptions(rows), { providers: ["claude-code", "meta"], models: ["m1", "m2"] });
-  assert.deepEqual(filterOptions([]), { providers: [], models: [] });
+  assert.deepEqual(filterOptions(rows), { providers: ["claude-code", "meta"], models: [...META_MODELS] });
+  assert.deepEqual(filterOptions([]), { providers: [], models: [...META_MODELS] });
+  assert.deepEqual(META_MODELS, ["muse-wonder-1.0", "muse-wonder-full-1.0",
+    "muse-spark-1.3", "muse-spark-1.2"]);
 });
 
 test("usualBaseline: never compares across context modes", () => {
