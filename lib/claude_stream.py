@@ -117,10 +117,10 @@ def _parse_events(events):
             label += f" {e['subtype']}"
         has_next = i + 1 < len(events)
         nxt = events[i + 1][0] if has_next else None
+        # The last event has nothing after it to end it, so its
+        # duration is unknown: None, never an invented 0.
         if has_next and nxt is not None and arrival is not None:
             duration_ms = nxt - arrival
-        elif not has_next and arrival is not None:
-            duration_ms = 0
         else:
             duration_ms = None
         timeline.append({

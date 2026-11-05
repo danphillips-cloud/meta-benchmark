@@ -86,7 +86,10 @@ def _timeline_rows(records):
 def _finish_timeline(rows):
     for i, row in enumerate(rows):
         nxt = rows[i + 1]["recorded_at"] if i + 1 < len(rows) else None
-        row["duration_ms"] = round((nxt - row["recorded_at"]) / 1000) if nxt else 0
+        # The last row has no next record to end it, so its
+        # duration is unknown: None, never an invented 0.
+        row["duration_ms"] = round((nxt - row["recorded_at"]) / 1000) \
+            if nxt else None
         del row["recorded_at"]
     return rows
 

@@ -104,7 +104,10 @@ class LogParsingFixTest(unittest.TestCase):
         shuffled_calls, shuffled_tl = log.live_calls_from_log(shuffled)
         self.assertEqual(shuffled_calls, ordered_calls)
         self.assertEqual(shuffled_tl, ordered_tl)
-        self.assertTrue(all(t["duration_ms"] >= 0 for t in shuffled_tl))
+        self.assertTrue(all(t["duration_ms"] >= 0
+                            for t in shuffled_tl[:-1]))
+        # The last step has nothing after it: unknown, not 0.
+        self.assertIsNone(shuffled_tl[-1]["duration_ms"])
         with tempfile.TemporaryDirectory() as td:
             sid = "test-session-order"
             target = Path(td) / sid / "session.jsonl"
@@ -984,7 +987,7 @@ class ClaudeStreamTest(unittest.TestCase):
         self.assertTrue(parsed["reply"].startswith("I created `hello.py`"))
         self.assertEqual(len(parsed["timeline"]), 6)
         self.assertEqual([t["duration_ms"] for t in parsed["timeline"]],
-                         [100, 100, 100, 100, 100, 0])
+                         [100, 100, 100, 100, 100, None])
         self.assertTrue(all(t["wire_ms"] is None
                             for t in parsed["timeline"]))
 
@@ -3712,6 +3715,158 @@ class DefaultSelectionTest(unittest.TestCase):
         stale = {"run_id": "stale", "status": "running",
                  "at": "2020-01-03T00:00:00+00:00", "timeout_seconds": 60}
         self.assertEqual(self._selected([done, stale]), "done")
+
+
+class BoundedCacheTest(unittest.TestCase):
+    def test_put_drops_least_recently_used(self):
+        cache = {}
+        for key in "abc":
+            server._cache_put(cache, key, key.upper(), 2)
+        self.assertEqual(list(cache), ["b", "c"])
+        # A hit makes "b" the newest, so "c" goes next.
+        self.assertEqual(server._cache_get(cache, "b"), "B")
+        server._cache_put(cache, "d", "D", 2)
+        self.assertEqual(list(cache), ["b", "d"])
+        self.assertIsNone(server._cache_get(cache, "zz"))
+
+    def test_log_records_cache_stays_bounded(self):
+        server._LOG_RECORDS_CACHE.clear()
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                for n in range(server.RECORDS_CACHE_SIZE + 5):
+                    path = Path(td) / f"s{n}.jsonl"
+                    path.write_text('{"sequence": 1}\n')
+                    server._log_records(path)
+                self.assertEqual(len(server._LOG_RECORDS_CACHE),
+                                 server.RECORDS_CACHE_SIZE)
+        finally:
+            server._LOG_RECORDS_CACHE.clear()
+
+
+class NaiveStartTimeTest(unittest.TestCase):
+    def test_naive_at_still_gives_elapsed(self):
+        naive = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            runs.mkdir()
+            run = {"run_id": "run-naive", "at": naive, "status": "running",
+                   "provider": "meta", "calls": []}
+            (runs / "index.jsonl").write_text(json.dumps(run) + "\n")
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                data = server.read_logs("run-naive")
+            finally:
+                server.INDEX = old
+        self.assertIsNotNone(data["elapsed_ms"])
+        self.assertGreaterEqual(data["elapsed_ms"], 0)
+
+    def test_parse_at_bad_values_are_none(self):
+        self.assertIsNone(server._parse_at(None))
+        self.assertIsNone(server._parse_at("not a date"))
+
+
+class RowsWithoutRunIdTest(unittest.TestCase):
+    def test_each_row_without_run_id_is_kept(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs = Path(td) / "muse-runs"
+            runs.mkdir()
+            rows = [{"prompt": "one", "status": "completed"},
+                    {"prompt": "two", "status": "completed"}]
+            (runs / "index.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in rows))
+            old = server.INDEX
+            server.INDEX = runs / "index.jsonl"
+            try:
+                loaded = server.load_runs()
+            finally:
+                server.INDEX = old
+        self.assertEqual([r["prompt"] for r in loaded], ["one", "two"])
+
+
+class DeleteBodyLengthTest(unittest.TestCase):
+    def test_bad_lengths_are_refused(self):
+        import http.client
+        import threading
+        from http.server import HTTPServer
+        old_port = server.PORT
+        httpd = HTTPServer(("127.0.0.1", 0), server.Handler)
+        server.PORT = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            def post(length):
+                conn = http.client.HTTPConnection(
+                    "127.0.0.1", server.PORT, timeout=5)
+                conn.putrequest("POST", "/api/delete", skip_host=True)
+                conn.putheader("Host", f"127.0.0.1:{server.PORT}")
+                conn.putheader("Content-Length", length)
+                conn.endheaders()
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                return resp.status
+            self.assertEqual(post("abc"), 400)
+            self.assertEqual(post("-1"), 400)
+            self.assertEqual(post(str(server.MAX_BODY + 1)), 400)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            server.PORT = old_port
+
+
+class UiServerProcessTest(unittest.TestCase):
+    def test_server_starts_without_api_keys(self):
+        seen = {}
+
+        def fake_popen(cmd, **kwargs):
+            seen.update(kwargs.get("env") or {})
+
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.dict(os.environ,
+                                {"ANTHROPIC_API_KEY": "test-not-a-key",
+                                 "META_API_KEY": "test-not-a-key"}), \
+                mock.patch.object(run_muse, "RUNS", Path(td)), \
+                mock.patch.object(run_muse.subprocess, "Popen", fake_popen), \
+                mock.patch.object(run_muse, "ui_up", lambda: True):
+            run_muse.start_ui()
+        self.assertEqual(seen.get("PORT"), str(run_muse.PORT))
+        for key in run_muse.STRIP_ENV:
+            self.assertNotIn(key, seen)
+
+    def _restart_kills(self, cmdline):
+        killed = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd and cmd[0] == "kill":
+                killed.append(cmd[1])
+
+        try:
+            with mock.patch.object(run_muse, "_pids_on_port",
+                                   lambda port: ["4242"]), \
+                    mock.patch.object(run_muse, "_pid_cmdline",
+                                      lambda pid: cmdline), \
+                    mock.patch.object(run_muse, "_pid_cwd",
+                                      lambda pid: "/elsewhere"), \
+                    mock.patch.object(run_muse, "start_ui", lambda: None), \
+                    mock.patch.object(run_muse, "ui_up", lambda: False), \
+                    mock.patch.object(run_muse.subprocess, "run", fake_run), \
+                    mock.patch("sys.stderr", new_callable=io.StringIO):
+                run_muse.restart_ui()
+        finally:
+            run_muse._ui_blocked = False
+        return killed
+
+    def test_restart_kills_our_server(self):
+        own = f"python3 {run_muse.ROOT}/lib/server.py"
+        self.assertEqual(self._restart_kills(own), ["4242"])
+
+    def test_restart_leaves_sibling_checkout_alone(self):
+        sibling = f"python3 {run_muse.ROOT}-old/lib/server.py"
+        self.assertEqual(self._restart_kills(sibling), [])
+
+    def test_both_sides_share_one_index_lock(self):
+        self.assertIs(run_muse._index_file_lock, server._index_file_lock)
 
 
 if __name__ == "__main__":
