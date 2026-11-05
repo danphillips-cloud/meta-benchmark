@@ -1521,8 +1521,10 @@ class CompareModelsForTest(unittest.TestCase):
             for key in ("COMPARE_META", "COMPARE_CLAUDE"):
                 os.environ.pop(key, None)
             self.assertEqual(run_muse.compare_models_for("meta"), [
-                ("meta", "muse-wonder-full-1.0"),
-                ("meta", "muse-wonder-1.0")])
+                ("meta", m) for m in run_muse.META_MODELS])
+            self.assertEqual(run_muse.META_MODELS, [
+                "muse-wonder-1.0", "muse-wonder-full-1.0",
+                "muse-spark-1.3", "muse-spark-1.2"])
             self.assertEqual(run_muse.compare_models_for("claude"), [
                 ("claude-code", "muse-wonder-1.0"),
                 ("claude-code", "claude-sonnet-5-5")])

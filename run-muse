@@ -99,13 +99,18 @@ DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
 DEFAULT_CLAUDE_MODEL = os.environ.get("BENCH_CLAUDE_MODEL", "claude-sonnet-5-5")
 DEFAULT_PROVIDER = os.environ.get("MUSE_PROVIDER", "meta")
 STRIP_ENV = ("META_API_KEY", "MUSE_API_TOKEN", "MODEL_API_KEY", "ANTHROPIC_API_KEY")
+# The only Meta models the benchmark shows in the UI and
+# compares by default. Order matches the model picker.
+META_MODELS = ["muse-wonder-1.0", "muse-wonder-full-1.0",
+               "muse-spark-1.3", "muse-spark-1.2"]
 # provider:model entries used by --compare
 COMPARE_MODELS = os.environ.get(
     "COMPARE_MODELS",
     "meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,"
     "claude-code:claude-sonnet-5-5")
 COMPARE_META = os.environ.get(
-    "COMPARE_META", "meta:muse-wonder-full-1.0,meta:muse-wonder-1.0")
+    "COMPARE_META",
+    ",".join(f"meta:{m}" for m in META_MODELS))
 COMPARE_CLAUDE = os.environ.get(
     "COMPARE_CLAUDE",
     "claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5")
