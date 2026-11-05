@@ -1988,15 +1988,10 @@ export const VIEW_LABELS = {
   replay: "Replay", xray: "X-ray", radar: "Radar",
 };
 
-// Breadcrumb trail for the header. Views that show one run end
-// with that run's label. The Overview of a run sits under Runs.
-const RUN_VIEWS = ["overview", "timeline", "replay", "xray"];
-export function breadcrumb(view, session) {
-  const label = VIEW_LABELS[view] || "Overview";
-  const hasRun = Boolean(session && session.run_id) && RUN_VIEWS.includes(view);
-  if (!hasRun) return [{ label, to: null }];
-  if (view === "overview") return [{ label: "Runs", to: "/runs" }, { label: runLabel(session), to: null }];
-  return [{ label, to: null }, { label: runLabel(session), to: null }];
+// Breadcrumb for the header: the page name only. The run's prompt
+// already heads the page, so repeating it here adds nothing.
+export function breadcrumb(view) {
+  return [{ label: VIEW_LABELS[view] || "Overview", to: null }];
 }
 
 // True when a tour target is not fully inside the viewport, so

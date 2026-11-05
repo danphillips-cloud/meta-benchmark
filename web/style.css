@@ -1,5 +1,8 @@
 :root { --ink:#171a21; --muted:#68707e; --faint:#9aa2b0; --line:#e3e7ed; --line2:#eef1f5; --accent:#0b6ce0; --accent-dark:#0b6ce0; --onaccent:#fff; --bad:#b42318; --ok:#0b6ce0; --warn:#9a5b06; --selected:#eef4fe; --chip:#f0f2f6; --pre:#f6f7f9; --bg:#fafafa; --card:#fff; --btn:#fff; --errbg:#fdf3f2; --errline:#f0d4d1; --barmodel:#0b6ce0; --barover:#7e8898; --barstalled:#d97706; --r:12px; --side:#f3f3f2; --side-hover:#e9e9e7; --side-active:#e3e3e0; --side-line:#e2e2df; --st-ok:#106b31; --st-ok-bg:#e3f3e8; --st-bad:#a81c12; --st-bad-bg:#fdecea; --st-warn:#7c4a03; --st-warn-bg:#fbf0d9; --st-run:#0a54b4; --st-run-bg:#e6f0fc; }
   :root[data-theme="dark"] { --ink:#e8eaee; --muted:#9aa3b1; --faint:#6f7889; --line:#323236; --line2:#2a2a2e; --accent:#4c9aff; --accent-dark:#7db8ff; --onaccent:#0b1522; --bad:#ff9d94; --ok:#4c9aff; --warn:#f5b86b; --selected:#2b2f38; --chip:#2e2e32; --pre:#1a1a1c; --bg:#1e1e20; --card:#252528; --btn:#252528; --errbg:#2b1a19; --errline:#4d2b29; --barmodel:#4c9aff; --barover:#3d3d44; --barstalled:#f5b04c; --st-ok:#86dc9c; --st-ok-bg:#142b1a; --st-bad:#ffa49b; --st-bad-bg:#331b19; --st-warn:#ffc06e; --st-warn-bg:#33270f; --st-run:#8fc1ff; --st-run-bg:#13263f; --side:#161618; --side-hover:#222225; --side-active:#2a2a2e; --side-line:#2a2a2e; }
+  /* Tells the browser which theme is on, so native scrollbars and
+     form controls match it instead of staying light. */
+  :root { color-scheme:light; } :root[data-theme="dark"] { color-scheme:dark; }
   * { box-sizing:border-box; }
   body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color:var(--ink); background:var(--bg); font-size:14px; -webkit-font-smoothing:antialiased; }
   .card, .panel, .stat { min-width:0; }
@@ -8,7 +11,7 @@
      with no scrollbar to undo it. */
   .app { display:grid; grid-template-columns:260px minmax(0,1fr); min-height:100vh; overflow-x:clip; }
   .side { position:sticky; top:0; height:100vh; display:flex; flex-direction:column; padding:14px 10px 12px; background:var(--side); border-right:1px solid var(--side-line); }
-  .sideScroll { flex:1 1 auto; min-height:0; overflow-y:auto; margin:0 -10px; padding:0 10px; scrollbar-width:thin; }
+  .sideScroll { flex:1 1 auto; min-height:0; overflow-y:auto; margin:0 -10px; padding:0 10px; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
   .brand { flex:none; display:flex; align-items:center; gap:9px; padding:6px 10px 10px; font-size:15px; font-weight:700; letter-spacing:-.01em; color:var(--ink); text-decoration:none; }
   .brandMark { width:24px; height:24px; flex:none; display:grid; place-items:center; border-radius:7px; background:var(--ink); color:var(--side); }
   .brandMark svg { width:15px; height:15px; }
