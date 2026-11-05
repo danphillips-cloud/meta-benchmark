@@ -6,8 +6,6 @@ and appends each run to muse-runs/index.jsonl. This server reads that
 file and serves it to the UI. It writes run data only to delete runs
 the user asks to delete. No API key is used here.
 """
-import contextlib
-import fcntl
 import json
 import os
 import re
@@ -22,47 +20,69 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 import claude_stream  # noqa: E402
+import index_lock  # noqa: E402
 import muse_log  # noqa: E402
 
 HERE = Path(__file__).parent
 # The repo root: run data and the built page live there, not in lib/.
 ROOT = HERE.parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 61
+VERSION = 62
 INDEX = ROOT / "muse-runs" / "index.jsonl"
 WEB_INDEX = ROOT / "web" / "index.html"
 WEB_APP = ROOT / "web" / "app.js"
 WEB_CSS = ROOT / "web" / "style.css"
+# Largest POST body accepted. A delete body is a few dozen bytes.
+MAX_BODY = 64 * 1024
+# Caches keep only the most recently used entries, so a long-lived
+# server that has opened many big runs doesn't keep them all.
+# Parsed logs are large, so few. Paths are tiny, so many.
+RECORDS_CACHE_SIZE = 8
+PATH_CACHE_SIZE = 256
 _SESSION_LOG_CACHE = {}
 _LOG_RECORDS_CACHE = {}
 
 
-@contextlib.contextmanager
-def _index_file_lock(index_path):
-    """Exclusive cross-process lock for index.jsonl writers.
+def _cache_get(cache, key):
+    """Value for key, marked most recently used. None on a miss."""
+    if key not in cache:
+        return None
+    value = cache.pop(key)
+    cache[key] = value
+    return value
 
-    run-muse appends to the index while this server can rewrite it
-    for a delete. Every writer holds this flock on a file beside the
-    index, so an append can never land between a delete's read and
-    its rewrite and be lost. Platforms: macOS, Linux and Windows
-    via WSL. fcntl works under WSL. Native Windows Python is not
-    supported. The lock file is never deleted. The OS releases the
-    lock when its holder exits.
-    """
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = index_path.parent / (index_path.name + ".lock")
-    with open(lock_path, "a+") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+def _cache_put(cache, key, value, limit):
+    """Store value as most recently used, dropping the oldest past limit.
+
+    Dicts keep insertion order, so the first key is the least
+    recently used one."""
+    cache.pop(key, None)
+    cache[key] = value
+    while len(cache) > limit:
+        del cache[next(iter(cache))]
+
+
+def _parse_at(value):
+    """Aware datetime from an ISO `at` string. Naive values are UTC.
+
+    None when the value is missing or not ISO."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+_index_file_lock = index_lock.index_file_lock
 
 
 def live_session_log(session_id):
     if not session_id:
         return None
-    cached = _SESSION_LOG_CACHE.get(session_id)
+    cached = _cache_get(_SESSION_LOG_CACHE, session_id)
     if cached is not None:
         if Path(cached).is_file():
             return cached
@@ -73,7 +93,7 @@ def live_session_log(session_id):
     path = muse_log.session_log_path(session_id)
     if not path:
         return None
-    _SESSION_LOG_CACHE[session_id] = path
+    _cache_put(_SESSION_LOG_CACHE, session_id, path, PATH_CACHE_SIZE)
     return path
 
 
@@ -92,11 +112,12 @@ def _log_records(path):
         _LOG_RECORDS_CACHE.pop(str(path), None)
         return []
     version = (stamp.st_mtime_ns, stamp.st_size)
-    cached = _LOG_RECORDS_CACHE.get(str(path))
+    cached = _cache_get(_LOG_RECORDS_CACHE, str(path))
     if cached and cached[0] == version:
         return cached[1]
     records = muse_log.read_records(path)
-    _LOG_RECORDS_CACHE[str(path)] = (version, records)
+    _cache_put(_LOG_RECORDS_CACHE, str(path), (version, records),
+               RECORDS_CACHE_SIZE)
     return records
 
 
@@ -132,7 +153,7 @@ def _claude_live(run):
     except OSError:
         return empty
     version = (stamp.st_mtime_ns, stamp.st_size)
-    cached = _CLAUDE_LIVE_CACHE.get(run["run_id"])
+    cached = _cache_get(_CLAUDE_LIVE_CACHE, run["run_id"])
     if cached and cached[0] == version:
         return cached[1]
     try:
@@ -142,19 +163,17 @@ def _claude_live(run):
     live = claude_stream.live_from_lines(lines)
     result = {"calls": live["calls"], "timeline": live["timeline"],
               "live_state": live["live_state"]}
-    _CLAUDE_LIVE_CACHE[run["run_id"]] = (version, result)
+    _cache_put(_CLAUDE_LIVE_CACHE, run["run_id"], (version, result),
+               RECORDS_CACHE_SIZE)
     return result
 
 
 def _is_stale_running(run):
     """A 'running' run with no final report, past its timeout + grace."""
-    try:
-        started = datetime.fromisoformat(run.get("at"))
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
-        age = (datetime.now(timezone.utc) - started).total_seconds()
-    except Exception:
+    started = _parse_at(run.get("at"))
+    if started is None:
         return False
+    age = (datetime.now(timezone.utc) - started).total_seconds()
     return age > (run.get("timeout_seconds") or 1800) + 300
 
 
@@ -246,9 +265,11 @@ def load_runs():
                 continue
     # Keep the last entry per run_id: runs register as "running" first
     # and append their final summary when they finish.
+    # A row with no run_id can't be a later copy of another row, so
+    # each one keeps its own slot instead of collapsing into one.
     deduped = {}
-    for r in runs:
-        deduped[r.get("run_id")] = r
+    for i, r in enumerate(runs):
+        deduped[r.get("run_id") or ("no-run-id", i)] = r
     runs = list(deduped.values())
     # A run still marked "running" with no report, long past its timeout,
     # was interrupted (e.g. Ctrl+C outside the wait) and never finished.
@@ -350,12 +371,11 @@ def read_logs(run_id=None):
         if not live_timeline:
             live_timeline = claude_live["timeline"]
     elapsed_ms = None
-    if selected.get("status") == "running" and selected.get("at"):
-        try:
-            started = datetime.fromisoformat(selected["at"])
-            elapsed_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-        except Exception:
-            elapsed_ms = None
+    started = _parse_at(selected.get("at")) \
+        if selected.get("status") == "running" else None
+    if started is not None:
+        elapsed_ms = round(
+            (datetime.now(timezone.utc) - started).total_seconds() * 1000)
     # The selected run's session log is read once here; the retry
     # merge, live state and time split below all use these records.
     selected_records = None
@@ -555,7 +575,15 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/api/delete":
             self.send_error(404)
             return
-        length = int(self.headers.get("Content-Length") or 0)
+        # A bad length would raise, and a negative one would make
+        # read() wait for the client to close. Refuse both.
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY:
+            self.send_error(400)
+            return
         try:
             data = json.loads(self.rfile.read(length) or b"{}")
         except Exception:

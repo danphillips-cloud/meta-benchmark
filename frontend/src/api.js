@@ -30,9 +30,12 @@ export async function copyText(text) {
 }
 
 export function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.href = url;
   a.download = name;
   a.click();
-  URL.revokeObjectURL(a.href);
+  // Revoking straight after click() can cancel the download in some
+  // browsers. Free the URL once the browser has started it.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

@@ -13,8 +13,6 @@ the Muse subscription login. Direct API providers use their own key.
 """
 import argparse
 import concurrent.futures
-import contextlib
-import fcntl
 import json
 import os
 import re
@@ -34,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 import muse_log  # noqa: E402
 import pricing as list_pricing  # noqa: E402
+import index_lock  # noqa: E402
 from claude_stream import (  # noqa: E402,F401
     feed_live_event, new_live_tracker, parse_claude_stream,
     tracker_live_state)
@@ -73,26 +72,7 @@ _INDEX_LOCK = threading.Lock()
 _PRINT_LOCK = threading.Lock()
 
 
-@contextlib.contextmanager
-def _index_file_lock(index_path):
-    """Exclusive cross-process lock for index.jsonl writers.
-
-    This launcher appends to the index while server.py can rewrite
-    it for a delete. Every writer holds this flock on a file beside
-    the index, so an append can never land between a delete's read
-    and its rewrite and be lost. Platforms: macOS, Linux and
-    Windows via WSL. fcntl works under WSL. Native Windows Python
-    is not supported. The lock file is never deleted. The OS
-    releases the lock when its holder exits.
-    """
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = index_path.parent / (index_path.name + ".lock")
-    with open(lock_path, "a+") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+_index_file_lock = index_lock.index_file_lock
 PORT = int(os.environ.get("PORT", "8765"))
 UI_URL = f"http://127.0.0.1:{PORT}/"
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
@@ -402,7 +382,9 @@ def start_ui():
     try:
         subprocess.Popen([sys.executable, str(ROOT / "lib" / "server.py")],
                          cwd=ROOT, stdout=log, stderr=log,
-                         env={**os.environ, "PORT": str(PORT)},
+                         # .env keys are in os.environ. The server
+                         # never uses a key, so it never gets one.
+                         env={**_clean_env(), "PORT": str(PORT)},
                          start_new_session=True)
     finally:
         log.close()
@@ -465,8 +447,10 @@ def restart_ui():
     for pid in _pids_on_port(PORT):
         cmdline = _pid_cmdline(pid)
         cwd = _pid_cwd(pid)
+        # ROOT plus a slash, so a sibling checkout such as
+        # meta-benchmark-old/ is never taken for ours.
         is_ours = "server.py" in cmdline and (
-            str(ROOT) in cmdline or cwd == str(ROOT))
+            str(ROOT) + os.sep in cmdline or cwd == str(ROOT))
         if is_ours:
             subprocess.run(["kill", pid], capture_output=True)
         else:
@@ -828,7 +812,7 @@ def run_anthropic(prompt, run_dir, model, timeout):
               "reasoning_tokens": None,
               "stop_reason": data.get("stop_reason")}] if data else []
     timeline = [{"at": datetime.now(timezone.utc).isoformat(),
-                 "operation": "model_completed", "duration_ms": 0,
+                 "operation": "model_completed", "duration_ms": None,
                  "wire_ms": wall_ms}] if data else []
     (run_dir / "events.jsonl").write_text("")
     (run_dir / "stderr.log").write_text(error or "")
