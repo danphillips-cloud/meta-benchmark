@@ -1966,3 +1966,43 @@ export function reproPack(data) {
   lines.push("");
   return lines.join("\n");
 }
+
+// One-line label for a run in the sidebar and breadcrumb: the
+// prompt's first non-blank line. CSS trims it to fit.
+export function runLabel(session) {
+  const prompt = String((session && session.prompt) ?? "");
+  const line = prompt.split("\n").map((l) => l.trim()).find(Boolean);
+  return line || (session && session.run_id) || "Untitled run";
+}
+
+// The newest n runs for the sidebar's Recents list. Sessions
+// arrive newest first from the server.
+export function recentRuns(sessions, n = 8) {
+  return (sessions || []).slice(0, n).map((s) => ({
+    run_id: s.run_id, label: runLabel(s), status: s.status || null,
+  }));
+}
+
+export const VIEW_LABELS = {
+  overview: "Overview", runs: "Runs", compare: "Compare", timeline: "Timeline",
+  replay: "Replay", xray: "X-ray", radar: "Radar",
+};
+
+// Breadcrumb trail for the header. Views that show one run end
+// with that run's label. The Overview of a run sits under Runs.
+const RUN_VIEWS = ["overview", "timeline", "replay", "xray"];
+export function breadcrumb(view, session) {
+  const label = VIEW_LABELS[view] || "Overview";
+  const hasRun = Boolean(session && session.run_id) && RUN_VIEWS.includes(view);
+  if (!hasRun) return [{ label, to: null }];
+  if (view === "overview") return [{ label: "Runs", to: "/runs" }, { label: runLabel(session), to: null }];
+  return [{ label, to: null }, { label: runLabel(session), to: null }];
+}
+
+// True when a tour target is not fully inside the viewport, so
+// it must be scrolled into view. A visible target never moves
+// the page.
+export function needsScroll(rect, viewportHeight) {
+  if (!rect) return false;
+  return rect.top < 0 || rect.bottom > viewportHeight;
+}

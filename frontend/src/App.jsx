@@ -3,9 +3,9 @@ import { createRoot } from "react-dom/client";
 import {
   BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useSearchParams,
 } from "react-router";
-import { FILTER_KEYS, activeFilterChips, dataSignature, latestOnly, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
+import { FILTER_KEYS, activeFilterChips, breadcrumb, dataSignature, recentRuns, latestOnly, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
 import { deleteRun, download, fetchLogs } from "./api.js";
-import { MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
+import { BrandGlyph, ExternalIcon, MenuIcon, MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
 import Walkthrough from "./components/walkthrough.jsx";
 import Overview from "./views/Overview.jsx";
 import Runs from "./views/Runs.jsx";
@@ -69,6 +69,14 @@ function AppShell() {
   const [paused, setPaused] = useState(false);
   const [sourceText, setSourceText] = useState("Waiting for logs…");
   const [exportOpen, setExportOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (e) => { if (e.key === "Escape") setDrawerOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
   const [tourOpen, setTourOpen] = useState(false);
   const [tourSteps, setTourSteps] = useState(null);
   const tourButtonRef = useRef(null);
@@ -221,105 +229,154 @@ function AppShell() {
       JSON.stringify(lastData, null, 2), "application/json");
   };
 
-  const NAV = [
-    ["overview", "Overview", "/"],
-    ["runs", "Runs", "/runs"],
-    ["compare", "Compare", selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare"],
-    ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
-    ["replay", "Replay", data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay"],
-    ["xray", "X-ray", data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray"],
-    ["radar", "Radar", "/radar"],
+  const NAV_GROUPS = [
+    ["Results", [
+      ["overview", "Overview", "/"],
+      ["runs", "Runs", "/runs"],
+    ]],
+    ["Analyse", [
+      ["compare", "Compare", selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare"],
+      ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
+      ["replay", "Replay", data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay"],
+      ["xray", "X-ray", data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray"],
+      ["radar", "Radar", "/radar"],
+    ]],
   ];
+  const recents = recentRuns(sessions);
+  const crumbs = breadcrumb(view, selSession);
   return (
     <>
-      <header className="topbar">
-        <span className="pageTitle">meta-benchmark</span>
-        {filterChips.length ? (
-          <span className="filterChips" aria-label="Active filters">
-            <span className="filterChipsLabel">Filters</span>
-            {filterChips.map((c) => (
-              <span key={c.key} className="pill model">{c.label}
-                <button type="button" className="chipRemove" aria-label={"Remove filter " + c.label} onClick={() => removeChip(c.key)}>×</button>
-              </span>
+      <div className={"app" + (drawerOpen ? " drawerOpen" : "")}>
+        <aside className="side" aria-label="Views">
+          <Link to={"/" + qs} className="brand"><BrandGlyph />meta-benchmark</Link>
+          <div className="sideScroll">
+          <nav aria-label="Views">
+            {NAV_GROUPS.map(([group, items]) => (
+              <div key={group} className="navGroup">
+                <div className="groupLabel">{group}</div>
+                {items.map(([key, label, to]) => (
+                  <Link key={key} to={to + qs} className={"navItem" + (view === key ? " active" : "")}
+                    aria-current={view === key ? "page" : undefined}>
+                    <NavIcon view={key} />{label}
+                  </Link>
+                ))}
+              </div>
             ))}
-            <button type="button" className="btn" style={{ padding: "3px 9px" }} onClick={clearFilters}>Clear all</button>
-          </span>
-        ) : null}
-        <div className="topbarRight">
-          <div className="exportWrap">
-            <button className="btn" type="button" aria-haspopup="menu" aria-expanded={String(exportOpen)}
-              onClick={(e) => { e.stopPropagation(); setExportOpen(!exportOpen); }}>Export ▾</button>
-            <div className="exportMenu" role="menu" hidden={!exportOpen} onClick={() => setExportOpen(false)}>
-              <button className="btn" type="button" role="menuitem" onClick={exportCsv}>Export CSV</button>
-              <button className="btn" type="button" role="menuitem" onClick={exportJson}>Export JSON</button>
+            <div className="navGroup">
+              <div className="groupLabel">Help</div>
+              <button ref={tourButtonRef} type="button" className="navItem" onClick={openTour}><NavIcon view="help" />Getting started</button>
+              <a className="navItem" href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener"><NavIcon view="docs" />SDK docs<ExternalIcon /></a>
             </div>
+          </nav>
+          {recents.length ? (
+            <div className="recents" aria-label="Recent runs">
+              <div className="groupLabel">Recents</div>
+              {recents.map((r) => (
+                <Link key={r.run_id} to={"/runs/" + encodeURIComponent(r.run_id) + qs}
+                  className={"navItem recent" + (r.run_id === data.selected ? " active" : "")}
+                  aria-current={r.run_id === data.selected ? "true" : undefined} title={r.label}>
+                  <span className={"dot " + (r.status || "")} aria-hidden="true" />
+                  <span className="recentLabel">{r.label}</span>
+                  <span className="srOnly">{r.status ? ", " + r.status : ""}</span>
+                </Link>
+              ))}
+            </div>
+          ) : null}
           </div>
-          <button id="themeToggle" aria-label="Toggle night mode" title={theme === "dark" ? "Switch to day mode" : "Switch to night mode"}
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <SunIcon /> : <MoonIcon />}</button>
-        </div>
-      </header>
-      <main className="shell">
-        <nav className="sidebar" aria-label="Views">
-          {NAV.map(([key, label, to]) => (
-            <Link key={key} to={to + qs} className={"navItem" + (view === key ? " active" : "")}
-              aria-current={view === key ? "page" : undefined}>
-              <NavIcon view={key} />{label}
-            </Link>
-          ))}
-          <button ref={tourButtonRef} type="button" className="navItem" onClick={openTour}>Getting started</button>
           <div className="sideFoot" data-tour="terminal">
             <span className={"live" + (paused ? " paused" : "")}>{paused ? "● Paused (tab hidden)" : "● Live"}</span>
             <span>{sourceText}</span><br />Runs start in the terminal: <code className="inline">./run-muse</code>
           </div>
-        </nav>
-        <div className="content">
-          {/* Until the first load lands, every view would show its empty
-              state ("No sessions yet", "nothing to replay"), which is a
-              false claim. Say it is loading instead. */}
-          {!loaded ? (
-            <section className="panel" aria-live="polite">
-              <p className="note">{paused
-                ? "Paused while this tab is hidden. Runs load when you come back to it."
-                : "Loading runs…"}</p>
-            </section>
-          ) : (
-          <Routes>
-            <Route path="/" element={<Overview data={data} onSelect={selectRun} onGoto={goto} />} />
-            <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} />} />
-            <Route path="/runs/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Overview data={data} onSelect={selectRun} onGoto={goto} />} />
-            <Route path="/compare/:setId" element={compareNotFound ? <NotFound what="Compare set not found" /> : <Compare data={compareData} onSelect={selectRun} />} />
-            <Route path="/compare" element={<Compare data={data} onSelect={selectRun} />} />
-            <Route path="/timeline/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Timeline data={data} />} />
-            <Route path="/timeline" element={<Timeline data={data} />} />
-            <Route path="/replay/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Replay data={data} />} />
-            <Route path="/replay" element={<Replay data={data} />} />
-            <Route path="/xray/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Xray data={data} />} />
-            <Route path="/xray" element={<Xray data={data} />} />
-            <Route path="/radar" element={<Radar data={data} />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-          )}
-          <details className="helpBox">
-            <summary>How to read this · commands · SDK docs</summary>
-            <div className="panel">
-              <ul>
-                <li><strong>Wall</strong> is the whole run. It splits into <strong>Model</strong> (the model thinking), <strong>Tools</strong> (commands Muse ran), <strong>Approval wait</strong>, and <strong>Muse</strong> (everything else Muse did). All four come from timestamps in Muse's own log.</li>
-                <li><strong>Model time</strong> is one model call, start to finish. Labels say their scope. <em>Run</em> totals cover every call. <em>Last call</em> figures describe only the final call.</li>
-                <li><strong>–</strong> means the harness did not report it. It is never estimated, and no chart is drawn for it. Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.</li>
-                <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only. Every round stays visible in the matrix.</li>
-                <li>Timeline middle column is time to the next step, not step cost.</li>
-                <li><strong>Replay</strong> plays the selected run back at its recorded step times. Counters count only calls that had landed by the playhead. Model bar starts are derived from recorded model time. Steps with no recorded time stay off the ruler. The thin lane under the ruler holds named tool and approval segments at true width, so short tools are slivers.</li>
-                <li><strong>X-ray</strong> shows what Muse sent on each model call, lane by lane, in recorded bytes. Bytes are not tokens and are never converted. The token table under the bars is a separate unit. A partial note means the log omitted some lane groups for that call.</li>
-                <li><strong>Radar</strong> lines medians up by prompt and harness version. Run <code>./run-muse --suite</code> after a Muse update to fill a new column. A change figure needs at least two completed runs on both versions and is plain arithmetic on medians. The report buttons generate those same numbers as markdown.</li>
-                <li><strong>Why was this slow</strong> ranks one run from recorded data only. Buckets show where the wall went. Findings name what stands out inside them, like a stall inside model time. Thresholds only choose what surfaces. Every number is recorded, and Watch links open Replay at that moment.</li>
-              </ul>
-              <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, two Meta models · <code>python3 tests/test_tool.py</code> tests</p>
-              <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>
+        </aside>
+        <div className="shade" aria-hidden="true" onClick={() => setDrawerOpen(false)} />
+        <main className="main">
+          <header className="crumbBar">
+            <button type="button" className="menuBtn" aria-label="Open menu" aria-expanded={String(drawerOpen)}
+              onClick={() => setDrawerOpen(true)}><MenuIcon /></button>
+            <nav className="crumbs" aria-label="Breadcrumb">
+              {crumbs.map((c, i) => (
+                <React.Fragment key={i}>
+                  {i ? <span className="crumbSep" aria-hidden="true">/</span> : null}
+                  {c.to
+                    ? <Link className="crumb" to={c.to + qs}>{c.label}</Link>
+                    : <span className={"crumb" + (i === crumbs.length - 1 ? " current" : "")}
+                        aria-current={i === crumbs.length - 1 ? "page" : undefined}>{c.label}</span>}
+                </React.Fragment>
+              ))}
+            </nav>
+            {filterChips.length ? (
+              <span className="filterChips" aria-label="Active filters">
+                <span className="filterChipsLabel">Filters</span>
+                {filterChips.map((c) => (
+                  <span key={c.key} className="pill model">{c.label}
+                    <button type="button" className="chipRemove" aria-label={"Remove filter " + c.label} onClick={() => removeChip(c.key)}>×</button>
+                  </span>
+                ))}
+                <button type="button" className="btn" style={{ padding: "3px 9px" }} onClick={clearFilters}>Clear all</button>
+              </span>
+            ) : null}
+            <div className="topbarRight">
+              <div className="exportWrap">
+                <button className="btn" type="button" aria-haspopup="menu" aria-expanded={String(exportOpen)}
+                  onClick={(e) => { e.stopPropagation(); setExportOpen(!exportOpen); }}>Export ▾</button>
+                <div className="exportMenu" role="menu" hidden={!exportOpen} onClick={() => setExportOpen(false)}>
+                  <button className="btn" type="button" role="menuitem" onClick={exportCsv}>Export CSV</button>
+                  <button className="btn" type="button" role="menuitem" onClick={exportJson}>Export JSON</button>
+                </div>
+              </div>
+              <button id="themeToggle" aria-label="Toggle night mode" title={theme === "dark" ? "Switch to day mode" : "Switch to night mode"}
+                onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>{theme === "dark" ? <SunIcon /> : <MoonIcon />}</button>
             </div>
-          </details>
-          <p className="foot">meta-benchmark is an unofficial local tool. It is not made by, or affiliated with, Meta. All run data stays on this machine.</p>
-        </div>
-      </main>
+          </header>
+          <div className="content">
+            {/* Until the first load lands, every view would show its empty
+                state ("No sessions yet", "nothing to replay"), which is a
+                false claim. Say it is loading instead. */}
+            {!loaded ? (
+              <section className="panel" aria-live="polite">
+                <p className="note">{paused
+                  ? "Paused while this tab is hidden. Runs load when you come back to it."
+                  : "Loading runs…"}</p>
+              </section>
+            ) : (
+            <Routes>
+              <Route path="/" element={<Overview data={data} onSelect={selectRun} onGoto={goto} />} />
+              <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} />} />
+              <Route path="/runs/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Overview data={data} onSelect={selectRun} onGoto={goto} />} />
+              <Route path="/compare/:setId" element={compareNotFound ? <NotFound what="Compare set not found" /> : <Compare data={compareData} onSelect={selectRun} />} />
+              <Route path="/compare" element={<Compare data={data} onSelect={selectRun} />} />
+              <Route path="/timeline/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Timeline data={data} />} />
+              <Route path="/timeline" element={<Timeline data={data} />} />
+              <Route path="/replay/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Replay data={data} />} />
+              <Route path="/replay" element={<Replay data={data} />} />
+              <Route path="/xray/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Xray data={data} />} />
+              <Route path="/xray" element={<Xray data={data} />} />
+              <Route path="/radar" element={<Radar data={data} />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+            )}
+            <details className="helpBox">
+              <summary>How to read this · commands · SDK docs</summary>
+              <div className="panel">
+                <ul>
+                  <li><strong>Wall</strong> is the whole run. It splits into <strong>Model</strong> (the model thinking), <strong>Tools</strong> (commands Muse ran), <strong>Approval wait</strong>, and <strong>Muse</strong> (everything else Muse did). All four come from timestamps in Muse's own log.</li>
+                  <li><strong>Model time</strong> is one model call, start to finish. Labels say their scope. <em>Run</em> totals cover every call. <em>Last call</em> figures describe only the final call.</li>
+                  <li><strong>–</strong> means the harness did not report it. It is never estimated, and no chart is drawn for it. Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.</li>
+                  <li>A compare run sends one prompt 2–3 ways. Its table uses medians over completed runs only. Every round stays visible in the matrix.</li>
+                  <li>Timeline middle column is time to the next step, not step cost.</li>
+                  <li><strong>Replay</strong> plays the selected run back at its recorded step times. Counters count only calls that had landed by the playhead. Model bar starts are derived from recorded model time. Steps with no recorded time stay off the ruler. The thin lane under the ruler holds named tool and approval segments at true width, so short tools are slivers.</li>
+                  <li><strong>X-ray</strong> shows what Muse sent on each model call, lane by lane, in recorded bytes. Bytes are not tokens and are never converted. The token table under the bars is a separate unit. A partial note means the log omitted some lane groups for that call.</li>
+                  <li><strong>Radar</strong> lines medians up by prompt and harness version. Run <code>./run-muse --suite</code> after a Muse update to fill a new column. A change figure needs at least two completed runs on both versions and is plain arithmetic on medians. The report buttons generate those same numbers as markdown.</li>
+                  <li><strong>Why was this slow</strong> ranks one run from recorded data only. Buckets show where the wall went. Findings name what stands out inside them, like a stall inside model time. Thresholds only choose what surfaces. Every number is recorded, and Watch links open Replay at that moment.</li>
+                </ul>
+                <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, four Meta models · <code>python3 tests/test_tool.py</code> tests</p>
+                <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>
+              </div>
+            </details>
+            <p className="foot">meta-benchmark is an unofficial local tool. It is not made by, or affiliated with, Meta. All run data stays on this machine.</p>
+          </div>
+        </main>
+      </div>
       {tourOpen && tourSteps ? (
         <Walkthrough steps={tourSteps}
           onNavigate={(route) => { if (route !== location.pathname) navigate(route + location.search, { replace: true }); }}

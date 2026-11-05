@@ -75,6 +75,9 @@ export function NavIcon({ view }) {
   if (view === "compare") return (<svg className="navIcon" {...svgProps}><path d="M3 20h18" /><rect x="5" y="11" width="5" height="9" /><rect x="14" y="4" width="5" height="16" /></svg>);
   if (view === "replay") return (<svg className="navIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><path d="M10 8.2 15.5 12 10 15.8Z" /></svg>);
   if (view === "xray") return (<svg className="navIcon" {...svgProps}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 12h18" /><path d="M9 4v8" /><path d="M15 12v8" /></svg>);
+  if (view === "timeline") return (<svg className="navIcon" {...svgProps}><path d="M4 6h6" /><path d="M4 12h10" /><path d="M4 18h14" /><circle cx="12" cy="6" r="1.5" /><circle cx="16" cy="12" r="1.5" /><circle cx="20" cy="18" r="1.5" /></svg>);
+  if (view === "help") return (<svg className="navIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.7" /><path d="M12 17h.01" /></svg>);
+  if (view === "docs") return (<svg className="navIcon" {...svgProps}><path d="M5 4h11l3 3v13H5z" /><path d="M8 10h8" /><path d="M8 14h8" /></svg>);
   if (view === "radar") return (<svg className="navIcon" {...svgProps}><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="4.5" /><path d="M12 12h.01" strokeWidth="2.6" /></svg>);
   return (<svg className="navIcon" {...svgProps}><path d="M3 12h4l2-5 4 10 2-5h6" /></svg>);
 }
@@ -93,4 +96,17 @@ export function MoonIcon() {
 
 export function SunIcon() {
   return (<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>);
+}
+
+// Our own mark: a stopwatch. Not any vendor's logo.
+export function BrandGlyph() {
+  return (<span className="brandMark"><svg {...svgProps}><circle cx="12" cy="13" r="7" /><path d="M12 13V9.5" /><path d="M10 3h4" /><path d="M12 3v3" /></svg></span>);
+}
+
+export function ExternalIcon() {
+  return (<svg className="navIcon navExt" {...svgProps}><path d="M14 4h6v6" /><path d="M20 4l-9 9" /><path d="M18 14v5H5V6h5" /></svg>);
+}
+
+export function MenuIcon() {
+  return (<svg width="18" height="18" {...svgProps}><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></svg>);
 }
