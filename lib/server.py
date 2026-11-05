@@ -27,7 +27,7 @@ HERE = Path(__file__).parent
 # The repo root: run data and the built page live there, not in lib/.
 ROOT = HERE.parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 63
+VERSION = 64
 INDEX = ROOT / "muse-runs" / "index.jsonl"
 WEB_INDEX = ROOT / "web" / "index.html"
 WEB_APP = ROOT / "web" / "app.js"
