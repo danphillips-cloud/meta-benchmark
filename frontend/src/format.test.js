@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
-  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, metricSummary, taskCheckText, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -863,7 +863,7 @@ test("fastestOf: tied fastest keys and ratio, nothing when it cannot say", () =>
 });
 
 test("status constants: DID_NOT_COMPLETE is every known status that did not finish", () => {
-  assert.deepEqual(DID_NOT_COMPLETE, ["failed", "interrupted", "timeout", "needs_approval"]);
+  assert.deepEqual(DID_NOT_COMPLETE, ["failed", "interrupted", "timeout", "needs_approval", "unknown"]);
   assert.ok(STATUSES.includes("completed") && STATUSES.includes("running"));
   assert.ok(!DID_NOT_COMPLETE.includes("completed") && !DID_NOT_COMPLETE.includes("running"));
 });
@@ -1530,4 +1530,32 @@ test("needsScroll: only targets outside the viewport scroll", () => {
   assert.equal(needsScroll({ top: 760, bottom: 840 }, 800), true);
   assert.equal(needsScroll({ top: -10, bottom: 40 }, 800), true);
   assert.equal(needsScroll(null, 800), false);
+});
+
+
+test("metric medians disclose their own sample size", () => {
+  assert.deepEqual(metricSummary([{ x: 10 }, { x: null }, { x: 30 }], (r) => r.x),
+    { median: 20, n: 2 });
+  assert.deepEqual(metricSummary([{ x: null }], (r) => r.x), { median: null, n: 0 });
+});
+
+test("task checks never infer a pass from execution completion", () => {
+  assert.equal(taskCheckText({ status: "completed" }), "Not checked");
+  assert.equal(taskCheckText({ task_validation: { status: "passed" } }), "Configured checks passed");
+  assert.equal(taskCheckText({ task_validation: { status: "failed" } }), "Configured checks failed");
+});
+
+
+test("radar counts observations per metric and requires enough values for change", () => {
+  const rows = [
+    RS({ run_id: "a1", harness_version: VA, model_ms: 100 }),
+    RS({ run_id: "a2", harness_version: VA, model_ms: null }),
+    RS({ run_id: "b1", harness_version: VB, model_ms: 200 }),
+    RS({ run_id: "b2", harness_version: VB, model_ms: 300 }),
+  ];
+  const row = radarMatrix(rows).rows[0];
+  assert.equal(row.cells[VA].samples.model_ms, 1);
+  assert.equal(row.cells[VB].samples.model_ms, 2);
+  assert.equal(row.delta.model_ms.pct, null);
+  assert.notEqual(row.delta.wall_ms.diff, null);
 });

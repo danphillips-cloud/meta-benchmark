@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows, buildRunsQuery, costNote, costReason, costUnit, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext, infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, visibleCost } from "../format.js";
+import { DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows, buildRunsQuery, costNote, costReason, costUnit, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext, infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, taskCheckText, visibleCost } from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -220,7 +220,9 @@ export default function Overview({ data, onSelect, onGoto }) {
   if (DID_NOT_COMPLETE.includes(data.status || sel.status))
     notes.push((data.status || sel.status) === "needs_approval"
       ? "This run was stopped because it waited for approval. It stays in Runs, but it is excluded from all medians."
-      : "This run did not complete. It stays in Runs, but it is excluded from all medians.");
+      : (data.status || sel.status) === "unknown"
+        ? "Execution outcome was not recorded. This run is excluded from all medians."
+        : "This run did not complete. It stays in Runs, but it is excluded from all medians.");
 
   const elapsed = data.status === "running" && data.elapsed_ms != null ? fmtDur(data.elapsed_ms) + " elapsed" : null;
   const scope = overviewScope(data, shared);
@@ -297,6 +299,7 @@ export default function Overview({ data, onSelect, onGoto }) {
         ) : <div id="latestPrompt">{prompt || "–"}</div>}
         <div id="runChips">
           <StatusPill status={data.status || sel.status} extra={elapsed} />
+          <Chip text={"Task: " + taskCheckText(sel)} />
           {(data.provider || data.model) ? <Chip text={(data.provider || "?") + "/" + (data.model || "?")} cls="model" /> : null}
           <Chip text={"version " + (sel.harness_version ?? data.harness_version ?? "–")} />
           {sel.context_mode ? <Chip text={sel.context_mode + " context"} /> : null}

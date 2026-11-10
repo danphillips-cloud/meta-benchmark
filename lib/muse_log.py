@@ -233,7 +233,7 @@ def retry_infos(records):
 def _paired_intervals(records, started_type, terminal_type, id_key):
     """(closed intervals, unclosed names) for one effect type.
 
-    Intervals are (start_ms, end_ms, name) from `recorded_at`
+    Intervals are (start_us, end_us, name) from `recorded_at`
     (microseconds). Pairing is by the record's id field; a started
     record with no terminal is reported unclosed, never estimated.
     """
@@ -247,22 +247,33 @@ def _paired_intervals(records, started_type, terminal_type, id_key):
         ts = e.get("recorded_at")
         if ts is None:
             continue
-        ms = round(ts / 1000)
         if ptype == started_type:
-            open_map[record.get(id_key)] = (ms, record.get("tool_name"))
+            open_map[record.get(id_key)] = (ts, record.get("tool_name"))
         elif record.get(id_key) in open_map:
-            start_ms, name = open_map.pop(record.get(id_key))
-            intervals.append((start_ms, ms, name))
+            start_us, name = open_map.pop(record.get(id_key))
+            intervals.append((start_us, ts, name))
     unclosed = [name for _, name in open_map.values()]
     return intervals, unclosed
 
 
-def _overlap_ms(a, b):
-    total = 0
-    for s1, e1, _ in a:
-        for s2, e2, _ in b:
-            total += max(0, min(e1, e2) - max(s1, s2))
-    return total
+def _union(intervals):
+    merged = []
+    for start, end, _ in sorted(intervals, key=lambda iv: (iv[0], iv[1])):
+        if end < start:
+            return None
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]), None)
+        else:
+            merged.append((start, end, None))
+    return merged
+
+
+def _overlap_us(a, b):
+    a, b = _union(a), _union(b)
+    if a is None or b is None:
+        return None
+    return sum(max(0, min(e1, e2) - max(s1, s2))
+               for s1, e1, _ in a for s2, e2, _ in b)
 
 
 def time_split(records, wall_ms, model_ms):
@@ -280,24 +291,38 @@ def time_split(records, wall_ms, model_ms):
     appr_iv, appr_open = _paired_intervals(
         records, "approval_wait.effect.started",
         "approval_wait.effect.terminal", "pending_action_id")
-    approval_ms = None if appr_open else sum(e - s for s, e, _ in appr_iv)
-    if tool_open:
+    tool_iv, appr_iv = _union(tool_iv), _union(appr_iv)
+    approval_ms = None if appr_open or appr_iv is None else sum(
+        e - s for s, e, _ in appr_iv) / 1000
+    if tool_open or tool_iv is None or appr_iv is None:
         tool_ms = None
     else:
-        tool_ms = sum(e - s for s, e, _ in tool_iv)
-        if approval_ms:
-            tool_ms = max(0, tool_ms - _overlap_ms(tool_iv, appr_iv))
+        tool_ms = (sum(e - s for s, e, _ in tool_iv)
+                   - _overlap_us(tool_iv, appr_iv)) / 1000
     if wall_ms is None or model_ms is None \
             or tool_ms is None or approval_ms is None:
         muse_ms = None
     else:
-        muse_ms = max(0, wall_ms - model_ms - tool_ms - approval_ms)
+        remainder = wall_ms - model_ms - tool_ms - approval_ms
+        model_iv = []
+        for record in records:
+            done = record.get("recorded_at")
+            for node in find_model_completed(record):
+                duration = node.get("duration_ms")
+                if done is not None and duration is not None:
+                    model_iv.append((done - round(duration * 1000), done, None))
+        occupied = _union(model_iv)
+        overlaps = occupied is None or (
+            sum(e - s for s, e, _ in model_iv)
+            != sum(e - s for s, e, _ in occupied))
+        overlaps = overlaps or bool(_overlap_us(model_iv, tool_iv + appr_iv))
+        muse_ms = remainder if remainder >= 0 and not overlaps else None
     return {"model_ms": model_ms, "tool_ms": tool_ms,
             "approval_ms": approval_ms, "muse_ms": muse_ms}
 
 
-def _ms_to_iso(ms):
-    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat()
+def _us_to_iso(us):
+    return datetime.fromtimestamp(us / 1000000, timezone.utc).isoformat()
 
 
 def tool_intervals(records):
@@ -319,17 +344,18 @@ def tool_intervals(records):
         "approval_wait.effect.terminal", "pending_action_id")
     intervals = []
     for start, end, name in tool_iv:
+        wait_us = _overlap_us([(start, end, name)], appr_iv)
         intervals.append({
             "kind": "tool", "name": name,
-            "start_at": _ms_to_iso(start), "end_at": _ms_to_iso(end),
-            "duration_ms": end - start,
-            "wait_ms": _overlap_ms([(start, end, name)], appr_iv),
+            "start_at": _us_to_iso(start), "end_at": _us_to_iso(end),
+            "duration_ms": (end - start) / 1000,
+            "wait_ms": wait_us / 1000 if wait_us is not None else None,
         })
     for start, end, name in appr_iv:
         intervals.append({
             "kind": "approval", "name": name,
-            "start_at": _ms_to_iso(start), "end_at": _ms_to_iso(end),
-            "duration_ms": end - start, "wait_ms": 0,
+            "start_at": _us_to_iso(start), "end_at": _us_to_iso(end),
+            "duration_ms": (end - start) / 1000, "wait_ms": 0,
         })
     intervals.sort(key=lambda i: i["start_at"])
     return {"intervals": intervals,
@@ -408,6 +434,15 @@ def _prompt_of(accepted):
     return ""
 
 
+def turn_outcome(records):
+    """Only an explicit run outcome establishes execution success."""
+    outcomes = {"completed": "completed", "cancelled": "interrupted", "failed": "failed"}
+    for record in reversed(records):
+        if record.get("payload_type") == "runtime.session" and _event_kind(record) == "terminal":
+            return outcomes.get(record["payload"]["event"].get("terminal"), "unknown")
+    return "unknown"
+
+
 def split_turns(records):
     """Finished interactive turns, segmented on user_intent.accepted.
 
@@ -457,6 +492,7 @@ def split_turns(records):
             else None
         turns.append({
             "index": n + 1,
+            "status": turn_outcome(seg),
             "prompt": _prompt_of(records[start]),
             "at": datetime.fromtimestamp(
                 start_us / 1_000_000, timezone.utc).isoformat(),

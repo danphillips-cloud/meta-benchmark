@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router";
-import { fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
+import { fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -61,35 +61,45 @@ function CompareSet({ data, onSelect }) {
       <div className="legend"><span><span className="sw swModel"></span>model time</span><span><span className="sw swOver"></span>overhead</span><span>outlined = selected run</span></div>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
-          <thead><tr><th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th><th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th><th className="num">Out</th><th className="num">Cost</th></tr></thead>
+          <thead><tr><th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th><th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th><th className="num">Out</th><th className="num">Cost</th><th>Configured task checks</th></tr></thead>
           <tbody>
             {legs.map((key) => {
               const all = byLeg.get(key);
               const runs = all.filter((s) => s.status === "completed");
-              const med = (f) => { const v = median(runs.map(f)); return v == null ? "–" : fmtMs(v); };
-              const medDur = (f) => fmtDur(median(runs.map(f)));
-              const usdMedian = median(runs.map((s) => visibleCost(s)));
-              const allowMedian = {
-                window: median(runs.map((s) => (s.allowance_delta ? s.allowance_delta.window : null))),
-                weekly: median(runs.map((s) => (s.allowance_delta ? s.allowance_delta.weekly : null))),
+              const observation = (f, format) => {
+                const stat = metricSummary(runs, f);
+                return format(stat.median) + " (n=" + stat.n + ")";
               };
-              const cost = usdMedian != null ? fmtCost(usdMedian) : fmtAllowance(allowMedian, {
-                window: allowMedian.window === 0, weekly: allowMedian.weekly === 0,
-              });
+              const med = (f) => observation(f, fmtMs);
+              const medDur = (f) => observation(f, fmtDur);
+              const usd = metricSummary(runs, visibleCost);
+              const allowMedian = {
+                window: metricSummary(runs, (s) => s.allowance_delta?.window),
+                weekly: metricSummary(runs, (s) => s.allowance_delta?.weekly),
+              };
+              const cost = usd.median != null ? fmtCost(usd.median) + " (n=" + usd.n + ")" : fmtAllowance({
+                window: allowMedian.window.median, weekly: allowMedian.weekly.median,
+              }, {
+                window: allowMedian.window.median === 0, weekly: allowMedian.weekly.median === 0,
+              }) + " (n=" + allowMedian.window.n
+                + "/" + allowMedian.weekly.n + ")";
               const latest = [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
                 .find((s) => s.status === "completed") || [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
-              const cells = [key, runs.length + "/" + all.length + " ok", medDur((s) => s.wall_ms), medDur((s) => s.model_ms),
+              const cells = [key, runs.length + "/" + all.length + " completed", medDur((s) => s.wall_ms), medDur((s) => s.model_ms),
                 medDur((s) => s.overhead_ms), medDur((s) => s.ttft_ms), med((s) => s.calls),
-                med((s) => s.input_tokens), med((s) => s.output_tokens), cost];
+                med((s) => s.input_tokens), med((s) => s.output_tokens), cost,
+                all.filter((s) => s.task_validation?.status === "passed").length + " passed / "
+                  + all.filter((s) => s.task_validation?.status === "failed").length + " failed / "
+                  + all.filter((s) => !["passed", "failed"].includes(s.task_validation?.status)).length + " not checked"];
               return (
                 <tr key={key} className={"pickable" + (legKey(selected) === key ? " is-selected" : "")} role="button"
                   aria-label={"Open latest " + key + " run in this set"} title="Open this leg's latest run"
                   {...pickableProps(() => { if (latest) onSelect(latest.run_id); })}>
                   {cells.map((v, i) => (
-                    <td key={i} className={i >= 2 ? "num" : undefined}>
+                    <td key={i} className={i >= 2 && i < cells.length - 1 ? "num" : undefined}>
                       {v}
                       {i === 0 && fastestKeys.has(key) ? (<>
-                        <span className="badgeFast" title="Lowest median wall time in this compare set">fastest</span>
+                        <span className="badgeFast" title="Lowest median wall time among completed executions. Task checks may not have passed">fastest completed</span>
                         <span className="fastRatio" title="Median wall time vs the slowest group in this compare set">{fastRatio.toFixed(1) + "× faster"}</span>
                       </>) : null}
                     </td>
@@ -100,7 +110,7 @@ function CompareSet({ data, onSelect }) {
           </tbody>
         </table>
       </div>
-      <p className="note">Table values are medians over completed runs only. Failed and interrupted runs stay in the round table below and in the ok/total count, but never in a median. Click a row or a round cell to open that run.</p>
+      <p className="note">Table values are medians over completed runs only. Failed and interrupted runs stay in the round table below and in the completed/total count, but never in a median. Completion means the execution ended successfully, not that the task passed. Each n counts recorded values for that metric. Plan usage n shows short-term/weekly observations. Click a row or a round cell to open that run.</p>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
           <thead>
@@ -163,6 +173,7 @@ export default function Compare({ data, onSelect }) {
     .filter((s, i, arr) => s && a && s.run_id !== a.run_id && arr.indexOf(s) === i);
   const runLabel = (s) => shortText((s.model || s.run_id), 22) + " · " + localTime(s.at).slice(11);
   const metrics = [
+    ["Task checks", (s) => taskCheckText(s)],
     ["Wall", (s) => s.wall_ms, 1], ["Model", (s) => s.model_ms, 1],
     ["Overhead", (s) => s.overhead_ms, 1], ["TTFT", (s) => s.ttft_ms, 1],
     ["Calls", (s) => s.calls], ["Input tokens, run", (s) => s.input_tokens],
@@ -210,8 +221,9 @@ export default function Compare({ data, onSelect }) {
                   <tbody>
                     {metrics.map(([name, f, isDur]) => {
                       const isCost = name === "Cost";
-                      const show = (v, s) => isCost ? runCostText(s) : isDur ? fmtDur(v) : fmtMs(v);
-                      const delta = (x, y, sa, sb) => isCost
+                      const isTask = name === "Task checks";
+                      const show = (v, s) => isTask ? v : isCost ? runCostText(s) : isDur ? fmtDur(v) : fmtMs(v);
+                      const delta = (x, y, sa, sb) => isTask ? "–" : isCost
                         ? ((x != null && y != null)
                           ? ((x - y) > 0 ? "+" : (x - y) < 0 ? "-" : "") + fmtCost(Math.abs(x - y))
                           : (planDeltaText(sa, sb) ?? "–"))

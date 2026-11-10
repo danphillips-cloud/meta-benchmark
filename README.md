@@ -92,7 +92,7 @@ Then check the work itself. The reply links the new folder. It sits in the run's
 
 ![The stopwatch built in the recorded run, with three laps](docs/images/stopwatch.jpg)
 
-This tool says where the time went. It does not say the work is right. That part is yours.
+This tool records execution performance. Execution completed means the process ended successfully. It does not establish that the work is correct. Optional suite checks report a separate task result.
 
 ### 4. Run it again
 
@@ -116,13 +116,13 @@ Ready for a longer build? The [getting started guide](docs/getting-started.md) h
 
 ## Reading the numbers
 
-**Wall** is the whole run. It splits into **Model** (the model thinking), **Tools** (commands Muse ran), **Approval wait**, and **Muse** (everything else Muse did). All four come from timestamps in Muse's own log. A dash means the log didn't record it.
+**Wall** measures elapsed time around the harness process, or around the HTTP request for direct API runs. **Model** sums the call durations recorded by Muse. **Tools** and **Approval wait** come from paired log timestamps. **Muse** is the remaining wall time when the split is consistent. These figures include the work their harness measures, such as network waiting. They do not isolate model thinking. A dash means a measurement is missing or the split cannot be established.
 
 Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
 
 **Cost** shows on Overview, Runs and Compare, always in the unit the run is billed in. Your Muse plan has two usage limits, a short-term one and a weekly one. Subscription runs show how much of each limit moved while they ran, as "+N% short-term · +N% weekly". The start reading comes from `muse usage` before the run launches. The end reading comes from the run stream. Overview shows the readings before and after in a small table, plus the clock time the short-term limit resets. Muse's own `muse usage` calls the short-term one Window. Other Muse use at the same time counts too, and the hover text says so. Muse counts whole percents. A run that moved a limit by less than one point shows under 1%. A limit reset mid-run, or a missing reading, shows a dash with the reason.
 
-Paid runs show USD. Claude models keep the cost Claude Code reports. `muse-wonder-1.0` runs on the `anthropic` and `claude-code` providers are priced from their recorded tokens at [Meta's published list](https://dev.meta.ai/docs/pricing-rate-limits), as fetched on 2026-10-31, and marked "at Meta list". Input, cached and output tokens all count. Any missing count shows a dash. The figure Claude Code itself attaches to `muse-*` models comes from Anthropic's list. That is not a Meta price, so it stays hidden. Set your own rates with `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model, and your rates win over the list. A cost at your rates is marked "at your rates" and counts input and output tokens only. Suite cost budgets count list costs too. Nothing is ever estimated.
+Paid runs show USD. Claude models keep the cost Claude Code reports. `muse-wonder-1.0` runs on the `anthropic` and `claude-code` providers are priced from their recorded tokens at [Meta's published list](https://dev.meta.ai/docs/pricing-rate-limits), as fetched on 2026-10-31, and marked "at Meta list". Input, cached and output tokens all count. Any missing count shows a dash. The figure Claude Code itself attaches to `muse-*` models comes from Anthropic's list. That is not a Meta price, so it stays hidden. Set your own rates with `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model, and your rates win over the list. A cost at your rates is marked "at your rates" and uses the configured token prices. For direct API runs, set `cached_per_mtok` for cache reads and `cache_creation_per_mtok` for cache writes when those counts are positive. A missing rate leaves the custom cost unknown. An applicable Meta list price can still supply a cost. Suite cost budgets count list costs too. Nothing is ever estimated.
 
 > **Note:** Meta publishes no per-token price for `muse-wonder-full-1.0`. Runs on it through the `anthropic` or `claude-code` providers show a dash for cost. Subscription runs on it still show plan usage. If you have your own rate for it, set it in `BENCH_PRICING`.
 
@@ -251,3 +251,31 @@ npm run build
 ## Licence
 
 [MIT](LICENSE). Unofficial tool, not affiliated with Meta.
+
+## Checking task results
+
+Suite entries can include deterministic checks alongside the prompt:
+
+```json
+{
+  "name": "write-answer",
+  "prompt": "Create answer.txt containing 4. Reply with Answer: 4",
+  "minimal": true,
+  "checks": {
+    "reply_contains": ["Answer: 4"],
+    "files_exist": ["answer.txt"]
+  }
+}
+```
+
+All configured checks must pass. Reply checks match exact, case-sensitive text. File checks require a file inside that run's workspace. A file existence check does not check its contents or behavior. These checks establish only the conditions you configured, not general answer quality. Missing checks and executions that do not complete show not checked. Validation runs after execution timing ends. A suite exits with code 1 when configured checks fail. Resume retries entries whose checks failed or whose configured checks have changed. Historical spend still counts toward the suite budget.
+
+Compare reports task checks separately from execution completion. Fastest completed means the lowest median wall time among completed executions, regardless of task checks. Each metric shows its own observation count as n. Plan usage lists short-term and weekly counts separately. Missing measurements are excluded from that metric's median. Failures remain visible and are excluded from medians.
+
+Imported interactive turns without an explicit recorded run outcome show unknown. Older imports that were automatically labelled completed also show unknown. Their stored files are preserved.
+
+Direct API and Claude Code run input totals include fresh input, cache creation and cache reads. A missing component leaves the total unknown. Older direct API records without these components show unknown input totals on the page because a comparable total cannot be reconstructed. Their stored files retain the original counts.
+
+Tool time subtracts recorded, closed approval intervals. An unfinished approval leaves approval time and the remainder unknown. Tool and approval time use the union of recorded intervals so simultaneous activity counts once. An inconsistent split shows unknown Muse time instead of forcing a negative remainder to zero. Model call time is a harness measurement, not a direct measurement of thinking time. Cross-harness measurements can cover different work.
+
+The default --compare claude runs both models through Claude Code. Comparing providers meta and claude-code instead measures the combined effect of model, harness, tools and context. Repeats and medians describe those observations. They do not establish statistical significance or task quality.

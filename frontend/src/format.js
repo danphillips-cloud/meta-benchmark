@@ -338,6 +338,18 @@ export function median(values) {
   return nums.length % 2 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
 }
 
+// Count the observations behind each median, independently of run outcome.
+export function metricSummary(runs, value) {
+  const values = runs.map(value).filter((v) => v != null);
+  return { median: median(values), n: values.length };
+}
+
+export function taskCheckText(run) {
+  const status = run?.task_validation?.status;
+  return status === "passed" ? "Configured checks passed"
+    : status === "failed" ? "Configured checks failed" : "Not checked";
+}
+
 export const legKey = (s) => (s.provider || "?") + "/" + (s.model || "?");
 
 // Live progress for legs still running, in start order. Elapsed is
@@ -360,7 +372,7 @@ export function raceProgress(sessions, nowMs) {
     });
 }
 
-export const STATUSES = ["completed", "running", "failed", "interrupted", "timeout", "needs_approval"];
+export const STATUSES = ["completed", "running", "failed", "interrupted", "timeout", "needs_approval", "unknown"];
 export const DID_NOT_COMPLETE = STATUSES.filter((s) => s !== "completed" && s !== "running");
 
 // Fastest group(s) by median wall time. Rows carry {key, wall};
@@ -1353,13 +1365,15 @@ export function radarMatrix(sessions) {
     g.runsByVersion.forEach((runs, v) => {
       cells[v] = {
         n: runs.length,
+        samples: Object.fromEntries(["wall_ms", "model_ms", "input_tokens"].map(
+          (key) => [key, metricSummary(runs, (r) => r[key]).n])),
         wall_ms: median(runs.map((r) => r.wall_ms)),
         model_ms: median(runs.map((r) => r.model_ms)),
         input_tokens: median(runs.map((r) => r.input_tokens)),
       };
     });
     const eligible = recorded.filter(
-      (v) => cells[v] && cells[v].n >= RADAR_MIN_RUNS);
+      (v) => cells[v] && cells[v].samples.wall_ms >= RADAR_MIN_RUNS);
     let delta = null;
     if (eligible.length >= 2) {
       const fromV = eligible[eligible.length - 2];
@@ -1367,9 +1381,12 @@ export function radarMatrix(sessions) {
       delta = {
         from_version: fromV, to_version: toV,
         wall_ms: radarDeltaMetric(cells[fromV].wall_ms, cells[toV].wall_ms),
-        model_ms: radarDeltaMetric(cells[fromV].model_ms, cells[toV].model_ms),
+        model_ms: radarDeltaMetric(
+          cells[fromV].samples.model_ms >= RADAR_MIN_RUNS ? cells[fromV].model_ms : null,
+          cells[toV].samples.model_ms >= RADAR_MIN_RUNS ? cells[toV].model_ms : null),
         input_tokens: radarDeltaMetric(
-          cells[fromV].input_tokens, cells[toV].input_tokens),
+          cells[fromV].samples.input_tokens >= RADAR_MIN_RUNS ? cells[fromV].input_tokens : null,
+          cells[toV].samples.input_tokens >= RADAR_MIN_RUNS ? cells[toV].input_tokens : null),
       };
     }
     const { runsByVersion, ...rest } = g;
@@ -1430,8 +1447,10 @@ export function radarReport(matrix, generatedAt) {
       if (!cell) return;
       lines.push("| " + r.label + " | " + r.provider + "/" + r.model
         + " | " + v.label + " | " + cell.n + " | " + fmtDur(cell.wall_ms)
-        + " | " + fmtDur(cell.model_ms) + " | "
-        + fmt(cell.input_tokens == null ? null : Math.round(cell.input_tokens)) + " |");
+        + " (n=" + cell.samples.wall_ms + ") | " + fmtDur(cell.model_ms)
+        + " (n=" + cell.samples.model_ms + ") | "
+        + fmt(cell.input_tokens == null ? null : Math.round(cell.input_tokens))
+        + " (n=" + cell.samples.input_tokens + ") |");
     });
   });
   lines.push(
