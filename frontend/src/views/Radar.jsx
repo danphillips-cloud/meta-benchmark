@@ -70,7 +70,7 @@ export default function Radar({ data }) {
         <p className="note">
           Fill a new column with <code className="inline">./run-muse --suite</code> in the terminal.
           It runs golden-prompts.json three times per prompt by default and stamps each run for this page.
-          A change figure needs at least {RADAR_MIN_RUNS} completed runs on both versions.
+          A change figure needs at least {RADAR_MIN_RUNS} recorded observations on both versions.
           Below that the medians still show and the change stays a dash.
         </p>
       </section>
@@ -118,9 +118,9 @@ export default function Radar({ data }) {
                       if (!cell) return <td key={v.key || "none"} className="num">–</td>;
                       return (
                         <td key={v.key || "none"} className="num">
-                          {fmtDur(cell.wall_ms)}
+                          {fmtDur(cell.wall_ms) + " (n=" + cell.samples.wall_ms + ")"}
                           <div className="radarSub">
-                            {"model " + fmtDur(cell.model_ms) + " · in " + fmt(cell.input_tokens == null ? null : Math.round(cell.input_tokens))
+                            {"model " + fmtDur(cell.model_ms) + " (n=" + cell.samples.model_ms + ") · in " + fmt(cell.input_tokens == null ? null : Math.round(cell.input_tokens)) + " (n=" + cell.samples.input_tokens + ")"
                               + " · " + cell.n + (cell.n === 1 ? " run" : " runs")}
                           </div>
                         </td>

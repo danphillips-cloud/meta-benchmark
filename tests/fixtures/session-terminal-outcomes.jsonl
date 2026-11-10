@@ -1,0 +1,3 @@
+{"payload_type": "runtime.session", "payload": {"event": {"kind": "terminal", "terminal": "completed"}}}
+{"payload_type": "runtime.session", "payload": {"event": {"kind": "terminal", "terminal": "cancelled"}}}
+{"payload_type": "runtime.session", "payload": {"event": {"kind": "terminal", "terminal": "failed"}}}

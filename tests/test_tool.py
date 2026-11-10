@@ -36,7 +36,11 @@ os.environ.setdefault("RUN_MUSE_NO_UI", "1")
 def load(name, path):
     spec = importlib.util.spec_from_loader(name, SourceFileLoader(name, str(path)))
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Importing the launcher must never read local credentials.
+    original_is_file = Path.is_file
+    with mock.patch.object(Path, "is_file", lambda p: False
+                           if p.name == ".env" else original_is_file(p)):
+        spec.loader.exec_module(mod)
     return mod
 
 
@@ -1265,7 +1269,7 @@ class ApiMsTest(unittest.TestCase):
 class DotenvTest(unittest.TestCase):
     def test_parsing_and_env_wins(self):
         with tempfile.TemporaryDirectory() as td:
-            env_file = Path(td) / ".env"
+            env_file = Path(td) / "dotenv-fixture.txt"
             env_file.write_text(
                 "# a comment\n"
                 "\n"
@@ -1296,7 +1300,7 @@ class DotenvTest(unittest.TestCase):
 
     def test_missing_file_is_a_noop(self):
         with tempfile.TemporaryDirectory() as td:
-            run_muse.load_dotenv(Path(td) / ".env")
+            run_muse.load_dotenv(Path(td) / "dotenv-fixture.txt")
 
 
 class RepeatArgTest(unittest.TestCase):
@@ -3414,7 +3418,7 @@ class RetroTest(unittest.TestCase):
                 self.assertEqual(e["context_mode"], "interactive")
                 self.assertEqual(e["session_id"], "fake-1")
                 self.assertEqual(e["harness_version"], "0.0.0-test")
-                self.assertEqual(e["status"], "completed")
+                self.assertEqual(e["status"], "unknown")
             report = json.loads((runs / entries[0]["run_id"]
                                  / "report.json").read_text())
             self.assertTrue(report["timeline"])
@@ -3867,6 +3871,205 @@ class UiServerProcessTest(unittest.TestCase):
 
     def test_both_sides_share_one_index_lock(self):
         self.assertIs(run_muse._index_file_lock, server._index_file_lock)
+
+
+
+class ReportingAccuracyTest(unittest.TestCase):
+    @staticmethod
+    def effect(ms, kind, identity, approval=False):
+        return {"recorded_at": ms * 1000,
+                "payload_type": ("approval_wait" if approval else "tool_batch")
+                + ".effect." + kind,
+                "payload": {"record": {
+                    "pending_action_id" if approval else "effect_id": identity}}}
+
+    def test_time_split_unions_tools_and_approvals(self):
+        e = self.effect
+        records = [e(0, "started", "a"), e(0, "started", "b"),
+                   e(200, "started", "c", True),
+                   e(300, "started", "d", True),
+                   e(700, "terminal", "c", True),
+                   e(800, "terminal", "d", True),
+                   e(1000, "terminal", "a"), e(1000, "terminal", "b")]
+        self.assertEqual(run_muse.muse_log.time_split(records, 1000, 0),
+                         {"tool_ms": 400, "approval_ms": 600,
+                          "model_ms": 0, "muse_ms": 0})
+
+    def test_inconsistent_time_split_does_not_invent_zero_overhead(self):
+        self.assertIsNone(run_muse.muse_log.time_split([], 100, 200)["muse_ms"])
+
+    def test_import_requires_explicit_outcome(self):
+        records = run_muse.muse_log.read_records(HERE / "fixtures/session-turns.jsonl")
+        turns = run_muse.muse_log.split_turns(records)
+        self.assertEqual([t["status"] for t in turns], ["unknown", "unknown"])
+        # Field projections from real Muse session.jsonl terminal records.
+        fixture = HERE / "fixtures/session-terminal-outcomes.jsonl"
+        for terminal, expected in zip(run_muse.muse_log.read_records(fixture),
+                                      ["completed", "interrupted", "failed"]):
+            with_terminal = records[:-1] + [terminal, records[-1]]
+            turns = run_muse.muse_log.split_turns(with_terminal)
+            self.assertEqual([t["status"] for t in turns], ["unknown", expected])
+
+    def test_legacy_imports_are_unknown_in_summary_and_detail(self):
+        with tempfile.TemporaryDirectory() as td:
+            index = Path(td) / "index.jsonl"
+            index.write_text(json.dumps({"run_id": "old", "provider": "muse-retro",
+                                         "status": "completed", "calls": []}) + "\n")
+            with mock.patch.object(server, "INDEX", index):
+                data = server.read_logs("old")
+            self.assertEqual(data["status"], "unknown")
+            self.assertEqual(data["sessions"][0]["status"], "unknown")
+
+    def test_direct_and_claude_input_counts_agree(self):
+        usage = {"input_tokens": 4, "cache_creation_input_tokens": 183,
+                 "cache_read_input_tokens": 1495}
+        self.assertEqual(run_muse._input_with_cache(usage), 1682)
+        self.assertEqual(run_muse._input_with_cache(usage),
+                         claude_stream._input_with_cache(usage))
+        del usage["cache_creation_input_tokens"]
+        self.assertIsNone(run_muse._input_with_cache(usage))
+
+    def test_task_checks_are_independent_of_execution(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "workspace").mkdir()
+            (root / "workspace/answer.txt").write_text("4")
+            checks = {"reply_contains": ["4"], "files_exist": ["answer.txt"]}
+            validate = run_muse.validate_task
+            self.assertEqual(validate(checks, {"reply": "4"}, root,
+                                      "completed")["status"], "passed")
+            self.assertEqual(validate(checks, {"reply": "5"}, root,
+                                      "completed")["status"], "failed")
+            self.assertEqual(validate(checks, {"reply": "4"}, root,
+                                      "failed")["status"], "not_checked")
+            self.assertEqual(validate(None, {}, root, "completed")["status"],
+                             "not_checked")
+            (root / "workspace/outside").symlink_to(root)
+            checks = {"files_exist": ["outside/answer.txt"]}
+            (root / "answer.txt").write_text("4")
+            self.assertEqual(validate(checks, {}, root, "completed")["status"], "failed")
+            (root / "workspace/loop").symlink_to("loop")
+            self.assertEqual(validate({"files_exist": ["loop"]}, {}, root,
+                                      "completed")["status"], "failed")
+
+    def test_suite_persists_checks_and_retries_failed_validation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = root / "suite.json"
+            checks = {"reply_contains": ["4"]}
+            manifest.write_text(json.dumps({"settings": {"repeat": 1},
+                "prompts": [{"name": "a", "prompt": "answer", "provider": "echo",
+                             "checks": checks}]}))
+            report = {"status": "completed", "wall_ms": 1,
+                      "task_validation": {"status": "failed", "checks": []}}
+            with mock.patch.object(run_muse, "RUNS", root / "runs"), \
+                    mock.patch.object(run_muse, "harness_version", return_value=None), \
+                    mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                    mock.patch.object(run_muse, "run_prompt", return_value=report) as runner:
+                self.assertEqual(run_muse.run_suite(manifest, resume=True), 1)
+                self.assertEqual(runner.call_args.kwargs["checks"], checks)
+                state = run_muse.load_state(manifest)
+                self.assertEqual(state["entries"]["a#1"]["task_validation"]["status"], "failed")
+                report["task_validation"]["status"] = "passed"
+                self.assertEqual(run_muse.run_suite(manifest, resume=True), 0)
+                self.assertEqual(runner.call_count, 2)
+                self.assertEqual(run_muse.run_suite(manifest, resume=True), 0)
+                self.assertEqual(runner.call_count, 2)
+
+    def test_run_report_and_page_preserve_validation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            result = run_muse._empty_result("fake", exit_code=0, reply="4")
+            with mock.patch.object(run_muse, "RUNS", root), \
+                    mock.patch.object(run_muse, "run_muse_exec", return_value=result), \
+                    mock.patch.object(run_muse, "harness_version", return_value=None), \
+                    mock.patch.object(run_muse, "env_pricing", return_value={}):
+                report = run_muse.run_prompt("answer", provider="echo",
+                    checks={"reply_contains": ["4"]})
+            saved = json.loads((root / report["run_id"] / "report.json").read_text())
+            self.assertEqual(saved["task_validation"]["status"], "passed")
+            with mock.patch.object(server, "INDEX", root / "index.jsonl"):
+                self.assertEqual(server.read_logs(report["run_id"])["sessions"][0]
+                                 ["task_validation"]["status"], "passed")
+
+    def test_model_tool_overlap_leaves_remainder_unknown(self):
+        model = {"recorded_at": 1000000, "payload": {"event": {
+            "kind": "model_completed", "duration_ms": 1000, "usage": {}}}}
+        e = self.effect
+        records = [e(0, "started", "a"), model, e(1000, "terminal", "a")]
+        self.assertIsNone(run_muse.muse_log.time_split(records, 3000, 1000)["muse_ms"])
+
+    def test_legacy_direct_input_is_not_presented_as_total(self):
+        run = {"provider": "anthropic", "calls": [{"input_tokens": 13,
+                "cached_tokens": 25, "output_tokens": 14}]}
+        self.assertIsNone(server._run_tokens(run, "input_tokens"))
+        self.assertIsNone(server.session_row(run)["last_input_tokens"])
+        self.assertEqual(server._run_tokens(run, "output_tokens"), 14)
+        run["calls"][0].update(input_tokens=38, cache_creation_tokens=0)
+        self.assertEqual(server._run_tokens(run, "input_tokens"), 38)
+
+    def test_blocked_retry_preserves_failed_checks_and_ignores_removed_entries(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest = Path(td) / "bench.json"
+            manifest.write_text(json.dumps({"settings": {"max_cost_usd": 1},
+                "prompts": [{"name": "a", "prompt": "p", "checks": {"reply_contains": ["4"]}}]}))
+            failed = {"status": "completed", "task_validation": {"status": "failed",
+                      "checks": [{"check": "reply_contains", "value": "4", "passed": False}]},
+                      "cost_source": "computed", "model": "m", "cost_usd": 1}
+            run_muse.save_state(manifest, {"manifest": manifest.name, "suite_id": "s",
+                "entries": {"a#1": failed, "removed#1": dict(failed)}})
+            with mock.patch.object(run_muse, "run_prompt") as runner, \
+                    mock.patch.object(run_muse, "harness_version", return_value=None), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(run_muse.run_suite(manifest, repeat=1, resume=True), 1)
+                self.assertIn("Task checks: passed 0, failed 1", out.getvalue())
+                runner.assert_not_called()
+            self.assertEqual(run_muse.load_state(manifest)["entries"]["a#1"], failed)
+
+    def test_resume_requires_current_checks(self):
+        checks = {"reply_contains": ["new"]}
+        entry = {"checks": checks}
+        for record in ({"status": "completed"}, {"status": "completed",
+                "checks": {"reply_contains": ["old"]}, "task_validation": {"status": "passed"}}):
+            self.assertFalse(run_muse.reusable_result(entry, record))
+
+    def test_manifest_check_error_identifies_entry(self):
+        with self.assertRaisesRegex(ValueError, "suite entry 'second'"):
+            run_muse._suite_entries({"prompts": [
+                {"name": "first", "prompt": "p"},
+                {"name": "second", "prompt": "p", "checks": {"files_exist": []}}
+            ]}, Path("suite.json"))
+
+    def test_open_approval_keeps_closed_tool_time(self):
+        e = self.effect
+        records = [e(0, "started", "a"), e(100, "terminal", "a"), e(110, "started", "b", True)]
+        split = run_muse.muse_log.time_split(records, 200, 0)
+        self.assertEqual(split, {"model_ms": 0, "tool_ms": 100, "muse_ms": None, "approval_ms": None})
+
+    def test_adjacent_intervals_at_fractional_millisecond(self):
+        records = [self.effect(0, "started", "a"), self.effect(0, "terminal", "a")]
+        records[1]["recorded_at"] = 10700
+        records.append({"recorded_at": 15700, "payload": {"event": {
+            "kind": "model_completed", "duration_ms": 5, "usage": {}}}})
+        split = run_muse.muse_log.time_split(records, 20, 5)
+        self.assertAlmostEqual(split["muse_ms"], 4.3)
+
+    def test_cache_rates_for_direct_api(self):
+        rates = {"input_per_mtok": 2, "output_per_mtok": 10,
+                 "cached_per_mtok": 0.2, "cache_creation_per_mtok": 3}
+        totals = {"input_tokens": 1010, "cached_tokens": 900,
+                  "cache_creation_tokens": 100, "output_tokens": 4}
+        cost, _ = run_muse.compute_cost("m", totals, [], run_muse.parse_pricing(rates))
+        self.assertAlmostEqual(cost, (20 + 180 + 300 + 40) / 1000000)
+        del rates["cached_per_mtok"]
+        self.assertEqual(run_muse.compute_cost("m", totals, [], run_muse.parse_pricing(rates)),
+                         (None, None))
+
+    def test_invalid_task_checks_are_rejected(self):
+        for value in ({}, {"shell": ["echo hi"]}, {"files_exist": ["../a"]},
+                      {"files_exist": ["/a"]}, {"reply_contains": []}):
+            with self.assertRaises(ValueError):
+                run_muse.parse_checks(value)
 
 
 if __name__ == "__main__":

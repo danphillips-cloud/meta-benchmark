@@ -4,7 +4,7 @@ import { copyText } from "../api.js";
 
 export function StatusPill({ status, extra }) {
   const known = STATUSES.includes(status) ? status : "unknown";
-  return <span className={"pill st-" + known}>{(status || "unknown") + (extra ? " · " + extra : "")}</span>;
+  return <span className={"pill st-" + known}>{(status === "completed" ? "execution completed" : (status || "unknown")) + (extra ? " · " + extra : "")}</span>;
 }
 
 export function CopyButton({ text, label, style }) {

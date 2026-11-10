@@ -27,7 +27,7 @@ HERE = Path(__file__).parent
 # The repo root: run data and the built page live there, not in lib/.
 ROOT = HERE.parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 66
+VERSION = 68
 INDEX = ROOT / "muse-runs" / "index.jsonl"
 WEB_INDEX = ROOT / "web" / "index.html"
 WEB_APP = ROOT / "web" / "app.js"
@@ -239,6 +239,14 @@ def _run_split(run, records=None):
     return muse_log.time_split(records, run.get("wall_ms"), model_ms)
 
 
+def _call_input_tokens(run, call):
+    # Legacy direct API reports stored only fresh input. Cache creation
+    # was discarded, so a comparable total cannot be reconstructed.
+    if run.get("provider") == "anthropic" and "cache_creation_tokens" not in call:
+        return None
+    return call.get("input_tokens")
+
+
 def _run_tokens(run, key):
     """Run token total from totals when present, else summed calls.
 
@@ -248,7 +256,8 @@ def _run_tokens(run, key):
     totals = run.get("totals")
     if totals:
         return totals.get(key)
-    values = [c.get(key) for c in (run.get("calls") or [])]
+    values = [_call_input_tokens(run, c) if key == "input_tokens" else c.get(key)
+              for c in (run.get("calls") or [])]
     if not values or any(v is None for v in values):
         return None
     return sum(values)
@@ -280,6 +289,9 @@ def load_runs():
                 and _is_stale_running(r):
             r = dict(r)
             r["status"] = "interrupted"
+        if r.get("provider") in ("muse-retro", "muse-watch") \
+                and not r.get("outcome_recorded"):
+            r = dict(r, status="unknown")
         fixed.append(r)
     runs = fixed
     # Grouped rows should agree with the live stats for running runs.
@@ -324,7 +336,9 @@ def session_row(r):
         "allowance_start": r.get("allowance_start"),
         "allowance_end": r.get("allowance_end"),
         "allowance_delta": r.get("allowance_delta"),
-        "ttft_ms": r.get("ttft_ms"), "status": r.get("status"),
+        "ttft_ms": r.get("ttft_ms"),
+        "task_validation": r.get("task_validation"),
+        "status": r.get("status"),
         "model_ms": model_ms,
         "model_note": MODEL_OVERLAP_NOTE if _model_overlaps(r) else None,
         "overhead_ms": None if model_ms is None or r.get("wall_ms") is None
@@ -333,7 +347,7 @@ def session_row(r):
         "output_tokens": _run_tokens(r, "output_tokens"),
         "tool_ms": r.get("tool_ms"), "approval_ms": r.get("approval_ms"),
         "muse_ms": r.get("muse_ms"),
-        "last_input_tokens": (r.get("calls") or [{}])[-1].get("input_tokens"),
+        "last_input_tokens": _call_input_tokens(r, (r.get("calls") or [{}])[-1]),
         "last_output_tokens": (r.get("calls") or [{}])[-1].get("output_tokens"),
     }
 
@@ -390,7 +404,7 @@ def read_logs(run_id=None):
             "reply": selected.get("reply"),
             "model": call.get("model") or selected.get("model"),
             "wire_ms": call.get("duration_ms"),
-            "gen_ai.usage.input_tokens": call.get("input_tokens"),
+            "gen_ai.usage.input_tokens": _call_input_tokens(selected, call),
             "gen_ai.usage.output_tokens": call.get("output_tokens"),
             "gen_ai.usage.cached_tokens": call.get("cached_tokens"),
             "gen_ai.usage.reasoning_tokens": call.get("reasoning_tokens"),
