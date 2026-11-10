@@ -868,6 +868,17 @@ test("status constants: DID_NOT_COMPLETE is every known status that did not fini
   assert.ok(!DID_NOT_COMPLETE.includes("completed") && !DID_NOT_COMPLETE.includes("running"));
 });
 
+test("filterOptions: completed Meta models in use follow the known four", () => {
+  const rows = [
+    S({ provider: "meta", model: "crouton-alpha", status: "completed" }),
+    S({ provider: "meta", model: "crouton-alpha", status: "failed" }),
+    S({ provider: "meta", model: "muse-doesnotexist-9", status: "failed" }),
+    S({ provider: "claude-code", model: "claude-sonnet-5-5", status: "completed" }),
+    S({ provider: "meta", model: "muse-spark-1.3", status: "completed" }),
+  ];
+  assert.deepEqual(filterOptions(rows).models, [...META_MODELS, "crouton-alpha"]);
+});
+
 test("filterOptions: providers from data, only Meta models listed", () => {
   const rows = [
     S({ provider: "meta", model: "muse-wonder-1.0" }),

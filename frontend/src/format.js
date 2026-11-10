@@ -386,11 +386,17 @@ export const META_MODELS = ["muse-wonder-1.0", "muse-wonder-full-1.0",
 
 export function filterOptions(sessions) {
   const all = sessions || [];
-  // Model filter shows only the Meta models, even for old runs
-  // recorded with other models. Providers still come from data.
+  // Model filter lists Meta models only. The four known ones come
+  // first, always. Any other Meta model with a completed run follows,
+  // so a model in real use can be picked. A mistyped name that only
+  // ever failed stays out. Providers still come from data.
+  const seen = all
+    .filter((s) => s.provider === "meta" && s.status === "completed" && s.model)
+    .map((s) => s.model)
+    .filter((m) => !META_MODELS.includes(m));
   return {
     providers: [...new Set(all.map((s) => s.provider).filter(Boolean))].sort(),
-    models: [...META_MODELS],
+    models: [...META_MODELS, ...[...new Set(seen)].sort()],
   };
 }
 
