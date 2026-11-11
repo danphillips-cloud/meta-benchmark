@@ -15,7 +15,7 @@ muse login
 
 That warm-up should take one model call. Open the results page at http://127.0.0.1:8765 and look at the time split. Then pick one of the app prompts below and run it as one command.
 
-To see two Meta models attempt the same build, add the compare flag.
+To see the Meta models attempt the same build, add the compare flag. It runs four models per round, so one command is four full builds on your Muse plan.
 
 ```sh
 ./run-muse --minimal --compare meta "PASTE ONE PROMPT HERE"
