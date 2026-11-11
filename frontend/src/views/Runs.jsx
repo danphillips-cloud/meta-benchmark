@@ -1,7 +1,7 @@
 import React, { useState } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import {
-  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
+  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, comparisonHref, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
   fmt, fmtAllowance, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, planUsageTotalText, runCostText, runMode, shortText, visibleCost,
 } from "../format.js";
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
@@ -64,7 +64,14 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
   const [searchParams, setSearchParams] = useSearchParams();
   const state = parseRunsQuery(searchParams);
   const [pageIndex, setPageIndex] = useState(0);
+  const navigate = useNavigate();
+  const [chosen, setChosen] = useState([]);
   const all = data.sessions || [];
+  const selected = chosen.filter((id) => all.some((s) => s.run_id === id));
+  function toggleRun(id) {
+    setChosen(selected.includes(id) ? selected.filter((item) => item !== id)
+      : [...selected, id].slice(0, 3));
+  }
   const { providers, models } = filterOptions(all);
   const modes = [...new Set(all.map((s) => runMode(s)))].sort();
   const versions = [...new Set(all.map((s) => s.harness_version).filter(Boolean))].sort();
@@ -115,10 +122,17 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
       {page.some((s) => fmtAllowance(s.allowance_delta) !== "–") ? (
         <p className="hint">Muse runs show how much of your plan's usage limits they used.</p>
       ) : null}
+      <div className="toolbar">
+        <button className="btn" type="button" disabled={selected.length < 2}
+          onClick={() => navigate(comparisonHref(selected))}>Compare selected runs</button>
+        <span className="hint" aria-live="polite">{selected.length ? selected.length + " selected" : "Select 2 or 3 runs"}</span>
+        {selected.length > 0 && <button className="btn" onClick={() => setChosen([])}>Clear selection</button>}
+      </div>
       <div className="tableWrap">
         <table className="runsTable">
           <thead>
             <tr>
+              <th scope="col">Compare</th>
               {HEADERS.map(([id, label, num]) => {
                 const active = state.sort === id;
                 const arrow = active ? (state.dir === "asc" ? " ▲" : " ▼") : "";
@@ -132,7 +146,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
           </thead>
           <tbody>
             {!filtered.length
-              ? <tr><td colSpan={HEADERS.length} className="empty">{all.length ? "No sessions match the filter." : "No sessions yet."}</td></tr>
+              ? <tr><td colSpan={HEADERS.length + 1} className="empty">{all.length ? "No sessions match the filter." : "No sessions yet."}</td></tr>
               : page.map((s) => {
                 const dim = DID_NOT_COMPLETE.includes(s.status);
                 return (
@@ -140,6 +154,12 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
                     className={"pickable" + (s.run_id === data.selected ? " is-selected" : "") + (dim ? " dim" : "")}
                     aria-label={"Open run " + (s.prompt || s.run_id)} title={s.prompt || ""}
                     {...pickableProps(() => onSelect(s.run_id))}>
+                    <td onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={selected.includes(s.run_id)}
+                        disabled={selected.length === 3 && !selected.includes(s.run_id)}
+                        aria-label={"Select " + legKey(s) + " run " + s.run_id + " for comparison"}
+                        onChange={() => toggleRun(s.run_id)} />
+                    </td>
                     {HEADERS.map(([id, , num]) => (
                       <td key={id} className={num ? "num" : undefined}>{cellValue(s, id)}</td>
                     ))}

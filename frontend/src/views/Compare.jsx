@@ -1,6 +1,7 @@
-import React, { useState } from "react";
-import { Link } from "react-router";
-import { fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
+import React, { useEffect, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+import { fetchLogs } from "../api.js";
+import { comparisonHref, samePromptRuns, fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -132,6 +133,8 @@ function CompareSet({ data, onSelect }) {
                 <tr key={String(r)}>
                   <td>
                     {r == null ? "–" : "Round " + r}
+                    {roundRuns.length >= 2 && roundRuns.length <= 3 &&
+                      <><br /><Link className="viewAll" to={comparisonHref(roundRuns.map((s) => s.run_id))}>Compare runs</Link></>}
                     {roundRuns.length === 2 ? (
                       <>
                         <br />
@@ -163,15 +166,60 @@ function CompareSet({ data, onSelect }) {
   );
 }
 
+function runLabel(run) {
+  return legKey(run) + " · " + localTime(run.at) + " · " + run.run_id.slice(-6);
+}
+
+function Reply({ id, status }) {
+  const [result, setResult] = useState({ text: "Loading reply…" });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setResult({ text: "Loading reply…" });
+    fetchLogs(id).then((d) => {
+      if (active) setResult({ text: d.selected === id ? d.reply || "No reply recorded." : "Run unavailable." });
+    }).catch(() => {
+      if (active) setResult({ text: "Could not load reply.", failed: true });
+    });
+    return () => { active = false; };
+  }, [id, status, attempt]);
+  return <><pre>{result.text}</pre>{result.failed && <button className="btn" onClick={() => setAttempt(attempt + 1)}>Retry</button>}</>;
+}
+
+function Outputs({ runs }) {
+  const [open, setOpen] = useState(false);
+  const shared = runs.every((r) => r.prompt === runs[0].prompt);
+  return <div className="comparisonOutputs">
+    <button type="button" className="btn" aria-expanded={open} onClick={() => setOpen(!open)}>
+      {open ? "Hide prompts and replies" : "Show prompts and replies"}
+    </button>
+    {open && <>
+      {shared && <div><h3>Shared prompt</h3><pre>{runs[0].prompt || "No prompt recorded."}</pre></div>}
+      <div className="outputColumns">{runs.map((r) => <section key={r.run_id}>
+        <h3>{legKey(r)}</h3><small>{localTime(r.at)} · {r.run_id}</small>
+        {!shared && <><h4>Prompt</h4><pre>{r.prompt || "No prompt recorded."}</pre></>}
+        <h4>Reply</h4><Reply id={r.run_id} status={r.status} />
+      </section>)}</div>
+    </>}
+  </div>;
+}
+
 export default function Compare({ data, onSelect }) {
-  const [compareRun, setCompareRun] = useState("");
-  const [compareRun2, setCompareRun2] = useState("");
+  const [params] = useSearchParams();
+  const { setId } = useParams();
+  const navigate = useNavigate();
   const sessions = data.sessions || [];
-  const a = sessions.find((s) => s.run_id === data.selected);
-  const others = [compareRun, compareRun2]
-    .map((id) => sessions.find((s) => s.run_id === id))
-    .filter((s, i, arr) => s && a && s.run_id !== a.run_id && arr.indexOf(s) === i);
-  const runLabel = (s) => shortText((s.model || s.run_id), 22) + " · " + localTime(s.at).slice(11);
+  const ids = [...new Set(params.getAll("pick"))].slice(0, 3);
+  const anchor = ids[0] || data.selected;
+  const a = sessions.find((s) => s.run_id === anchor);
+  const others = ids.slice(1).map((id) => sessions.find((s) => s.run_id === id)).filter(Boolean);
+  const same = samePromptRuns(a, sessions);
+  const sets = [...new Map(sessions.filter((s) => s.comparison_id).map((s) => [s.comparison_id, s])).values()];
+  const change = (index, id) => {
+    const next = [anchor, ...ids.slice(1)];
+    next[index] = id;
+    navigate(comparisonHref(next));
+  };
   const metrics = [
     ["Task checks", (s) => taskCheckText(s)],
     ["Wall", (s) => s.wall_ms, 1], ["Model", (s) => s.model_ms, 1],
@@ -184,28 +232,45 @@ export default function Compare({ data, onSelect }) {
   // Honest delta: – when either side is missing. Never substitute 0.
   const deltaText = (x, y, isDur) => (x == null || y == null) ? "–"
     : ((x - y) > 0 ? "+" : "") + (isDur ? fmtDur(x - y) : fmtMs(x - y));
-  const options = () => (
-    <>
-      <option value="">None</option>
-      {sessions.map((s) => <option key={s.run_id} value={s.run_id}>{localTime(s.at) + " · " + shortText(s.prompt || s.run_id, 36)}</option>)}
-    </>
-  );
+  const options = (current) => sessions.filter((s) => s.run_id === current
+    || (s.run_id !== anchor && !ids.includes(s.run_id))).map((s) =>
+      <option key={s.run_id} value={s.run_id}>{shortText(s.prompt, 48) + " · " + runLabel(s)}</option>);
   return (
     <section data-view-panel="compare">
       <div className="viewHead"><span className="hint">same prompt across legs, or any runs side by side</span><Link className="viewAll" to="/radar">Version radar →</Link></div>
-      <CompareSet data={data} onSelect={onSelect} />
+      <div className="toolbar">
+        <Link className="btn" to="/runs">Find runs to compare</Link>
+        {sets.length > 0 && <label>Comparison sets <select value={setId || ""}
+          onChange={(e) => navigate(e.target.value ? "/compare/" + encodeURIComponent(e.target.value) : "/compare")}>
+          <option value="">Select a set</option>
+          {sets.map((s) => <option key={s.comparison_id} value={s.comparison_id}>{shortText(s.prompt, 60)} · {s.comparison_id}</option>)}
+        </select></label>}
+      </div>
+      {setId && <CompareSet data={data} onSelect={onSelect} />}
       <section className="panel" style={{ marginTop: 12 }}>
-        <div className="panelHead"><div><div className="pt">Compare runs manually</div><div className="ps">Selected run plus up to two more</div></div></div>
-        <div className="comparePick">
-          <label htmlFor="compareSelect">Compare selected with</label>
-          <select id="compareSelect" value={compareRun} onChange={(e) => setCompareRun(e.target.value)}>{options()}</select>
-          <label htmlFor="compareSelect2">and</label>
-          <select id="compareSelect2" value={compareRun2} onChange={(e) => setCompareRun2(e.target.value)}>{options()}</select>
-        </div>
+        <div className="panelHead"><div><div className="pt">Compare recorded runs</div>
+          {a && <div className="ps">{runLabel(a)}<br />{shortText(a.prompt, 160)}</div>}
+        </div></div>
+        {ids.some((id) => !sessions.some((s) => s.run_id === id)) &&
+          <p className="note">A run in this comparison is unavailable.</p>}
+        {a && <div className="comparePick">
+          {same.some((r) => !ids.includes(r.run_id)) && others.length < 2 &&
+            <label>More runs with this prompt <select value="" onChange={(e) => change(others.length + 1, e.target.value)}>
+              <option value="">Choose a matching run</option>
+              {same.filter((r) => !ids.includes(r.run_id)).map((r) => <option key={r.run_id} value={r.run_id}>{runLabel(r)}</option>)}
+            </select></label>}
+          {[1, 2].map((i) => <label key={i}>{"Comparison run " + i}
+            <select id={i === 1 ? "compareSelect" : "compareSelect2"}
+              value={ids[i] || ""} onChange={(e) => change(i, e.target.value)}>
+              <option value="">Choose a run</option>{options(ids[i])}
+            </select>
+          </label>)}
+        </div>}
         {(!a || !others.length)
-          ? <div className="empty">Pick one or two more sessions to compare against the selected run (3 runs side by side).</div>
+          ? <div className="empty">Choose two or three runs from Runs, or add a comparison run above.</div>
           : (
             <div>
+              <Outputs runs={[a, ...others]} />
               {[a, ...others].some((s) => fmtAllowance(s.allowance_delta) !== "–") ? (
                 <p className="hint">Muse runs show how much of your plan's usage limits they used.</p>
               ) : null}

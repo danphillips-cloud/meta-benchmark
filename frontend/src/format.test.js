@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  comparisonHref, samePromptRuns, DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, metricSummary, taskCheckText, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -1558,4 +1558,16 @@ test("radar counts observations per metric and requires enough values for change
   assert.equal(row.cells[VB].samples.model_ms, 2);
   assert.equal(row.delta.model_ms.pct, null);
   assert.notEqual(row.delta.wall_ms.diff, null);
+});
+
+test("comparison links preserve order and encode up to three distinct run IDs", () => {
+  const url = new URL(comparisonHref(["a&b", "", "b", "a&b", "c", "d"]), "http://localhost");
+  assert.deepEqual(url.searchParams.getAll("pick"), ["a&b", "b", "c"]);
+  assert.equal(comparisonHref([]), "/compare");
+});
+
+test("same prompt choices exclude the selected run and require exact nonempty text", () => {
+  const rows = ["hello", "hello!", "hello", ""].map((prompt, run_id) => ({ prompt, run_id }));
+  assert.deepEqual(samePromptRuns(rows[0], rows), [rows[2]]);
+  assert.deepEqual(samePromptRuns(rows[3], rows), []);
 });
