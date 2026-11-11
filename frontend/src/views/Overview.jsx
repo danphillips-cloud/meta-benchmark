@@ -451,6 +451,7 @@ export default function Overview({ data, onSelect, onGoto }) {
                         </div>
                         {fastestKeys.has(r.key) ? <span className="fastRatio" title="Median wall time vs the slowest group in this scope">{fastRatio.toFixed(1) + "× faster"}</span> : null}
                         <div className="sub">{"Model " + fmtDur(r.model) + " · Overhead " + fmtDur(r.over) + (r.cost == null ? "" : " · Cost " + fmtCost(r.cost)) + " · " + r.ok + "/" + r.all + " ok"}</div>
+                        {r.n >= 2 ? <div className="sub" title="Lowest and highest recorded wall time">{"Wall " + fmtDur(r.min) + " to " + fmtDur(r.max)}</div> : null}
                       </div>
                       <div className="wall" title={r.wall == null ? "" : fmtMs(r.wall) + " ms"}>{wp[0]}<span className="unit">{wp[1]}</span></div>
                     </div>

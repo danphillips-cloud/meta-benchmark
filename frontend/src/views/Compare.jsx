@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { fetchLogs } from "../api.js";
-import { comparisonHref, samePromptRuns, fastestOf, wallStats, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
+import { comparisonHref, samePromptRuns, fastestOf, wallStats, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, rangeText, outputSpeed, fmtSpeed, deltaTone, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -62,7 +62,7 @@ function CompareSet({ data, onSelect }) {
       <div className="legend"><span><span className="sw swModel"></span>model time</span><span><span className="sw swOver"></span>overhead</span><span>outlined = selected run</span></div>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
-          <thead><tr><th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th><th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th><th className="num">Out</th><th className="num">Cost</th><th>Configured task checks</th></tr></thead>
+          <thead><tr><th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th><th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th><th className="num">Out</th><th className="num" title="Output tokens per second of model time">Out speed</th><th className="num">Cost</th><th>Configured task checks</th></tr></thead>
           <tbody>
             {legs.map((key) => {
               const all = byLeg.get(key);
@@ -72,7 +72,12 @@ function CompareSet({ data, onSelect }) {
                 return format(stat.median) + " (n=" + stat.n + ")";
               };
               const med = (f) => observation(f, fmtMs);
-              const medDur = (f) => observation(f, fmtDur);
+              // Durations and speed also show their recorded range.
+              const withRange = (f, format) => {
+                const range = rangeText(metricSummary(runs, f), format);
+                return <>{observation(f, format)}{range ? <><br /><span className="hint" title="Lowest and highest recorded value">{range}</span></> : null}</>;
+              };
+              const medDur = (f) => withRange(f, fmtDur);
               const usd = metricSummary(runs, visibleCost);
               const allowMedian = {
                 window: metricSummary(runs, (s) => s.allowance_delta?.window),
@@ -88,7 +93,7 @@ function CompareSet({ data, onSelect }) {
                 .find((s) => s.status === "completed") || [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
               const cells = [key, runs.length + "/" + all.length + " completed", medDur((s) => s.wall_ms), medDur((s) => s.model_ms),
                 medDur((s) => s.overhead_ms), medDur((s) => s.ttft_ms), med((s) => s.calls),
-                med((s) => s.input_tokens), med((s) => s.output_tokens), cost,
+                med((s) => s.input_tokens), med((s) => s.output_tokens), withRange(outputSpeed, fmtSpeed), cost,
                 all.filter((s) => s.task_validation?.status === "passed").length + " passed / "
                   + all.filter((s) => s.task_validation?.status === "failed").length + " failed / "
                   + all.filter((s) => !["passed", "failed"].includes(s.task_validation?.status)).length + " not checked"];
@@ -112,7 +117,7 @@ function CompareSet({ data, onSelect }) {
         </table>
       </div>
       {fastestNote ? <p className="note">{fastestNote}</p> : null}
-      <p className="note">Table values are medians over completed runs only. Failed and interrupted runs stay in the round table below and in the completed/total count, but never in a median. Completion means the execution ended successfully, not that the task passed. Each n counts recorded values for that metric. Plan usage n shows short-term/weekly observations. Click a row or a round cell to open that run.</p>
+      <p className="note">Table values are medians over completed runs only. Failed and interrupted runs stay in the round table below and in the completed/total count, but never in a median. Completion means the execution ended successfully, not that the task passed. Each n counts recorded values for that metric. The line under a time or speed is its lowest and highest recorded value. Out speed is output tokens per second of model time. Plan usage n shows short-term/weekly observations. Click a row or a round cell to open that run.</p>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
           <thead>
@@ -223,11 +228,12 @@ export default function Compare({ data, onSelect }) {
   };
   const metrics = [
     ["Task checks", (s) => taskCheckText(s)],
-    ["Wall", (s) => s.wall_ms, 1], ["Model", (s) => s.model_ms, 1],
-    ["Overhead", (s) => s.overhead_ms, 1], ["TTFT", (s) => s.ttft_ms, 1],
+    ["Wall", (s) => s.wall_ms, 1, "lower"], ["Model", (s) => s.model_ms, 1, "lower"],
+    ["Overhead", (s) => s.overhead_ms, 1, "lower"], ["TTFT", (s) => s.ttft_ms, 1, "lower"],
     ["Calls", (s) => s.calls], ["Input tokens, run", (s) => s.input_tokens],
     ["Output tokens, run", (s) => s.output_tokens],
-    ["Cost", (s) => visibleCost(s)],
+    ["Output speed", (s) => outputSpeed(s), 0, "higher"],
+    ["Cost", (s) => visibleCost(s), 0, "lower"],
     ["Input tokens, last call", (s) => s.last_input_tokens],
     ["Output tokens, last call", (s) => s.last_output_tokens]];
   // Honest delta: – when either side is missing. Never substitute 0.
@@ -285,11 +291,14 @@ export default function Compare({ data, onSelect }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {metrics.map(([name, f, isDur]) => {
+                    {metrics.map(([name, f, isDur, better]) => {
                       const isCost = name === "Cost";
                       const isTask = name === "Task checks";
-                      const show = (v, s) => isTask ? v : isCost ? runCostText(s) : isDur ? fmtDur(v) : fmtMs(v);
-                      const delta = (x, y, sa, sb) => isTask ? "–" : isCost
+                      const isSpeed = name === "Output speed";
+                      const show = (v, s) => isTask ? v : isSpeed ? fmtSpeed(v) : isCost ? runCostText(s) : isDur ? fmtDur(v) : fmtMs(v);
+                      const delta = (x, y, sa, sb) => isTask ? "–" : isSpeed
+                        ? ((x == null || y == null) ? "–" : ((x - y) > 0 ? "+" : "") + fmtSpeed(x - y))
+                        : isCost
                         ? ((x != null && y != null)
                           ? ((x - y) > 0 ? "+" : (x - y) < 0 ? "-" : "") + fmtCost(Math.abs(x - y))
                           : (planDeltaText(sa, sb) ?? "–"))
@@ -298,14 +307,14 @@ export default function Compare({ data, onSelect }) {
                         <tr key={name}>
                           <td>{name}</td>
                           <td className="num">{show(f(a), a)}</td>
-                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s), s)}</td>, <td key={s.run_id + "-dv"} className="num">{delta(f(a), f(s), a, s)}</td>])}
+                          {others.flatMap((s) => [<td key={s.run_id + "-v"} className="num">{show(f(s), s)}</td>, <td key={s.run_id + "-dv"} className={"num " + deltaTone(f(a), f(s), better)}>{delta(f(a), f(s), a, s)}</td>])}
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
-              <p className="note">Deltas are plain differences (selected minus compared), shown as – when a harness did not report that metric. Bigger is not coloured better or worse.</p>
+              <p className="note">Deltas are plain differences (selected minus compared), shown as – when a harness did not report that metric. Green means the selected run did better on that metric, and red means worse. Lower is better for time and cost, and higher is better for output speed. Token and call counts are not coloured.</p>
             </div>
           )}
       </section>
