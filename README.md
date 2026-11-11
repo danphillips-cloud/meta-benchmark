@@ -133,7 +133,7 @@ The page refreshes every 2 seconds and follows a run in progress, so model calls
 On your first visit a short walkthrough opens and points at each part of the page in turn. After that it lives behind Getting started in the sidebar.
 
 - **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
-- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview.
+- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview. Tick runs to compare 2 or 3 of them, or to delete any number at once. The checkbox in the header selects every run the filter shows.
 - **Compare** shows medians for a compare set, with the fastest marked.
 - **Timeline**, **Replay** and **X-ray** are shown in [step 3](#3-read-it-on-the-page).
 - **Radar** shows median wall time per prompt across Muse versions, and the change between the two newest versions with enough runs.
@@ -155,6 +155,8 @@ Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) be
 `--compare meta --repeat N` runs N rounds, alternating the order each round.
 
 `./run-muse --watch` times your own interactive Muse session, read-only. Run Muse normally in another terminal.
+
+`./run-muse --retro` imports finished turns from the Muse session logs already on disk. It also repairs turns imported earlier with no recorded outcome, when the log now shows one. A turn the log still can't classify stays unknown.
 
 In the prompt loop, `/mode meta`, `/mode claude` and `/mode single` switch mode, and the prompt shows it, for example `muse[meta]>`. `/help` lists commands. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
 
@@ -270,7 +272,7 @@ Suite entries can include deterministic checks alongside the prompt:
 
 All configured checks must pass. Reply checks match exact, case-sensitive text. File checks require a file inside that run's workspace. A file existence check does not check its contents or behavior. These checks establish only the conditions you configured, not general answer quality. Missing checks and executions that do not complete show not checked. Validation runs after execution timing ends. A suite exits with code 1 when configured checks fail. Resume retries entries whose checks failed or whose configured checks have changed. Historical spend still counts toward the suite budget.
 
-Compare reports task checks separately from execution completion. Fastest completed means the lowest median wall time among completed executions, regardless of task checks. Each metric shows its own observation count as n. Plan usage lists short-term and weekly counts separately. Missing measurements are excluded from that metric's median. Failures remain visible and are excluded from medians.
+Compare reports task checks separately from execution completion. Fastest completed means the lowest median wall time among completed executions, regardless of task checks. The badge needs 3 completed runs in every leg, and the fastest leg's slowest run must beat every other leg's fastest run. When that is not met, the page says why and marks no leg. Each metric shows its own observation count as n. Plan usage lists short-term and weekly counts separately. Missing measurements are excluded from that metric's median. Failures remain visible and are excluded from medians.
 
 Imported interactive turns without an explicit recorded run outcome show unknown. Older imports that were automatically labelled completed also show unknown. Their stored files are preserved.
 

@@ -3478,6 +3478,50 @@ class RetroTest(unittest.TestCase):
             self.assertEqual(entries[0]["approval_ms"], 500)
             self.assertEqual(entries[0]["muse_ms"], 300)
 
+    def _add_turn_one_outcome(self, sess_root, sid, outcome):
+        """Add an explicit outcome record at the end of turn 1.
+
+        Records sort by sequence. Turn 2 starts at sequence 10 in
+        session-turns.jsonl, so 9.5 lands last in turn 1."""
+        log = sess_root / sid / "session.jsonl"
+        with log.open("a") as f:
+            f.write(json.dumps({
+                "sequence": 9.5, "recorded_at": 1700000007400000,
+                "payload_type": "runtime.session",
+                "payload": {"event": {"kind": "terminal",
+                                      "terminal": outcome}}}) + "\n")
+
+    def test_retro_repairs_turn_imported_without_an_outcome(self):
+        with tempfile.TemporaryDirectory() as td:
+            runs, sess = self._setup(td, {"fake-1": "session-turns.jsonl"})
+            self._run_retro(runs, sess)
+            first = self._index(runs)
+            self.assertEqual([e["status"] for e in first],
+                             ["unknown", "unknown"])
+            # Rows written before outcomes were parsed claimed
+            # "completed" with no outcome_recorded field at all.
+            old = [{k: v for k, v in dict(e, status="completed").items()
+                    if k != "outcome_recorded"} for e in first]
+            (runs / "index.jsonl").write_text(
+                "".join(json.dumps(e) + "\n" for e in old))
+            self._add_turn_one_outcome(sess, "fake-1", "cancelled")
+            self._run_retro(runs, sess)
+            entries = self._index(runs)
+            # One corrected row is appended under the same run ID.
+            # Turn 2 still has no outcome in the log, so it is left.
+            self.assertEqual(len(entries), 3)
+            self.assertEqual(entries[2]["run_id"], first[0]["run_id"])
+            self.assertEqual(entries[2]["status"], "interrupted")
+            self.assertTrue(entries[2]["outcome_recorded"])
+            self.assertEqual(entries[2]["provider"], "muse-retro")
+            self.assertEqual(entries[2]["turn_index"], 1)
+            report = json.loads((runs / first[0]["run_id"]
+                                 / "report.json").read_text())
+            self.assertEqual(report["status"], "interrupted")
+            # A rerun finds nothing left to repair or import.
+            self._run_retro(runs, sess)
+            self.assertEqual(len(self._index(runs)), 3)
+
     def test_retro_rerun_imports_nothing_new(self):
         with tempfile.TemporaryDirectory() as td:
             runs, sess = self._setup(td, {"fake-1": "session-turns.jsonl"})

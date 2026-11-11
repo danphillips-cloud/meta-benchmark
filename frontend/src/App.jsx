@@ -200,6 +200,24 @@ function AppShell() {
     refresh("");
   }, [navigate, refresh]);
 
+  // Bulk delete from Runs. One request per run through the same
+  // /api/delete, so the server's checks apply to each run.
+  const handleDeleteMany = useCallback(async (ids) => {
+    if (!ids.length) return false;
+    if (!confirm("Delete " + ids.length + " run(s)? This removes their local run data.")) return false;
+    const failed = [];
+    for (const id of ids) {
+      const result = await deleteRun(id).catch(() => ({}));
+      if (!result.ok) failed.push(id + ": " + (result.reason || "delete failed"));
+    }
+    if (failed.length) {
+      alert("Could not delete " + failed.length + " run(s).\n" + failed.slice(0, 5).join("\n"));
+    }
+    sigRef.current = "";
+    refresh("");
+    return true;
+  }, [refresh]);
+
   const sessions = data.sessions || [];
   const runNotFound = loaded && Boolean(routeRunId)
     && !sessions.some((s) => s.run_id === routeRunId);
@@ -347,7 +365,7 @@ function AppShell() {
             ) : (
             <Routes>
               <Route path="/" element={<Overview data={data} onSelect={selectRun} onGoto={goto} />} />
-              <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} />} />
+              <Route path="/runs" element={<Runs data={data} sessionValue={data.selected || ""} onSessionChange={selectRun} onSelect={selectRun} onDelete={handleDelete} onDeleteMany={handleDeleteMany} />} />
               <Route path="/runs/:id" element={runNotFound ? <NotFound what="Run not found" /> : <Overview data={data} onSelect={selectRun} onGoto={goto} />} />
               <Route path="/compare/:setId" element={compareNotFound ? <NotFound what="Compare set not found" /> : <Compare data={compareData} onSelect={selectRun} />} />
               <Route path="/compare" element={<Compare data={data} onSelect={selectRun} />} />
