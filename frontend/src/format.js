@@ -339,10 +339,43 @@ export function median(values) {
 }
 
 // Count the observations behind each median, independently of run outcome.
+// min and max are the recorded extremes, so a median never hides its spread.
 export function metricSummary(runs, value) {
   const values = runs.map(value).filter((v) => v != null);
-  return { median: median(values), n: values.length };
+  return {
+    median: median(values), n: values.length,
+    min: values.length ? Math.min(...values) : null,
+    max: values.length ? Math.max(...values) : null,
+  };
 }
+
+// "low to high" for a summary with two or more observations. One
+// observation has no spread, so it gets no range text.
+export function rangeText(stat, format) {
+  return stat && stat.n >= 2 ? format(stat.min) + " to " + format(stat.max) : "";
+}
+
+// Output tokens per second of model time. Plain arithmetic on two
+// recorded figures. Null when either is missing or model time is 0.
+// Model time includes network wait and time to first token, so this
+// is the speed the harness saw, not pure generation speed.
+export function outputSpeed(run) {
+  const out = run?.output_tokens;
+  const ms = run?.model_ms;
+  return out == null || ms == null || !(ms > 0) ? null : out / (ms / 1000);
+}
+
+// Colour for a compare delta (selected minus compared). Only metrics
+// with a clear better direction get one. "lower" suits time and
+// cost, "higher" suits speed. No direction, no difference or a
+// missing side gives "", so the cell stays neutral.
+export function deltaTone(x, y, better) {
+  if (!better || x == null || y == null || x === y) return "";
+  return (x < y) === (better === "lower") ? "deltaGood" : "deltaBad";
+}
+
+export const fmtSpeed = (v) => (v == null ? "–"
+  : (Math.abs(v) >= 100 ? fmt(Math.round(v)) : v.toFixed(1)) + " tok/s");
 
 export function taskCheckText(run) {
   const status = run?.task_validation?.status;
@@ -1355,7 +1388,7 @@ function partialLine(step) {
 // completed runs on both sides. Percent change is plain arithmetic
 // on medians. Nothing here claims statistical significance.
 
-export const RADAR_MIN_RUNS = 2;
+export const RADAR_MIN_RUNS = 3;
 const RADAR_NO_VERSION = "";
 
 function radarDeltaMetric(from, to) {

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  comparisonHref, samePromptRuns, canCompare, selectionHint, toggleAllIds, DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, wallStats, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  comparisonHref, samePromptRuns, rangeText, outputSpeed, fmtSpeed, deltaTone, canCompare, selectionHint, toggleAllIds, DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, wallStats, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, metricSummary, taskCheckText, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -1087,6 +1087,7 @@ const RADAR_ROWS = [
   RS({ run_id: "3", wall_ms: 200, at: "2026-01-03T00:00:00Z" }),
   RS({ run_id: "4", wall_ms: 400, harness_version: VB, at: "2026-02-01T00:00:00Z" }),
   RS({ run_id: "5", wall_ms: 600, harness_version: VB, at: "2026-02-02T00:00:00Z" }),
+  RS({ run_id: "5b", wall_ms: 500, harness_version: VB, at: "2026-02-02T12:00:00Z" }),
   RS({ run_id: "6", wall_ms: 99999, status: "failed", harness_version: VB, at: "2026-02-03T00:00:00Z" }),
   RS({ run_id: "7", suite_prompt: null, prompt: "loose prompt", harness_version: null }),
 ];
@@ -1100,7 +1101,7 @@ test("radarMatrix: version columns, medians, threshold delta", () => {
   assert.equal(sky.cells[VA].n, 3);
   assert.equal(sky.cells[VA].wall_ms, 200);
   // The failed run never feeds a median or a count.
-  assert.equal(sky.cells[VB].n, 2);
+  assert.equal(sky.cells[VB].n, 3);
   assert.equal(sky.cells[VB].wall_ms, 500);
   assert.equal(sky.delta.from_version, VA);
   assert.equal(sky.delta.to_version, VB);
@@ -1127,10 +1128,10 @@ test("radarMatrix: an unstamped run with the same prompt joins the suite group",
   assert.equal(sky.cells[VA].wall_ms, 230);
 });
 
-test("radarMatrix: a version with one run earns no delta", () => {
+test("radarMatrix: a version with two runs earns no delta", () => {
   const rows = RADAR_ROWS.filter((r) => r.run_id !== "5");
   const sky = radarMatrix(rows).rows[0];
-  assert.equal(sky.cells[VB].n, 1);
+  assert.equal(sky.cells[VB].n, 2);
   assert.equal(sky.delta, null);
 });
 
@@ -1547,8 +1548,8 @@ test("needsScroll: only targets outside the viewport scroll", () => {
 
 test("metric medians disclose their own sample size", () => {
   assert.deepEqual(metricSummary([{ x: 10 }, { x: null }, { x: 30 }], (r) => r.x),
-    { median: 20, n: 2 });
-  assert.deepEqual(metricSummary([{ x: null }], (r) => r.x), { median: null, n: 0 });
+    { median: 20, n: 2, min: 10, max: 30 });
+  assert.deepEqual(metricSummary([{ x: null }], (r) => r.x), { median: null, n: 0, min: null, max: null });
 });
 
 test("task checks never infer a pass from execution completion", () => {
@@ -1562,12 +1563,14 @@ test("radar counts observations per metric and requires enough values for change
   const rows = [
     RS({ run_id: "a1", harness_version: VA, model_ms: 100 }),
     RS({ run_id: "a2", harness_version: VA, model_ms: null }),
+    RS({ run_id: "a3", harness_version: VA, model_ms: null }),
     RS({ run_id: "b1", harness_version: VB, model_ms: 200 }),
     RS({ run_id: "b2", harness_version: VB, model_ms: 300 }),
+    RS({ run_id: "b3", harness_version: VB, model_ms: 400 }),
   ];
   const row = radarMatrix(rows).rows[0];
   assert.equal(row.cells[VA].samples.model_ms, 1);
-  assert.equal(row.cells[VB].samples.model_ms, 2);
+  assert.equal(row.cells[VB].samples.model_ms, 3);
   assert.equal(row.delta.model_ms.pct, null);
   assert.notEqual(row.delta.wall_ms.diff, null);
 });
@@ -1597,4 +1600,35 @@ test("toggleAllIds adds the listed runs, or clears them when all are selected", 
   assert.deepEqual(toggleAllIds(["x", "a"], ["a", "b"]), ["x", "a", "b"]);
   assert.deepEqual(toggleAllIds(["x", "a", "b"], ["a", "b"]), ["x"]);
   assert.deepEqual(toggleAllIds(["x"], []), ["x"]);
+});
+
+test("rangeText needs two observations, and shows the recorded extremes", () => {
+  const ms = (v) => v + " ms";
+  assert.equal(rangeText(metricSummary([{ x: 30 }, { x: 10 }, { x: 20 }], (r) => r.x), ms), "10 ms to 30 ms");
+  assert.equal(rangeText(metricSummary([{ x: 30 }], (r) => r.x), ms), "");
+  assert.equal(rangeText(metricSummary([], (r) => r.x), ms), "");
+});
+
+test("outputSpeed is recorded output tokens over model seconds, or null", () => {
+  assert.equal(outputSpeed({ output_tokens: 500, model_ms: 10000 }), 50);
+  assert.equal(outputSpeed({ output_tokens: 0, model_ms: 10000 }), 0);
+  assert.equal(outputSpeed({ output_tokens: 500, model_ms: null }), null);
+  assert.equal(outputSpeed({ output_tokens: null, model_ms: 10000 }), null);
+  assert.equal(outputSpeed({ output_tokens: 500, model_ms: 0 }), null);
+  assert.equal(outputSpeed(null), null);
+  assert.equal(fmtSpeed(null), "–");
+  assert.equal(fmtSpeed(42.26), "42.3 tok/s");
+  assert.equal(fmtSpeed(1234.6), "1,235 tok/s");
+  assert.equal(fmtSpeed(-3.21), "-3.2 tok/s");
+});
+
+test("deltaTone colours only metrics with a better direction", () => {
+  assert.equal(deltaTone(100, 200, "lower"), "deltaGood");
+  assert.equal(deltaTone(200, 100, "lower"), "deltaBad");
+  assert.equal(deltaTone(50, 40, "higher"), "deltaGood");
+  assert.equal(deltaTone(40, 50, "higher"), "deltaBad");
+  assert.equal(deltaTone(100, 100, "lower"), "");
+  assert.equal(deltaTone(100, null, "lower"), "");
+  assert.equal(deltaTone(null, 100, "higher"), "");
+  assert.equal(deltaTone(100, 200, undefined), "");
 });
