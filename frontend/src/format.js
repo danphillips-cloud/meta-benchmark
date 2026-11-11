@@ -350,6 +350,16 @@ export function taskCheckText(run) {
     : status === "failed" ? "Configured checks failed" : "Not checked";
 }
 
+export function comparisonHref(ids) {
+  const params = new URLSearchParams();
+  for (const id of [...new Set(ids.filter(Boolean))].slice(0, 3)) params.append("pick", id);
+  return params.size ? "/compare?" + params : "/compare";
+}
+
+export function samePromptRuns(run, sessions) {
+  return run?.prompt ? sessions.filter((s) => s.run_id !== run.run_id && s.prompt === run.prompt) : [];
+}
+
 export const legKey = (s) => (s.provider || "?") + "/" + (s.model || "?");
 
 // Live progress for legs still running, in start order. Elapsed is

@@ -352,3 +352,8 @@
   .replayToolSeg.kind-approval { background:var(--barstalled); }
   .replayToolSeg.done { opacity:1; }
   .replayToolSw { background:var(--st-ok); }
+
+.comparisonOutputs { margin: 12px 0 }
+.outputColumns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(230px, 1fr); gap: 16px; overflow-x: auto }
+.comparisonOutputs pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow-y: auto }
+.outputColumns section { min-width: 0 }

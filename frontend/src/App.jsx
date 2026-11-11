@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
   BrowserRouter, Link, Navigate, Route, Routes, matchPath, useLocation, useNavigate, useSearchParams,
 } from "react-router";
-import { FILTER_KEYS, activeFilterChips, breadcrumb, dataSignature, recentRuns, latestOnly, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
+import { FILTER_KEYS, comparisonHref, activeFilterChips, breadcrumb, dataSignature, recentRuns, latestOnly, markWalkthroughSeen, parseRunsQuery, walkthroughSeen, walkthroughSteps } from "./format.js";
 import { deleteRun, download, fetchLogs } from "./api.js";
 import { BrandGlyph, ExternalIcon, MenuIcon, MoonIcon, NavIcon, SunIcon } from "./components/widgets.jsx";
 import Walkthrough from "./components/walkthrough.jsx";
@@ -62,7 +62,9 @@ function AppShell() {
     FILTER_KEYS.forEach((k) => next.delete(k));
     setSearchParams(next, { replace: true });
   };
-  const qs = location.search || "";
+  const navParams = new URLSearchParams(searchParams);
+  navParams.delete("pick");
+  const qs = navParams.size ? "?" + navParams : "";
   const [theme, setTheme] = useState(initialTheme);
   const [data, setData] = useState(EMPTY);
   const [loaded, setLoaded] = useState(false);
@@ -124,7 +126,8 @@ function AppShell() {
   const replayDetail = matchPath("/replay/:id", location.pathname);
   const xrayDetail = matchPath("/xray/:id", location.pathname);
   const compareDetail = matchPath("/compare/:setId", location.pathname);
-  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || (replayDetail && replayDetail.params.id) || (xrayDetail && xrayDetail.params.id) || "";
+  const routeRunId = (runDetail && runDetail.params.id) || (timelineDetail && timelineDetail.params.id) || (replayDetail && replayDetail.params.id) || (xrayDetail && xrayDetail.params.id)
+    || (location.pathname === "/compare" && searchParams.get("pick")) || "";
   const compareSetId = (compareDetail && compareDetail.params.setId) || "";
   const routeRunRef = useRef(routeRunId);
   routeRunRef.current = routeRunId;
@@ -174,8 +177,8 @@ function AppShell() {
   // its Overview URL; browser back/forward then move between runs.
   const selectRun = useCallback((runId) => {
     if (!runId) return;
-    navigate("/runs/" + encodeURIComponent(runId) + (window.location.search || ""));
-  }, [navigate]);
+    navigate("/runs/" + encodeURIComponent(runId) + qs);
+  }, [navigate, qs]);
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -206,11 +209,14 @@ function AppShell() {
   const compareData = compareRep ? { ...data, selected: compareRep.run_id } : data;
   const selSession = sessions.find((s) => s.run_id === data.selected) || {};
   const view = activeView(location.pathname);
+  const compareUrl = selSession.comparison_id
+    ? "/compare/" + encodeURIComponent(selSession.comparison_id) + qs
+    : comparisonHref(data.selected ? [data.selected] : []);
   const goto = (name) => {
     if (name === "runs") navigate("/runs" + qs);
     else if (name === "replay") navigate((data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay") + qs);
     else if (name === "xray") navigate((data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray") + qs);
-    else if (name === "compare") navigate((selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare") + qs);
+    else if (name === "compare") navigate(compareUrl);
     else navigate("/" + qs);
   };
 
@@ -235,7 +241,7 @@ function AppShell() {
       ["runs", "Runs", "/runs"],
     ]],
     ["Analyse", [
-      ["compare", "Compare", selSession.comparison_id ? "/compare/" + encodeURIComponent(selSession.comparison_id) : "/compare"],
+      ["compare", "Compare", compareUrl],
       ["timeline", "Timeline", data.selected ? "/timeline/" + encodeURIComponent(data.selected) : "/"],
       ["replay", "Replay", data.selected ? "/replay/" + encodeURIComponent(data.selected) : "/replay"],
       ["xray", "X-ray", data.selected ? "/xray/" + encodeURIComponent(data.selected) : "/xray"],
@@ -255,7 +261,7 @@ function AppShell() {
               <div key={group} className="navGroup">
                 <div className="groupLabel">{group}</div>
                 {items.map(([key, label, to]) => (
-                  <Link key={key} to={to + qs} className={"navItem" + (view === key ? " active" : "")}
+                  <Link key={key} to={key === "compare" ? to : to + qs} className={"navItem" + (view === key ? " active" : "")}
                     aria-current={view === key ? "page" : undefined}>
                     <NavIcon view={key} />{label}
                   </Link>
