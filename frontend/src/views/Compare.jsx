@@ -62,7 +62,13 @@ function CompareSet({ data, onSelect }) {
       <div className="legend"><span><span className="sw swModel"></span>model time</span><span><span className="sw swOver"></span>overhead</span><span>outlined = selected run</span></div>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
-          <thead><tr><th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th><th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th><th className="num">Out</th><th className="num" title="Output tokens per second of model time">Out speed</th><th className="num">Cost</th><th>Configured task checks</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Provider/Model</th><th>Runs</th><th className="num">Wall</th><th className="num">Model</th>
+              <th className="num">Overhead</th><th className="num">TTFT</th><th className="num">Calls</th><th className="num">In</th>
+              <th className="num">Out</th><th className="num" title="Output tokens per second of model time">Out speed</th><th className="num">Cost</th><th>Configured task checks</th>
+            </tr>
+          </thead>
           <tbody>
             {legs.map((key) => {
               const all = byLeg.get(key);
@@ -89,8 +95,8 @@ function CompareSet({ data, onSelect }) {
                 window: allowMedian.window.median === 0, weekly: allowMedian.weekly.median === 0,
               }) + " (n=" + allowMedian.window.n
                 + "/" + allowMedian.weekly.n + ")";
-              const latest = [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))
-                .find((s) => s.status === "completed") || [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")))[0];
+              const newestFirst = [...all].sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+              const latest = newestFirst.find((s) => s.status === "completed") || newestFirst[0];
               const cells = [key, runs.length + "/" + all.length + " completed", medDur((s) => s.wall_ms), medDur((s) => s.model_ms),
                 medDur((s) => s.overhead_ms), medDur((s) => s.ttft_ms), med((s) => s.calls),
                 med((s) => s.input_tokens), med((s) => s.output_tokens), withRange(outputSpeed, fmtSpeed), cost,
@@ -117,7 +123,16 @@ function CompareSet({ data, onSelect }) {
         </table>
       </div>
       {fastestNote ? <p className="note">{fastestNote}</p> : null}
-      <p className="note">Table values are medians over completed runs only. Failed and interrupted runs stay in the round table below and in the completed/total count, but never in a median. Completion means the execution ended successfully, not that the task passed. Each n counts recorded values for that metric. The line under a time or speed is its lowest and highest recorded value. Out speed is output tokens per second of model time. Plan usage n shows short-term/weekly observations. Click a row or a round cell to open that run.</p>
+      <p className="note">
+        Table values are medians over completed runs only.
+        Failed and interrupted runs stay in the round table below and in the completed/total count, but never in a median.
+        Completion means the execution ended successfully, not that the task passed.
+        Each n counts recorded values for that metric.
+        The line under a time or speed is its lowest and highest recorded value.
+        Out speed is output tokens per second of model time.
+        Plan usage n shows short-term/weekly observations.
+        Click a row or a round cell to open that run.
+      </p>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
           <thead>
@@ -172,7 +187,7 @@ function CompareSet({ data, onSelect }) {
   );
 }
 
-function runLabel(run) {
+function compareRunLabel(run) {
   return legKey(run) + " · " + localTime(run.at) + " · " + run.run_id.slice(-6);
 }
 
@@ -241,7 +256,7 @@ export default function Compare({ data, onSelect }) {
     : ((x - y) > 0 ? "+" : "") + (isDur ? fmtDur(x - y) : fmtMs(x - y));
   const options = (current) => sessions.filter((s) => s.run_id === current
     || (s.run_id !== anchor && !ids.includes(s.run_id))).map((s) =>
-      <option key={s.run_id} value={s.run_id}>{shortText(s.prompt, 48) + " · " + runLabel(s)}</option>);
+      <option key={s.run_id} value={s.run_id}>{shortText(s.prompt, 48) + " · " + compareRunLabel(s)}</option>);
   return (
     <section data-view-panel="compare">
       <div className="viewHead"><span className="hint">same prompt across legs, or any runs side by side</span><Link className="viewAll" to="/radar">Version radar →</Link></div>
@@ -256,7 +271,7 @@ export default function Compare({ data, onSelect }) {
       {setId && <CompareSet data={data} onSelect={onSelect} />}
       <section className="panel" style={{ marginTop: 12 }}>
         <div className="panelHead"><div><div className="pt">Compare recorded runs</div>
-          {a && <div className="ps">{runLabel(a)}<br />{shortText(a.prompt, 160)}</div>}
+          {a && <div className="ps">{compareRunLabel(a)}<br />{shortText(a.prompt, 160)}</div>}
         </div></div>
         {ids.some((id) => !sessions.some((s) => s.run_id === id)) &&
           <p className="note">A run in this comparison is unavailable.</p>}
@@ -264,7 +279,7 @@ export default function Compare({ data, onSelect }) {
           {same.some((r) => !ids.includes(r.run_id)) && others.length < 2 &&
             <label>More runs with this prompt <select value="" onChange={(e) => change(others.length + 1, e.target.value)}>
               <option value="">Choose a matching run</option>
-              {same.filter((r) => !ids.includes(r.run_id)).map((r) => <option key={r.run_id} value={r.run_id}>{runLabel(r)}</option>)}
+              {same.filter((r) => !ids.includes(r.run_id)).map((r) => <option key={r.run_id} value={r.run_id}>{compareRunLabel(r)}</option>)}
             </select></label>}
           {[1, 2].map((i) => <label key={i}>{"Comparison run " + i}
             <select id={i === 1 ? "compareSelect" : "compareSelect2"}
@@ -286,8 +301,8 @@ export default function Compare({ data, onSelect }) {
                   <thead>
                     <tr>
                       <th>Metric</th>
-                      <th className="num">{"Selected · " + runLabel(a)}</th>
-                      {others.flatMap((s) => [<th key={s.run_id + "-h"} className="num">{runLabel(s)}</th>, <th key={s.run_id + "-d"} className="num">Selected − this</th>])}
+                      <th className="num">{"Selected · " + compareRunLabel(a)}</th>
+                      {others.flatMap((s) => [<th key={s.run_id + "-h"} className="num">{compareRunLabel(s)}</th>, <th key={s.run_id + "-d"} className="num">Selected − this</th>])}
                     </tr>
                   </thead>
                   <tbody>

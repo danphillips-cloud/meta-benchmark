@@ -407,10 +407,6 @@ def live_state(records):
     return {"state": "idle", "tool": None}
 
 
-def live_state_from_log(path):
-    return live_state(read_records(path))
-
-
 _ACTIVITY_KINDS = ("model_completed",)
 _ACTIVITY_TYPES = ("tool_batch.effect.terminal",
                    "approval_wait.effect.terminal")
@@ -519,10 +515,6 @@ def live_calls_from_records(records):
     same calls (retry fields included) as the finished run.
     """
     return calls_from_records(records), _timeline_rows(records)
-
-
-def live_calls_from_log(path):
-    return live_calls_from_records(read_records(path))
 
 
 def _lane_value(node):

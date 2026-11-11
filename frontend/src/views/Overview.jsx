@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows, buildRunsQuery, costNote, costReason, costUnit, fastestOf, wallStats, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext, infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, taskCheckText, visibleCost } from "../format.js";
+import {
+  DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows,
+  buildRunsQuery, costNote, costReason, costUnit, fastestOf, wallStats, filterOptions, fmt,
+  fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext,
+  infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median,
+  overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText,
+  selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen,
+  taskCheckText, visibleCost,
+} from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -400,7 +408,13 @@ export default function Overview({ data, onSelect, onGoto }) {
         </section>
       ) : null}
       <section className="panel" aria-label="Per-call breakdown" data-tour="per-call" style={{ marginTop: 12 }}>
-        <div className="panelHead"><div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div><span style={{ display: "flex", gap: 14, marginLeft: "auto", flex: "none" }}><button className="viewAll" type="button" onClick={() => onGoto("replay")}>Replay this run →</button><button className="viewAll" type="button" onClick={() => onGoto("xray")}>X-ray this run →</button></span></div>
+        <div className="panelHead">
+          <div><div className="pt">Per-call breakdown</div><div className="ps">Model time and input tokens per call, in order</div></div>
+          <span style={{ display: "flex", gap: 14, marginLeft: "auto", flex: "none" }}>
+            <button className="viewAll" type="button" onClick={() => onGoto("replay")}>Replay this run →</button>
+            <button className="viewAll" type="button" onClick={() => onGoto("xray")}>X-ray this run →</button>
+          </span>
+        </div>
         <PerCallChart events={events} provider={data.provider || sel.provider} />
         {(data.provider || sel.provider) !== "claude-code" ? <div className="legend"><span><span className="sw swModel"></span>model time</span>{retryTotal > 0 ? <span><span className="sw swStalled"></span>stalled</span> : null}<span>line = input tokens</span></div> : null}
       </section>
