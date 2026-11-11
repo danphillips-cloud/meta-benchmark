@@ -254,6 +254,29 @@ npm run build
 
 [MIT](LICENSE). Unofficial tool, not affiliated with Meta.
 
+## Model benchmark
+
+`model-benchmark.json` is a ready-made manifest of six short prompts, each with a check on the answer. Run it once per model, then compare the models on the page.
+
+```sh
+./run-muse --manifest model-benchmark.json --dry-run                   # list what would run
+./run-muse --manifest model-benchmark.json --model muse-wonder-1.0
+./run-muse --manifest model-benchmark.json --model muse-spark-1.3
+```
+
+| Prompt | What it shows |
+|---|---|
+| `ping` | Startup cost, with almost no thinking |
+| `format` | Following an exact output format |
+| `clock` | Short reasoning, where a quick guess is wrong |
+| `count` | Careful multi-step counting |
+| `essay` | Output speed on a long reply |
+| `primes-code` | Tool use: write code, run it, report the result |
+
+Each prompt runs 3 times, so one pass is 18 runs on your Muse plan. `--model` fills in every entry that names no model. An entry with its own `model` keeps it. With `--resume`, add `--fresh` when you switch model, or the entries the last model completed are skipped.
+
+On Runs, type part of a prompt in the filter, such as `clock shows`, and tick runs to compare them. A run that finishes with the wrong answer shows completed with failed checks, and the suite exits with code 1.
+
 ## Checking task results
 
 Suite entries can include deterministic checks alongside the prompt:
