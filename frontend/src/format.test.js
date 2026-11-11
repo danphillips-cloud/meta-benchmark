@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  comparisonHref, samePromptRuns, DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
+  comparisonHref, samePromptRuns, canCompare, selectionHint, toggleAllIds, DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, wallStats, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
   brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, metricSummary, taskCheckText, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
@@ -845,21 +845,33 @@ test("no invented zeros: null model time stays null and medians skip it", () => 
   assert.equal(zero[0].model_ms, 0);
 });
 
-test("fastestOf: tied fastest keys and ratio, nothing when it cannot say", () => {
-  const rows = [
-    { key: "a", wall: 100 }, { key: "b", wall: 300 }, { key: "c", wall: null },
-  ];
-  const one = fastestOf(rows);
-  assert.deepEqual([...one.fastestKeys], ["a"]);
-  assert.equal(one.fastRatio, 3);
-  const tied = fastestOf([{ key: "a", wall: 100 }, { key: "b", wall: 100 }, { key: "c", wall: 200 }]);
-  assert.deepEqual([...tied.fastestKeys].sort(), ["a", "b"]);
-  assert.equal(tied.fastRatio, 2);
-  // Fewer than two groups with a wall time, or all equal: no badge.
-  assert.deepEqual(fastestOf([{ key: "a", wall: 100 }]), { fastestKeys: new Set(), fastRatio: null });
-  assert.deepEqual(fastestOf([{ key: "a", wall: 100 }, { key: "b", wall: 100 }]), { fastestKeys: new Set(), fastRatio: null });
-  assert.deepEqual(fastestOf([]), { fastestKeys: new Set(), fastRatio: null });
-  assert.deepEqual(fastestOf([{ key: "a", wall: 0 }, { key: "b", wall: 100 }]), { fastestKeys: new Set(), fastRatio: null });
+test("fastestOf: a badge needs 3 runs per group and no overlap", () => {
+  const leg = (key, walls) => ({ key, ...wallStats(walls.map((wall_ms) => ({ wall_ms }))) });
+  const clear = fastestOf([leg("a", [90, 100, 110]), leg("b", [280, 300, 320]), { key: "c", wall: null }]);
+  assert.deepEqual([...clear.fastestKeys], ["a"]);
+  assert.equal(clear.fastRatio, 3);
+  assert.equal(clear.note, null);
+  // A lower median with too few runs is not evidence.
+  const few = fastestOf([leg("a", [100]), leg("b", [300, 300, 300])]);
+  assert.equal(few.fastestKeys.size, 0);
+  assert.equal(few.note, "No fastest yet. Each provider/model needs 3 completed runs.");
+  // a's slowest run (310) is slower than b's fastest (280).
+  const overlap = fastestOf([leg("a", [90, 100, 310]), leg("b", [280, 300, 320])]);
+  assert.equal(overlap.fastestKeys.size, 0);
+  assert.equal(overlap.note, "No fastest. Wall times overlap between runs.");
+  // Touching ranges and exact ties overlap too.
+  assert.equal(fastestOf([leg("a", [100, 100, 100]), leg("b", [100, 100, 100])]).fastestKeys.size, 0);
+  // Fewer than two groups with a wall time: nothing to compare, no note.
+  const none = { fastestKeys: new Set(), fastRatio: null, note: null };
+  assert.deepEqual(fastestOf([leg("a", [100, 100, 100])]), none);
+  assert.deepEqual(fastestOf([]), none);
+  assert.deepEqual(fastestOf([leg("a", [0, 0, 0]), leg("b", [100, 100, 100])]), none);
+});
+
+test("wallStats: median, count and range over recorded walls only", () => {
+  assert.deepEqual(wallStats([{ wall_ms: 300 }, { wall_ms: null }, { wall_ms: 100 }, { wall_ms: 200 }]),
+    { wall: 200, n: 3, min: 100, max: 300 });
+  assert.deepEqual(wallStats([]), { wall: null, n: 0, min: null, max: null });
 });
 
 test("status constants: DID_NOT_COMPLETE is every known status that did not finish", () => {
@@ -1570,4 +1582,19 @@ test("same prompt choices exclude the selected run and require exact nonempty te
   const rows = ["hello", "hello!", "hello", ""].map((prompt, run_id) => ({ prompt, run_id }));
   assert.deepEqual(samePromptRuns(rows[0], rows), [rows[2]]);
   assert.deepEqual(samePromptRuns(rows[3], rows), []);
+});
+
+test("runs selection: compare takes 2 or 3, delete takes any number", () => {
+  assert.deepEqual([0, 1, 2, 3, 4].map(canCompare), [false, false, true, true, false]);
+  assert.equal(selectionHint(0), "Select runs to compare or delete");
+  assert.equal(selectionHint(1), "1 selected. Compare needs 2 or 3");
+  assert.equal(selectionHint(3), "3 selected");
+  assert.equal(selectionHint(40), "40 selected. Compare needs 2 or 3");
+});
+
+test("toggleAllIds adds the listed runs, or clears them when all are selected", () => {
+  assert.deepEqual(toggleAllIds(["x"], ["a", "b"]), ["x", "a", "b"]);
+  assert.deepEqual(toggleAllIds(["x", "a"], ["a", "b"]), ["x", "a", "b"]);
+  assert.deepEqual(toggleAllIds(["x", "a", "b"], ["a", "b"]), ["x"]);
+  assert.deepEqual(toggleAllIds(["x"], []), ["x"]);
 });

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import {
-  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, comparisonHref, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
+  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, canCompare, comparisonHref, selectionHint, toggleAllIds, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
   fmt, fmtAllowance, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, planUsageTotalText, runCostText, runMode, shortText, visibleCost,
 } from "../format.js";
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
@@ -60,7 +60,7 @@ function cellValue(s, id) {
   return fmtDur(s[id]);
 }
 
-export default function Runs({ data, sessionValue, onSessionChange, onSelect, onDelete }) {
+export default function Runs({ data, sessionValue, onSessionChange, onSelect, onDelete, onDeleteMany }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const state = parseRunsQuery(searchParams);
   const [pageIndex, setPageIndex] = useState(0);
@@ -70,7 +70,16 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
   const selected = chosen.filter((id) => all.some((s) => s.run_id === id));
   function toggleRun(id) {
     setChosen(selected.includes(id) ? selected.filter((item) => item !== id)
-      : [...selected, id].slice(0, 3));
+      : [...selected, id]);
+  }
+  const [deleting, setDeleting] = useState(false);
+  async function deleteSelected() {
+    setDeleting(true);
+    try {
+      if (await onDeleteMany(selected)) setChosen([]);
+    } finally {
+      setDeleting(false);
+    }
   }
   const { providers, models } = filterOptions(all);
   const modes = [...new Set(all.map((s) => runMode(s)))].sort();
@@ -123,16 +132,24 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         <p className="hint">Muse runs show how much of your plan's usage limits they used.</p>
       ) : null}
       <div className="toolbar">
-        <button className="btn" type="button" disabled={selected.length < 2}
+        <button className="btn" type="button" disabled={!canCompare(selected.length)}
           onClick={() => navigate(comparisonHref(selected))}>Compare selected runs</button>
-        <span className="hint" aria-live="polite">{selected.length ? selected.length + " selected" : "Select 2 or 3 runs"}</span>
-        {selected.length > 0 && <button className="btn" onClick={() => setChosen([])}>Clear selection</button>}
+        <span className="hint" aria-live="polite">{deleting ? "Deleting…" : selectionHint(selected.length)}</span>
+        {selected.length > 0 && <button className="btn" type="button" onClick={() => setChosen([])}>Clear selection</button>}
+        {selected.length > 0 && <button className="btn danger" type="button" disabled={deleting}
+          onClick={deleteSelected}>{"Delete selected (" + selected.length + ")"}</button>}
       </div>
       <div className="tableWrap">
         <table className="runsTable">
           <thead>
             <tr>
-              <th scope="col">Compare</th>
+              <th scope="col">
+                <input type="checkbox" disabled={!filtered.length}
+                  checked={filtered.length > 0 && filtered.every((s) => selected.includes(s.run_id))}
+                  aria-label={"Select all " + filtered.length + " runs shown"}
+                  title={"Select all " + filtered.length + " runs shown"}
+                  onChange={() => setChosen(toggleAllIds(selected, filtered.map((s) => s.run_id)))} />
+              </th>
               {HEADERS.map(([id, label, num]) => {
                 const active = state.sort === id;
                 const arrow = active ? (state.dir === "asc" ? " ▲" : " ▼") : "";
@@ -156,8 +173,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
                     {...pickableProps(() => onSelect(s.run_id))}>
                     <td onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={selected.includes(s.run_id)}
-                        disabled={selected.length === 3 && !selected.includes(s.run_id)}
-                        aria-label={"Select " + legKey(s) + " run " + s.run_id + " for comparison"}
+                        aria-label={"Select " + legKey(s) + " run " + s.run_id}
                         onChange={() => toggleRun(s.run_id)} />
                     </td>
                     {HEADERS.map(([id, , num]) => (

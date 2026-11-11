@@ -356,6 +356,25 @@ export function comparisonHref(ids) {
   return params.size ? "/compare?" + params : "/compare";
 }
 
+// Runs selection. Any number of runs can be selected for delete.
+// Compare takes 2 or 3.
+export const canCompare = (count) => count >= 2 && count <= 3;
+
+export function selectionHint(count) {
+  if (!count) return "Select runs to compare or delete";
+  return count + " selected" + (canCompare(count) ? "" : ". Compare needs 2 or 3");
+}
+
+// Header checkbox: clear the listed runs when all are selected,
+// otherwise add the missing ones. Runs outside the list keep their state.
+export function toggleAllIds(selected, ids) {
+  const listed = new Set(ids);
+  if (ids.length && ids.every((id) => selected.includes(id))) {
+    return selected.filter((id) => !listed.has(id));
+  }
+  return [...new Set([...selected, ...ids])];
+}
+
 export function samePromptRuns(run, sessions) {
   return run?.prompt ? sessions.filter((s) => s.run_id !== run.run_id && s.prompt === run.prompt) : [];
 }
@@ -385,19 +404,42 @@ export function raceProgress(sessions, nowMs) {
 export const STATUSES = ["completed", "running", "failed", "interrupted", "timeout", "needs_approval", "unknown"];
 export const DID_NOT_COMPLETE = STATUSES.filter((s) => s !== "completed" && s !== "running");
 
-// Fastest group(s) by median wall time. Rows carry {key, wall};
-// returns the tied-fastest keys and the slowest/fastest ratio, or
-// no keys and a null ratio when fewer than two groups have a wall
-// time or all walls are equal.
-export function fastestOf(rows) {
-  const valid = (rows || []).filter((r) => r.wall != null && r.wall > 0);
-  if (valid.length < 2) return { fastestKeys: new Set(), fastRatio: null };
-  const minWall = Math.min(...valid.map((r) => r.wall));
-  const maxWall = Math.max(...valid.map((r) => r.wall));
-  if (maxWall <= minWall) return { fastestKeys: new Set(), fastRatio: null };
+// Fastest group by median wall time, only when the runs support it.
+// Rows come from wallStats: {key, wall, n, min, max}. Run to run
+// variance is large, so a lower median alone proves nothing. A
+// badge needs FASTEST_MIN_RUNS completed runs in every group, and
+// the winner's slowest run must beat every other group's fastest.
+// Otherwise there are no keys, and note says why in plain words.
+// note is null when there is nothing to compare.
+export const FASTEST_MIN_RUNS = 3;
+
+export function wallStats(runs) {
+  const walls = (runs || []).map((s) => s.wall_ms).filter((v) => v != null);
   return {
-    fastestKeys: new Set(valid.filter((r) => r.wall === minWall).map((r) => r.key)),
-    fastRatio: maxWall / minWall,
+    wall: median(walls), n: walls.length,
+    min: walls.length ? Math.min(...walls) : null,
+    max: walls.length ? Math.max(...walls) : null,
+  };
+}
+
+export function fastestOf(rows) {
+  const none = (note) => ({ fastestKeys: new Set(), fastRatio: null, note });
+  const valid = (rows || []).filter((r) => r.wall != null && r.wall > 0);
+  if (valid.length < 2) return none(null);
+  if (valid.some((r) => !(r.n >= FASTEST_MIN_RUNS))) {
+    return none("No fastest yet. Each provider/model needs "
+      + FASTEST_MIN_RUNS + " completed runs.");
+  }
+  const best = valid.reduce((a, r) => (r.wall < a.wall ? r : a));
+  const others = valid.filter((r) => r !== best);
+  if (others.some((r) => !(best.max < r.min))) {
+    return none("No fastest. Wall times overlap between runs.");
+  }
+  const maxWall = Math.max(...valid.map((r) => r.wall));
+  return {
+    fastestKeys: new Set([best.key]),
+    fastRatio: maxWall / best.wall,
+    note: null,
   };
 }
 

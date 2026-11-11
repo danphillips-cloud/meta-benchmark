@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows, buildRunsQuery, costNote, costReason, costUnit, fastestOf, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext, infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, taskCheckText, visibleCost } from "../format.js";
+import { DID_NOT_COMPLETE, allowanceBig, allowanceDetail, allowanceInfoLines, allowanceRows, buildRunsQuery, costNote, costReason, costUnit, fastestOf, wallStats, filterOptions, fmt, fmtCost, fmtDur, fmtDurParts, fmtMs, fmtResetClock, hasSharedFilters, infoPanelNext, infoPanelOpen, isLongPrompt, legKey, promptPreview, liveStateText, localTime, median, overviewScope, parseRunsQuery, parseSharedFilters, reproPack, runCard, runCostText, selectedRunFacts, sharedFilterCount, shouldCloseFilterPanelOnEscape, syncedFilterPanelOpen, taskCheckText, visibleCost } from "../format.js";
 import { download } from "../api.js";
 import { PerCallChart, RecentRunsChart } from "../components/charts.jsx";
 import { FilterBar } from "../components/filters.jsx";
@@ -243,13 +243,13 @@ export default function Overview({ data, onSelect, onGoto }) {
     const runs = all.filter((s) => s.status === "completed");
     return {
       key, all: all.length, ok: runs.length,
-      wall: median(runs.map((s) => s.wall_ms)), model: median(runs.map((s) => s.model_ms)),
+      ...wallStats(runs), model: median(runs.map((s) => s.model_ms)),
       over: median(runs.map((s) => s.overhead_ms)),
       cost: median(runs.map((s) => visibleCost(s))),
     };
   }).filter((r) => r.ok > 0).sort((a, b) => b.ok - a.ok || a.key.localeCompare(b.key));
   const wallRows = rows.filter((r) => r.ok > 0);
-  const { fastestKeys, fastRatio } = fastestOf(wallRows);
+  const { fastestKeys, fastRatio, note: fastestNote } = fastestOf(wallRows);
 
   const long = reply.length > 700;
   return (
@@ -447,7 +447,7 @@ export default function Overview({ data, onSelect, onGoto }) {
                     <div className="medianRow" key={r.key}>
                       <div className="who">
                         <div className="name">{r.key}
-                          {fastestKeys.has(r.key) ? <span className="badgeFast" title="Lowest median wall time in this scope">fastest</span> : null}
+                          {fastestKeys.has(r.key) ? <span className="badgeFast" title="Lowest median wall time in this scope, and its slowest run beat every other group's fastest">fastest</span> : null}
                         </div>
                         {fastestKeys.has(r.key) ? <span className="fastRatio" title="Median wall time vs the slowest group in this scope">{fastRatio.toFixed(1) + "× faster"}</span> : null}
                         <div className="sub">{"Model " + fmtDur(r.model) + " · Overhead " + fmtDur(r.over) + (r.cost == null ? "" : " · Cost " + fmtCost(r.cost)) + " · " + r.ok + "/" + r.all + " ok"}</div>
@@ -456,6 +456,7 @@ export default function Overview({ data, onSelect, onGoto }) {
                     </div>
                   );
                 })}
+              {fastestNote && rows.length ? <p className="hint">{fastestNote}</p> : null}
             </div>
           </section>
         </div>

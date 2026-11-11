@@ -1260,6 +1260,23 @@ def record_watch_turn(turn, session_id, provider="muse-watch",
                       command="./run-muse --watch", quiet=False):
     """Append one finished interactive turn as a run."""
     run_id, run_dir = new_run_dir()
+    report = _write_turn(turn, session_id, provider, command,
+                         run_id, run_dir)
+    split = turn["split"]
+    if quiet:
+        return report
+    print(f"turn {turn['index']} · wall {_fmt_bucket(turn['wall_ms'])}"
+          f" · model {_fmt_bucket(split['model_ms'])}"
+          f" · tools {_fmt_bucket(split['tool_ms'])}"
+          f" · approval {_fmt_bucket(split['approval_ms'])}"
+          f" · Muse {_fmt_bucket(split['muse_ms'])}"
+          f" · {len(turn['calls'])} call(s)", flush=True)
+    return report
+
+
+def _write_turn(turn, session_id, provider, command, run_id, run_dir):
+    """Write one turn's report under run_id. Shared by a fresh
+    import and by a repair, so both record the same fields."""
     (run_dir / "prompt.md").write_text(turn["prompt"])
     split = turn["split"]
     report = dict(BASE_REPORT)
@@ -1281,14 +1298,6 @@ def record_watch_turn(turn, session_id, provider="muse-watch",
             turn.get("calls_started_before_turn") or 0,
     })
     write_run(run_dir, report)
-    if quiet:
-        return report
-    print(f"turn {turn['index']} · wall {_fmt_bucket(turn['wall_ms'])}"
-          f" · model {_fmt_bucket(split['model_ms'])}"
-          f" · tools {_fmt_bucket(split['tool_ms'])}"
-          f" · approval {_fmt_bucket(split['approval_ms'])}"
-          f" · Muse {_fmt_bucket(split['muse_ms'])}"
-          f" · {len(turn['calls'])} call(s)", flush=True)
     return report
 
 
@@ -1375,6 +1384,31 @@ def retro_plan(entries, sessions):
     return plan
 
 
+def retro_repairs(entries, sessions):
+    """(entry, turn) pairs for imported turns with no recorded outcome.
+
+    Turns imported before outcomes were parsed correctly stay
+    "unknown" forever, because retro_plan skips a turn it has seen.
+    A repair applies only when the log now gives an explicit
+    outcome. A turn the log still can't classify is left alone.
+    """
+    latest = {}
+    for e in entries:
+        if e.get("run_id"):
+            latest[e["run_id"]] = e
+    by_key = {(sid, turn["index"]): turn
+              for sid, turns in sessions for turn in turns}
+    repairs = []
+    for e in latest.values():
+        if e.get("provider") not in _TURN_PROVIDERS \
+                or e.get("outcome_recorded"):
+            continue
+        turn = by_key.get((e.get("session_id"), e.get("turn_index")))
+        if turn and turn.get("status", "unknown") != "unknown":
+            repairs.append((e, turn))
+    return repairs
+
+
 def run_retro():
     """Record finished turns from every Muse session log on disk.
 
@@ -1401,8 +1435,19 @@ def run_retro():
                      if e.get("recorded_at") is not None), default=0)
         sessions.append((first, session_id, turns))
     sessions.sort(key=lambda s: (s[0], s[1]))
-    plan = retro_plan(_index_entries(),
-                      [(sid, turns) for _, sid, turns in sessions])
+    entries = _index_entries()
+    by_session = [(sid, turns) for _, sid, turns in sessions]
+    repairs = retro_repairs(entries, by_session)
+    for entry, turn in repairs:
+        run_dir = RUNS / entry["run_id"]
+        run_dir.mkdir(parents=True, exist_ok=True)
+        _write_turn(turn, entry["session_id"], entry["provider"],
+                    entry.get("command") or "./run-muse --retro",
+                    entry["run_id"], run_dir)
+    if repairs:
+        print(f"Repaired {len(repairs)} earlier turn(s) that had no "
+              f"recorded outcome.", flush=True)
+    plan = retro_plan(entries, by_session)
     planned = {}
     for session_id, _turn in plan:
         planned[session_id] = planned.get(session_id, 0) + 1

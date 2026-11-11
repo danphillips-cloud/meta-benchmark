@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { fetchLogs } from "../api.js";
-import { comparisonHref, samePromptRuns, fastestOf, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
+import { comparisonHref, samePromptRuns, fastestOf, wallStats, fmtAllowance, fmtCost, fmtDur, fmtMs, legKey, localTime, median, metricSummary, taskCheckText, planDeltaText, raceProgress, runCostText, shortText, visibleCost } from "../format.js";
 import { RunsBarChart } from "../components/charts.jsx";
 import { StatusPill, pickableProps } from "../components/widgets.jsx";
 
@@ -31,9 +31,9 @@ function CompareSet({ data, onSelect }) {
   const racing = raceProgress(inSet, Date.now());
   const wallMeds = legs.map((key) => {
     const done = byLeg.get(key).filter((s) => s.status === "completed");
-    return { key, wall: median(done.map((s) => s.wall_ms)), ok: done.length };
+    return { key, ...wallStats(done), ok: done.length };
   }).filter((x) => x.ok > 0);
-  const { fastestKeys, fastRatio } = fastestOf(wallMeds);
+  const { fastestKeys, fastRatio, note: fastestNote } = fastestOf(wallMeds);
   return (
     <section className="panel">
       <div className="panelHead"><div><div className="pt">{title}</div><div className="ps">{promptLine}</div></div></div>
@@ -100,7 +100,7 @@ function CompareSet({ data, onSelect }) {
                     <td key={i} className={i >= 2 && i < cells.length - 1 ? "num" : undefined}>
                       {v}
                       {i === 0 && fastestKeys.has(key) ? (<>
-                        <span className="badgeFast" title="Lowest median wall time among completed executions. Task checks may not have passed">fastest completed</span>
+                        <span className="badgeFast" title="Lowest median wall time, and its slowest run beat every other leg's fastest. Task checks may not have passed">fastest completed</span>
                         <span className="fastRatio" title="Median wall time vs the slowest group in this compare set">{fastRatio.toFixed(1) + "× faster"}</span>
                       </>) : null}
                     </td>
@@ -111,6 +111,7 @@ function CompareSet({ data, onSelect }) {
           </tbody>
         </table>
       </div>
+      {fastestNote ? <p className="note">{fastestNote}</p> : null}
       <p className="note">Table values are medians over completed runs only. Failed and interrupted runs stay in the round table below and in the completed/total count, but never in a median. Completion means the execution ended successfully, not that the task passed. Each n counts recorded values for that metric. Plan usage n shows short-term/weekly observations. Click a row or a round cell to open that run.</p>
       <div className="tableWrap" style={{ marginTop: 12 }}>
         <table>
