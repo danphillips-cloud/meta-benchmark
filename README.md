@@ -54,7 +54,7 @@ The prompt is built to be checkable in one pass:
 
 `--minimal` drops reminders and personal context, so a repeat of the same command measures the same work. It doesn't make the request much smaller. Muse's own context still rides along: call 1 of this run carried 29,455 input tokens.
 
-The terminal prints each model call as it finishes, then the reply with one summary line. I recorded this run on 2026-11-01 with Muse Code 1.4.14:
+The terminal prints each model call as it finishes, then the reply with one summary line. This example is from Muse Code 1.4.14, recorded on 2026-11-01:
 
 ```text
 [meta/muse-wonder-full-1.0] wall 93969 ms · model 88464 ms · in 544500 · out 6258 · 15 call(s) · Muse plan: used under 1% of short-term limit (0→0%), under 1% of weekly limit (58→58%) · completed
@@ -93,11 +93,11 @@ Then check the work itself. The reply links the new folder. It sits in the run's
 
 ![The stopwatch built in the recorded run, with three laps](docs/images/stopwatch.jpg)
 
-This tool records execution performance. Execution completed means the process ended successfully. It does not establish that the work is correct. Optional suite checks report a separate task result.
+Completed means the process ended cleanly. It doesn't mean the stopwatch works, which is why this step has you press the buttons. A manifest can add checks on the result. See [Checking task results](#checking-task-results).
 
 ### 4. Run it again
 
-One run is an anecdote. I ran this exact prompt twice, eight minutes apart, with the same model and the same Muse version. The first run took 6 calls and 60.9 s. The second took 15 calls and 94.0 s, 54% longer for the same work. Neither number is the answer. The pattern across repeats is.
+One run is an anecdote. Two recorded runs of this exact prompt, eight minutes apart, used the same model and the same Muse version. The first run took 6 calls and 60.9 s. The second took 15 calls and 94.0 s, 54% longer for the same work. Neither number is the answer. The pattern across repeats is.
 
 ```sh
 ./run-muse --minimal "$PROMPT"
@@ -119,11 +119,11 @@ COMPARE_META=meta:muse-wonder-1.0,meta:muse-spark-1.3 ./run-muse --minimal --com
 
 The Compare page reads medians over the rounds, so one slow call cannot carry the result.
 
-Ready for a longer build? The [getting started guide](docs/getting-started.md) has five one-shot app prompts, plus a frame for writing your own.
+The [getting started guide](docs/getting-started.md) has five longer one-shot app prompts, plus a frame for writing your own.
 
 ## Reading the numbers
 
-A dash means a number wasn't recorded, or a split can't be established. Nothing is ever estimated.
+A dash means the number wasn't recorded, or the pieces of a split don't add up. Nothing is ever estimated.
 
 ### Time
 
@@ -133,7 +133,7 @@ A dash means a number wasn't recorded, or a split can't be established. Nothing 
 - **Muse** is the remaining wall time when the split is consistent. An inconsistent split shows a dash. A negative remainder is never forced to zero.
 - **Output speed** is output tokens divided by Model time, in tokens per second. It includes network waiting and the wait for the first token, so it is the speed the harness saw.
 
-These figures include the work their harness measures, such as network waiting. They do not isolate model thinking. Different harnesses can cover different work.
+Every figure is what the harness measured, network waiting included. None of them isolates model thinking, and two harnesses can count different work.
 
 ### Tokens
 
@@ -159,7 +159,7 @@ Paid runs show USD:
 - `muse-wonder-1.0` runs on the `anthropic` and `claude-code` providers are priced from their recorded tokens at [Meta's published list](https://dev.meta.ai/docs/pricing-rate-limits), as fetched on 2026-10-31, and marked "at Meta list". Input, cached and output tokens all count. Any missing count shows a dash.
 - The figure Claude Code itself attaches to `muse-*` models comes from Anthropic's list. That is not a Meta price, so it stays hidden.
 - Set your own rates with `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model. Your rates win over the list, and the cost is marked "at your rates".
-- For direct API runs, set `cached_per_mtok` for cache reads and `cache_creation_per_mtok` for cache writes when those counts are positive. A missing rate leaves the custom cost unknown. An applicable Meta list price can still supply a cost.
+- For direct API runs, set `cached_per_mtok` for cache reads and `cache_creation_per_mtok` for cache writes when those counts are positive. A missing rate leaves the cost at your rates unknown. If Meta's list has a price for the model, that still supplies one.
 - Suite cost budgets count list costs too.
 
 > **Note:** Meta publishes no per-token price for `muse-wonder-full-1.0`. Runs on it through the `anthropic` or `claude-code` providers show a dash for cost. Subscription runs on it still show plan usage. If you have your own rate for it, set it in `BENCH_PRICING`.
@@ -169,11 +169,11 @@ Paid runs show USD:
 - Medians cover completed runs only. Failures stay visible and never feed a median.
 - Each metric shows its own observation count as n. A missing measurement is left out of that metric's median. Plan usage lists short-term and weekly counts separately.
 - Times and output speed also show their lowest and highest recorded value.
-- Task checks are reported separately from completion. Completed means the process ended successfully. It does not mean the task passed.
+- Task checks sit apart from completion. Completed means the process ended cleanly. It doesn't mean the task passed.
 - Fastest completed means the lowest median wall time among completed runs, whatever the task checks say. The badge needs 3 completed runs in every leg, and the fastest leg's slowest run must beat every other leg's fastest run. When that is not met, the page says why and marks no leg.
-- The default `--compare claude` runs both models through Claude Code. Comparing the `meta` and `claude-code` providers instead measures the combined effect of model, harness, tools and context.
+- The default `--compare claude` runs both models through Claude Code. Compare the `meta` and `claude-code` providers instead and the result mixes model, harness, tools and context. The difference can't be pinned on the model alone.
 
-Repeats and medians describe those observations. They do not establish statistical significance or task quality.
+Repeats and medians describe the runs you recorded. They don't prove one model is faster in general, and they say nothing about the quality of the work.
 
 ### Imported turns
 
@@ -247,7 +247,7 @@ Each entry needs a unique `name` and either a `prompt` or a `file`, relative to 
 
 Budgets stop new entries from starting. They never kill a run in flight, because a run's cost is only known when it ends. The next entry timeout also shrinks to fit the runtime budget left. `--dry-run` prints every entry, marks paid ones, and says what the budgets count. Read it before a big paid run.
 
-`--resume` writes progress to a state file beside the manifest. Stop partway, run the same command again, and completed entries are skipped under the same suite. Failed and timed out entries run again. Add `--fresh` to ignore saved progress. Without `--resume` nothing changes from before, and no state file is written. The runner reads the manifest once at the start, so edit it only between runs.
+`--resume` writes progress to a state file beside the manifest. Stop partway, run the same command again, and completed entries are skipped under the same suite. Failed and timed out entries run again. Add `--fresh` to ignore saved progress. Without `--resume` no state file is written. The runner reads the manifest once at the start, so edit it only between runs.
 
 ## Model benchmark
 
@@ -274,7 +274,7 @@ On Runs, type part of a prompt in the filter, such as `clock shows`, and tick ru
 
 ## Checking task results
 
-Suite entries can include deterministic checks alongside the prompt:
+A manifest entry can carry checks on the result, next to the prompt:
 
 ```json
 {
@@ -288,7 +288,12 @@ Suite entries can include deterministic checks alongside the prompt:
 }
 ```
 
-All configured checks must pass. Reply checks match exact, case-sensitive text. File checks require a file inside that run's workspace. A file existence check does not check its contents or behavior. These checks establish only the conditions you configured, not general answer quality. Missing checks and executions that do not complete show not checked. Validation runs after execution timing ends. A suite exits with code 1 when configured checks fail. Resume retries entries whose checks failed or whose configured checks have changed. Historical spend still counts toward the suite budget.
+Every check must pass.
+
+- `reply_contains` matches exact, case-sensitive text in the reply.
+- `files_exist` needs the file inside that run's workspace. It proves the file exists. It doesn't open it or run it.
+
+A check proves only what you wrote in it. It isn't a grade on the answer. A run with no checks, or one that didn't complete, shows not checked. Checks run after the timing stops, so they never count in a run's time. A suite exits with code 1 when a check fails. `--resume` runs an entry again if its checks failed or changed. Money spent on earlier attempts still counts toward the suite budget.
 
 ## Providers and keys
 
