@@ -3404,6 +3404,50 @@ class VisibilityTest(unittest.TestCase):
             self.assertIsNone(data["time_split"]["muse_ms"])
 
 
+class ModelBenchmarkTest(unittest.TestCase):
+    """The shipped model benchmark, and --model on a manifest."""
+
+    def test_shipped_benchmark_loads_and_every_entry_is_checked(self):
+        manifest = run_muse.load_manifest(ROOT / "model-benchmark.json")
+        entries = manifest["entries"]
+        self.assertEqual([e["name"] for e in entries],
+                         ["ping", "format", "clock", "count", "essay",
+                          "primes-code"])
+        for entry in entries:
+            self.assertTrue(entry["checks"], entry["name"])
+            self.assertTrue(entry["minimal"], entry["name"])
+            # No model, so --model or MUSE_MODEL picks it.
+            self.assertIsNone(entry["model"], entry["name"])
+        self.assertEqual(manifest["settings"]["repeat"], 3)
+
+    def test_shipped_benchmark_answers_are_correct(self):
+        entries = {e["name"]: e for e in run_muse.load_manifest(
+            ROOT / "model-benchmark.json")["entries"]}
+        primes = sum(1 for n in range(2, 100000)
+                     if all(n % p for p in range(2, int(n ** 0.5) + 1)))
+        self.assertEqual(entries["primes-code"]["checks"]["reply_contains"],
+                         [f"Count: {primes}"])
+        count = sum(1 for n in range(1, 1001)
+                    if (n % 3 == 0 or n % 5 == 0) and n % 15)
+        self.assertEqual(entries["count"]["checks"]["reply_contains"],
+                         [f"Answer: {count}"])
+        angle = abs((3 * 30 + 15 * 0.5) - 15 * 6)
+        self.assertEqual(entries["clock"]["checks"]["reply_contains"],
+                         [f"Answer: {angle}"])
+
+    def test_model_flag_fills_only_unset_entries_of_its_provider(self):
+        entries = [
+            {"name": "a", "provider": "meta", "model": None},
+            {"name": "b", "provider": "meta", "model": "muse-spark-1.2"},
+            {"name": "c", "provider": "claude-code", "model": None},
+        ]
+        run_muse.apply_suite_model(entries, "meta", "muse-spark-1.3")
+        self.assertEqual([e["model"] for e in entries],
+                         ["muse-spark-1.3", "muse-spark-1.2", None])
+        run_muse.apply_suite_model(entries, "meta", None)
+        self.assertEqual(entries[2]["model"], None)
+
+
 class RetroTest(unittest.TestCase):
     """Ambient retro: backfill closed turns from logs already on disk."""
 

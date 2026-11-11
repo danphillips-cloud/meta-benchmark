@@ -1,0 +1,44 @@
+{
+  "settings": {
+    "repeat": 3,
+    "timeout_seconds": 600
+  },
+  "prompts": [
+    {
+      "name": "ping",
+      "prompt": "Reply with exactly: pong",
+      "minimal": true,
+      "checks": {"reply_contains": ["pong"]}
+    },
+    {
+      "name": "format",
+      "prompt": "List the first 10 prime numbers on one line, separated by commas with no spaces. Output nothing else.",
+      "minimal": true,
+      "checks": {"reply_contains": ["2,3,5,7,11,13,17,19,23,29"]}
+    },
+    {
+      "name": "clock",
+      "prompt": "A clock shows 3:15. What is the smaller angle between the hour and minute hands, in degrees? End with a line in exactly this form, where N is the number: Answer: N",
+      "minimal": true,
+      "checks": {"reply_contains": ["Answer: 7.5"]}
+    },
+    {
+      "name": "count",
+      "prompt": "How many integers from 1 to 1000 are divisible by 3 or 5, but not by 15? End with a line in exactly this form, where N is the number: Answer: N",
+      "minimal": true,
+      "checks": {"reply_contains": ["Answer: 401"]}
+    },
+    {
+      "name": "essay",
+      "prompt": "Explain TCP congestion control in about 1200 words. Use exactly these three headings, each on its own line: ## Slow start, ## Congestion avoidance, ## Fast recovery. Plain Markdown only.",
+      "minimal": true,
+      "checks": {"reply_contains": ["## Slow start", "## Congestion avoidance", "## Fast recovery"]}
+    },
+    {
+      "name": "primes-code",
+      "prompt": "Write primes.py in the current folder. It must print how many prime numbers are below 100000. Run it. End your reply with a line in exactly this form, digits only with no commas: Count: N",
+      "minimal": true,
+      "checks": {"reply_contains": ["Count: 9592"], "files_exist": ["primes.py"]}
+    }
+  ]
+}

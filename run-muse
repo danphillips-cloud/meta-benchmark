@@ -1701,6 +1701,19 @@ def _suite_entries(data, path):
     return entries
 
 
+def apply_suite_model(entries, provider, model):
+    """--model fills in suite entries that name no model.
+
+    Lets one manifest run against several models. An entry with its
+    own model keeps it. An entry for another provider is left alone,
+    because the flag's model belongs to the flag's provider."""
+    if not model:
+        return
+    for entry in entries:
+        if entry.get("model") is None and entry["provider"] == provider:
+            entry["model"] = model
+
+
 def _positive_number(value, key, whole=False):
     if value is None:
         return None
@@ -2300,6 +2313,7 @@ def main():
                        or args.watch is not None):
         parser.error("--retro takes no prompt, --compare or --watch")
     mode = args.compare
+    suite_model = args.model
     args.model = args.model or default_model(args.provider)
     repeat = args.repeat if args.repeat is not None else 1
     if (mode is not None or args.suite is not None) and repeat < 1:
@@ -2315,6 +2329,7 @@ def main():
                 load_state(args.suite)
         except ValueError as e:
             parser.error(str(e))
+        apply_suite_model(manifest["entries"], args.provider, suite_model)
         if args.dry_run:
             return run_suite(args.suite, args.timeout, args.repeat,
                              dry_run=True, resume=args.resume,
