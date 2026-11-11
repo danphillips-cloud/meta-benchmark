@@ -104,8 +104,10 @@ class LogParsingFixTest(unittest.TestCase):
         log = run_muse.muse_log
         ordered = HERE / "fixtures" / "session-retry.jsonl"
         shuffled = HERE / "fixtures" / "session-out-of-order.jsonl"
-        ordered_calls, ordered_tl = log.live_calls_from_log(ordered)
-        shuffled_calls, shuffled_tl = log.live_calls_from_log(shuffled)
+        ordered_calls, ordered_tl = log.live_calls_from_records(
+            log.read_records(ordered))
+        shuffled_calls, shuffled_tl = log.live_calls_from_records(
+            log.read_records(shuffled))
         self.assertEqual(shuffled_calls, ordered_calls)
         self.assertEqual(shuffled_tl, ordered_tl)
         self.assertTrue(all(t["duration_ms"] >= 0

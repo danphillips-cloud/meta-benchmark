@@ -394,7 +394,15 @@ function AppShell() {
                   <li><strong>Why was this slow</strong> ranks one run from recorded data only. Buckets show where the wall went. Findings name what stands out inside them, like a stall inside model time. Thresholds only choose what surfaces. Every number is recorded, and Watch links open Replay at that moment.</li>
                 </ul>
                 <p><code>./run-muse</code> prompt loop · <code>./run-muse "hi"</code> single run · <code>./run-muse --compare meta "hi"</code> one prompt, four Meta models · <code>python3 tests/test_tool.py</code> tests</p>
-                <p><a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a> · <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a></p>
+                <p>
+                  <a href="https://meta-models.github.io/muse-code-sdk/1.4/" target="_blank" rel="noopener">Muse SDK docs</a>
+                  {" · "}
+                  <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/notifications/session-tokenusage/" target="_blank" rel="noopener">session/tokenUsage</a>
+                  {" · "}
+                  <a href="https://meta-models.github.io/muse-code-sdk/1.4/generated/msp/types/tokenusage/" target="_blank" rel="noopener">TokenUsage fields</a>
+                  {" · "}
+                  <a href="https://meta-models.github.io/muse-code-sdk/1.4/guides/msp-concepts/" target="_blank" rel="noopener">MSP concepts</a>
+                </p>
               </div>
             </details>
             <p className="foot">meta-benchmark is an unofficial local tool. It is not made by, or affiliated with, Meta. All run data stays on this machine.</p>

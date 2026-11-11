@@ -317,9 +317,6 @@ export const fmtDur = (n) => {
   return p[0] + p[1];
 };
 
-export const fmtDurExact = (n) =>
-  n == null ? "–" : (Math.abs(n) >= 1000 ? fmtDur(n) + " (" + fmtMs(n) + " ms)" : fmtDur(n));
-
 export const localTime = (iso) => {
   if (!iso) return "";
   const dt = new Date(iso);

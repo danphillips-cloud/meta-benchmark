@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import {
-  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, allowanceHoverText, canCompare, comparisonHref, selectionHint, toggleAllIds, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
+  DID_NOT_COMPLETE, RUNS_PAGE_SIZE, STATUSES, allowanceHoverText, canCompare, comparisonHref, selectionHint, toggleAllIds, buildRunsQuery, compareSessions, costReason, costUnit, filterOptions, filterSessions,
   fmt, fmtAllowance, fmtCost, fmtDur, legKey, localTime, nextRunsSort, parseRunsQuery, planUsageTotalText, runCostText, runMode, shortText, visibleCost,
 } from "../format.js";
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
@@ -114,7 +114,8 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         <>
           <label htmlFor="statusFilter">Status</label>
           <select id="statusFilter" value={state.status} onChange={(e) => update({ status: e.target.value })}>
-            <option value="">All</option><option value="completed">completed</option><option value="running">running</option><option value="failed">failed</option><option value="interrupted">interrupted</option><option value="timeout">timeout</option><option value="needs_approval">needs_approval</option>
+            <option value="">All</option>
+            {STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
           </select>
           <label htmlFor="modeFilter">Mode</label>
           <select id="modeFilter" value={state.mode} onChange={(e) => update({ mode: e.target.value })}>
