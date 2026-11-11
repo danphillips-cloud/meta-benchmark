@@ -646,6 +646,16 @@ def _live_watch(session_id, seen, label=None):
         if not path:
             return None
         seen["path"] = path
+    try:
+        stamp = path.stat()
+    except OSError:
+        seen.pop("path", None)
+        seen.pop("log_version", None)
+        return None
+    # Stat before reading so an append during this poll triggers another read.
+    version = (stamp.st_ino, stamp.st_size, stamp.st_mtime_ns)
+    if seen.get("log_version") == version:
+        return seen.get("verdict")
     prefix = f"{label} · " if label else ""
     records = muse_log.read_records(path)
     calls = muse_log.calls_from_records(records)
@@ -655,8 +665,14 @@ def _live_watch(session_id, seen, label=None):
             print(prefix + format_call_line(
                 seen["calls"], calls[seen["calls"] - 1]), flush=True)
     state = muse_log.live_state(records)
+    # read_records also returns [] on a transient read error. Retry a
+    # nonempty file in that case, even if the next stat is unchanged.
+    if records or stamp.st_size == 0:
+        seen["log_version"] = version
+    seen["verdict"] = None
     if state["state"] == "waiting for approval":
-        return ("needs_approval", state.get("tool"))
+        seen["verdict"] = ("needs_approval", state.get("tool"))
+        return seen["verdict"]
     text = format_live_line(state)
     if text != seen.get("live"):
         seen["live"] = text

@@ -2905,6 +2905,55 @@ class VisibilityTest(unittest.TestCase):
     def _records(self, name):
         return run_muse.muse_log.read_records(HERE / "fixtures" / name)
 
+    def test_muse_watcher_skips_unchanged_log_and_detects_updates(self):
+        approval = self._records("session-approval.jsonl")[-1]
+        parser = run_muse.muse_log
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "session.jsonl"
+            path.write_text(json.dumps(SESSION_RECORD) + "\n")
+            seen = {"path": path, "calls": 0}
+            with mock.patch.object(parser, "read_records", wraps=parser.read_records) as read, \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                for _ in range(3):
+                    self.assertIsNone(run_muse._live_watch("session", seen))
+                self.assertEqual(read.call_count, 1)
+                with path.open("a") as log:
+                    log.write(json.dumps(SESSION_RECORD) + "\n")
+                    log.write(json.dumps(approval) + "\n")
+                for _ in range(2):
+                    self.assertEqual(run_muse._live_watch("session", seen),
+                                     ("needs_approval", "FakeTool"))
+                self.assertEqual(read.call_count, 2)
+                self.assertEqual(output.getvalue().count("call 2 ·"), 1)
+
+    def test_muse_watcher_retries_read_error_without_an_append(self):
+        path = HERE / "fixtures" / "session-approval.jsonl"
+        seen = {"path": path, "calls": 0}
+        with mock.patch.object(Path, "read_text", side_effect=OSError("temporary read failure")), \
+                mock.patch("sys.stdout", new_callable=io.StringIO):
+            self.assertIsNone(run_muse._live_watch("session", seen))
+        self.assertEqual(run_muse._live_watch("session", seen), ("needs_approval", "FakeTool"))
+
+    def test_muse_watcher_rediscovers_log_after_deletion(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            old = root / "session.jsonl"
+            old.write_bytes((HERE / "fixtures" / "session-approval.jsonl").read_bytes())
+            seen = {"path": old, "calls": 0}
+            self.assertEqual(run_muse._live_watch("session", seen), ("needs_approval", "FakeTool"))
+            old.unlink()
+            self.assertIsNone(run_muse._live_watch("session", seen))
+            self.assertNotIn("path", seen)
+            self.assertNotIn("log_version", seen)
+            new = root / "session" / "session.jsonl"
+            new.parent.mkdir()
+            new.write_text(json.dumps(SESSION_RECORD) + "\n")
+            with mock.patch.dict(os.environ, {"MUSE_SESSIONS_DIR": td}), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertIsNone(run_muse._live_watch("session", seen))
+                self.assertEqual(seen["path"], new)
+                self.assertIn("call 1 ·", output.getvalue())
+
     def test_metadata_version_from_build_field(self):
         meta = run_muse.muse_log.session_metadata(
             self._records("session-turns.jsonl"))
