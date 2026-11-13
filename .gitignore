@@ -6,6 +6,8 @@ muse-runs/
 .docs/
 __pycache__/
 frontend/node_modules/
+# Temp bundle from the view tests, removed after each run.
+frontend/.view-tests-*/
 .env
 *.pyc
 .DS_Store

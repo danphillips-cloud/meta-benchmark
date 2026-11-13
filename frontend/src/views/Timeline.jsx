@@ -33,7 +33,7 @@ export default function Timeline({ data }) {
           ) : null}
         </div>
         {showChart ? <PerCallChart events={events} provider={data.provider} /> : null}
-        {!showChart ? <p className="note">{data.provider === "claude-code" ? "Claude Code does not report per-call time, so there is no per-call chart for this run. Its model total (reported API time) is on Overview." : "No model calls yet."}</p> : null}
+        {!showChart ? <p className="note">{data.provider === "codex" ? "Codex does not report per-call model timing, so there is no per-call chart for this run." : data.provider === "claude-code" ? "Claude Code does not report per-call time, so there is no per-call chart for this run. Its model total (reported API time) is on Overview." : "No model calls yet."}</p> : null}
         <div className="statlets">
           <div className="statlet"><span>{"Model time, last call" + (data.provider ? " (" + data.provider + ")" : "")}</span><DurValue value={latest ? latest["wire_ms"] : null} /></div>
           <div className="statlet"><span>Slowest call</span><DurValue value={wires.length ? Math.max(...wires) : null} /></div>

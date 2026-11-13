@@ -23,6 +23,8 @@ To see the Meta models attempt the same build, add the compare flag. It runs fou
 
 Compare mode runs each model in its own workspace. The Compare page lines up the recorded times. Pick a run there to find its files under that run folder in `muse-runs/`.
 
+To put Meta, OpenAI and Claude on the same prompt, use the [three-way comparison guide](openai.md).
+
 ## What makes these prompts work
 
 Every prompt below uses the same shape. It names the type of app and who it is for. It lists three to five features and names the main screens. It gives one clear design direction. It locks the technical scope to plain files that run offline. It asks for syntax checks before the final reply.

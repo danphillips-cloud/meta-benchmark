@@ -89,7 +89,7 @@ function CompareSet({ data, onSelect }) {
                 window: metricSummary(runs, (s) => s.allowance_delta?.window),
                 weekly: metricSummary(runs, (s) => s.allowance_delta?.weekly),
               };
-              const cost = usd.median != null ? fmtCost(usd.median) + " (n=" + usd.n + ")" : fmtAllowance({
+              const cost = all[0]?.provider === "codex" ? "–" : usd.median != null ? fmtCost(usd.median) + " (n=" + usd.n + ")" : fmtAllowance({
                 window: allowMedian.window.median, weekly: allowMedian.weekly.median,
               }, {
                 window: allowMedian.window.median === 0, weekly: allowMedian.weekly.median === 0,

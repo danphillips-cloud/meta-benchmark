@@ -1632,3 +1632,23 @@ test("deltaTone colours only metrics with a better direction", () => {
   assert.equal(deltaTone(null, 100, "higher"), "");
   assert.equal(deltaTone(100, 200, undefined), "");
 });
+
+test("Codex totals do not imply model timing, call counts or Muse allowance", () => {
+  const codex = S({ provider: "codex", model: "openai-test", calls: null,
+    model_ms: null, overhead_ms: null, input_tokens: 200, output_tokens: 30,
+    cost_usd: null });
+  assert.equal(costUnit(codex), "unknown");
+  assert.equal(runCostText(codex), "–");
+  assert.equal(costReason(codex), "Codex cost is not recorded");
+  assert.equal(visibleCost({ ...codex, cost_usd: 4, cost_source: "reported" }), null);
+  assert.equal(outputSpeed(codex), null);
+  const facts = selectedRunFacts({ selected: "r1", provider: "codex",
+    sessions: [codex], events: [], time_split: {} });
+  assert.equal(facts.wall, 100);
+  assert.equal(facts.modelTotal, null);
+  assert.equal(facts.diag, null);
+  assert.equal(metricSummary([codex], (s) => s.calls).median, null);
+  const legs = [S({run_id: "meta"}), codex, S({run_id: "claude", provider: "claude-code"})];
+  assert.equal(canCompare(legs.length), true);
+  assert.equal(metricSummary(legs.filter((s) => s.provider === "codex"), (s) => s.input_tokens).median, 200);
+});

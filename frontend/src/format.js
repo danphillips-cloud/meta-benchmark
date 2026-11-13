@@ -66,6 +66,7 @@ export const costNote = (s) => {
 export const costUnit = (s) => {
   if (!s) return "usd";
   if (s.provider === "anthropic" || s.provider === "claude-code") return "usd";
+  if (s.provider === "codex") return "unknown";
   if (s.provider === "echo") return "none";
   return "allowance";
 };
@@ -258,6 +259,7 @@ export const planDeltaText = (a, b) => {
 // figure exists, a short reason when the cell is a dash.
 export const costReason = (s, limit) => {
   if (!s) return "No cost recorded";
+  if (s.provider === "codex") return "Codex cost is not recorded";
   if (visibleCost(s) != null) {
     if (s.cost_source === "list") {
       return "At Meta published list"
