@@ -4211,5 +4211,391 @@ class ReportingAccuracyTest(unittest.TestCase):
                 run_muse.parse_checks(value)
 
 
+class CodexTest(unittest.TestCase):
+    """Offline contract tests. Captured-run regression is required before merge."""
+
+    @staticmethod
+    def events(*extra):
+        return [(i, json.dumps(e)) for i, e in enumerate([
+            {"type": "thread.started", "thread_id": "codex-test-thread"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {"type": "command_execution",
+                "id": "tool", "exit_code": 0}},
+            {"type": "item.completed", "item": {"type": "agent_message",
+                "text": "pong"}},
+            *extra,
+        ])]
+
+    @staticmethod
+    def completion(**usage):
+        return {"type": "turn.completed", "usage": usage}
+
+    def test_captured_codex_exec_stream_matches_observed_run(self):
+        # Independently inspected actual output from codex-cli
+        # 0.167.0-alpha.4.1 on 2026-11-12. Only thread_id is sanitized.
+        # Keep cache_write_input_tokens in the fixture even though v1
+        # does not consume it. It must not be added to total input.
+        path = HERE / "fixtures" / "codex-exec-captured.jsonl"
+        lines = [(None, line) for line in path.read_text().splitlines()]
+        with tempfile.TemporaryDirectory() as td:
+            result = self._codex_result(td, lines)
+        self.assertEqual(run_muse.run_status(result), "completed")
+        self.assertEqual(result["reply"], "pong")
+        self.assertEqual(result["session_id"], "00000000-0000-4000-8000-000000000001")
+        self.assertEqual(result["totals"], {"input_tokens": 11640,
+            "cached_tokens": 9600, "output_tokens": 5, "reasoning_tokens": 0})
+        self.assertIsNone(result["error_override"])
+        self.assertEqual(result["calls"], [])
+        self.assertEqual(result["timeline"], [])
+        self.assertIsNone(result.get("api_ms"))
+        self.assertIsNone(result.get("cost_usd"))
+
+    def test_terminal_usage_is_not_a_model_call(self):
+        result = run_muse.codex_stream.parse_codex_stream(self.events(
+            self.completion(input_tokens=200, cached_input_tokens=150,
+                            output_tokens=30, reasoning_output_tokens=10)))
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["reply"], "pong")
+        self.assertEqual(result["session_id"], "codex-test-thread")
+        self.assertEqual(result["totals"], {"input_tokens": 200,
+            "cached_tokens": 150, "output_tokens": 30, "reasoning_tokens": 10})
+        self.assertEqual(result["calls"], [])
+        self.assertEqual(result["timeline"], [])
+        self.assertIsNone(result["usage_model"])
+
+    def test_missing_counts_and_exact_zero_are_distinct(self):
+        parse = run_muse.codex_stream.parse_codex_stream
+        result = parse(self.events(self.completion(input_tokens=0, output_tokens=7)))
+        self.assertEqual(result["totals"]["input_tokens"], 0)
+        self.assertIsNone(result["totals"]["cached_tokens"])
+        self.assertIsNone(result["totals"]["reasoning_tokens"])
+        for bad in (None, True, -1, "3", 1.5):
+            result = parse(self.events(self.completion(input_tokens=bad)))
+            self.assertIsNone(result["totals"]["input_tokens"])
+        result = parse([(0, "not json"), (1, "[]"), (2, "null")])
+        self.assertFalse(result["completed"])
+        self.assertIsNone(result["totals"])
+
+    def test_terminal_outcome_and_final_reply(self):
+        parse = run_muse.codex_stream.parse_codex_stream
+        failed = {"type": "turn.failed", "error": {"message": "denied"}}
+        result = parse(self.events(failed))
+        self.assertFalse(result["completed"])
+        self.assertEqual(result["error_override"], "denied")
+        self.assertFalse(parse(self.events())["completed"])
+        self.assertFalse(parse(self.events(self.completion(),
+                                          {"type": "turn.started"}))["completed"])
+        result = parse(self.events({"type": "error", "message": "retrying"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": ""}},
+            self.completion()))
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["reply"], "")
+        self.assertIsNone(result["error_override"])
+        self.assertFalse(parse(self.events(self.completion(), failed))["completed"])
+
+    def test_login_mode_is_conservative_and_never_copies_status(self):
+        for text, code, expected in (
+                ("Logged in using ChatGPT", 0, "subscription"),
+                ("Logged in using an API key - synthetic-key", 0, "api"),
+                ("Logged in using ChatGPT", 1, "unknown"),
+                ("future format", 0, "unknown")):
+            response = mock.Mock(returncode=code, stdout="", stderr=text)
+            with mock.patch.object(run_muse.subprocess, "run", return_value=response) as runner:
+                self.assertEqual(run_muse.codex_billing_mode({}), expected)
+                self.assertEqual(runner.call_args.args[0], ["codex", "login", "status"])
+        with mock.patch.object(run_muse.subprocess, "run", side_effect=OSError):
+            self.assertEqual(run_muse.codex_billing_mode({}), "unknown")
+
+    def test_missing_cli_and_missing_model_never_start_process(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(run_muse, "run_process") as runner:
+            result = run_muse.run_codex("hi", Path(td), None, True, 3)
+            self.assertIn("requires --model", result["error_override"])
+            with mock.patch.object(run_muse.shutil, "which", return_value=None):
+                result = run_muse.run_codex("hi", Path(td), "test-model", True, 3)
+            self.assertIn("not installed", result["error_override"])
+            runner.assert_not_called()
+
+    def _codex_result(self, td, lines, **overrides):
+        proc = dict(wall_ms=123, exit_code=0, timed_out=False, interrupted=False,
+                    lines=lines)
+        proc.update(overrides)
+        with mock.patch.object(run_muse.shutil, "which", return_value="/test/codex"), \
+                mock.patch.object(run_muse, "codex_billing_mode", return_value="unknown"), \
+                mock.patch.object(run_muse, "run_process", return_value=proc) as runner:
+            import threading
+            stop = threading.Event()
+            result = run_muse.run_codex("pong prompt", Path(td), "test-model", True, 42, stop)
+        self.assertEqual(runner.call_args.kwargs["input_text"], "pong prompt")
+        self.assertIs(runner.call_args.kwargs["stop_event"], stop)
+        self.assertEqual(runner.call_args.args[4], 42)
+        cmd = runner.call_args.args[0]
+        self.assertIn("--ignore-user-config", cmd)
+        self.assertIn("--strict-config", cmd)
+        self.assertIn("project_doc_max_bytes=0", cmd)
+        self.assertIn("memories.use_memories=false", cmd)
+        self.assertIn("skills.include_instructions=false", cmd)
+        self.assertIn("--ephemeral", cmd)
+        self.assertIn('model_provider="openai"', cmd)
+        self.assertNotIn("--ignore-rules", cmd)
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+        self.assertEqual((Path(td) / "prompt.md").read_text(), "pong prompt")
+        self.assertTrue((Path(td) / "workspace").is_dir())
+        return result
+
+    def test_process_completion_timeout_and_interrupt(self):
+        for overrides, expected in (({}, "completed"),
+                ({"timed_out": True, "exit_code": -15}, "timeout"),
+                ({"interrupted": True, "exit_code": -15}, "interrupted")):
+            with tempfile.TemporaryDirectory() as td:
+                result = self._codex_result(td, self.events(self.completion(input_tokens=4)),
+                                            **overrides)
+                self.assertEqual(run_muse.run_status(result), expected)
+        with tempfile.TemporaryDirectory() as td:
+            result = self._codex_result(td, self.events())
+            self.assertEqual(run_muse.run_status(result), "failed")
+            self.assertIn("without turn.completed", result["error_override"])
+
+    def test_openai_config_never_reaches_the_muse_command(self):
+        def fake_process(cmd, cwd, env, path, timeout, **kwargs):
+            path.write_text("")
+            self.assertNotIn("-c", cmd)
+            self.assertNotIn('model_provider="openai"', cmd)
+            self.assertIn("--disable-reminders", cmd)
+            self.assertEqual(cmd[cmd.index("--provider") + 1], "meta")
+            return dict(wall_ms=1, exit_code=0, timed_out=False, interrupted=False)
+
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(run_muse, "run_process", side_effect=fake_process), \
+                mock.patch.object(run_muse, "harvest_calls", return_value=[{"duration_ms": 1}]), \
+                mock.patch.object(run_muse, "build_timeline", return_value=[]):
+            run_muse.run_muse_exec("hi", Path(td), "meta", "muse-test", True, 42)
+
+    def test_environment_and_provider_policy(self):
+        with mock.patch.dict(os.environ, {key: "synthetic" for key in
+                ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")}):
+            env = run_muse._clean_env()
+            for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"):
+                self.assertNotIn(key, env)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(run_muse.default_model("codex"))
+            self.assertEqual(run_muse.parse_compare_models("codex"), [("codex", None)])
+        with mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": "test-model"}):
+            self.assertEqual(run_muse.default_model("codex"), "test-model")
+        self.assertFalse(run_muse.is_muse("codex"))
+        self.assertEqual(run_muse.default_timeout("codex"), 300)
+        self.assertEqual(run_muse._priced_text({"provider": "codex", "model": "x"}, {}),
+                         "cost not recorded (subscription or API login)")
+
+    def test_codex_version_is_cached_and_never_calls_muse(self):
+        with mock.patch.object(run_muse, "_harness_version_cache", {}), \
+                mock.patch.object(run_muse.subprocess, "run", return_value=mock.Mock(
+                    returncode=0, stdout="codex-cli test\n")) as runner:
+            self.assertEqual(run_muse.harness_version("codex"), "codex-cli test")
+            self.assertEqual(run_muse.harness_version("codex"), "codex-cli test")
+            self.assertEqual(runner.call_count, 1)
+            self.assertEqual(runner.call_args.args[0], ["codex", "--version"])
+
+    def test_report_and_page_keep_totals_without_muse_log_lookup(self):
+        parsed = run_muse.codex_stream.parse_codex_stream(self.events(
+            self.completion(input_tokens=200, output_tokens=30)))
+        result = run_muse._empty_result("fake codex", exit_code=0, wall_ms=123,
+                                        billing_mode="subscription", **parsed)
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(run_muse, "RUNS", Path(td)), \
+                mock.patch.object(run_muse, "run_codex", return_value=result), \
+                mock.patch.object(run_muse, "harness_version", return_value="codex test"), \
+                mock.patch.object(run_muse, "_capture_allowance_start", side_effect=AssertionError), \
+                mock.patch.object(run_muse.muse_log, "session_log_path", side_effect=AssertionError), \
+                mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                mock.patch.object(sys, "stdout", io.StringIO()) as out:
+            report = run_muse.run_prompt("ping", provider="codex", model="test-model", minimal=True,
+                checks={"reply_contains": ["pong"]},
+                pricing={"*": {"input_per_mtok": 9, "output_per_mtok": 9}})
+            self.assertEqual(report["status"], "completed")
+            self.assertEqual(report["task_validation"]["status"], "passed")
+            self.assertEqual(report["billing_mode"], "subscription")
+            self.assertIsNone(report["cost_usd"])
+            self.assertIsNone(report["allowance_start"])
+            self.assertFalse(report["metrics_unavailable"])
+            self.assertIn("– call(s)", out.getvalue())
+            with mock.patch.object(server, "INDEX", Path(td) / "index.jsonl"):
+                data = server.read_logs(report["run_id"])
+                row = data["sessions"][0]
+                self.assertEqual(row["input_tokens"], 200)
+                self.assertEqual(row["output_tokens"], 30)
+                self.assertIsNone(row["model_ms"])
+                self.assertIsNone(row["calls"])
+                self.assertIsNone(row["overhead_ms"])
+                self.assertIsNone(row["cost_usd"])
+                self.assertEqual(data["reply"], "pong")
+                self.assertEqual(data["events"], [])
+                self.assertEqual(data["timeline"], [])
+                self.assertEqual(data["xray"], [])
+                self.assertEqual(data["errors"], [])
+                for status in ("completed", "running"):
+                    run = dict(report, status=status)
+                    self.assertIsNone(server._run_split(run)["muse_ms"])
+                    with mock.patch.object(server, "load_runs", return_value=[run]):
+                        server.read_logs(report["run_id"])
+
+    def test_custom_three_way_rounds_use_the_same_prompt(self):
+        legs = "meta:muse-test,codex:openai-test,claude-code:claude-test"
+        with mock.patch.dict(os.environ, {"COMPARE_MODELS": legs}), \
+                mock.patch.object(run_muse, "run_prompt", return_value={"status": "completed"}) as runner, \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            self.assertEqual(run_muse.run_compare("same prompt", "custom", True, 42, 2), 0)
+            self.assertEqual([c.kwargs["provider"] for c in runner.call_args_list],
+                             ["meta", "codex", "claude-code", "claude-code", "codex", "meta"])
+            self.assertTrue(all(c.args == ("same prompt",) for c in runner.call_args_list))
+            self.assertEqual(len({c.kwargs["comparison_id"] for c in runner.call_args_list}), 1)
+            runner.reset_mock()
+            self.assertEqual(run_muse.run_compare("same prompt", "custom", True, 42, 1, race=True), 0)
+            self.assertEqual(runner.call_count, 3)
+            self.assertTrue(all(c.kwargs["stop_event"] is not None for c in runner.call_args_list))
+
+    def test_codex_suite_dry_run_and_resume_use_the_protected_loader(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(run_muse, "harness_version", return_value="codex test"), \
+                mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                mock.patch.object(sys, "stdout", io.StringIO()):
+            path = Path(td) / "codex-suite.json"
+            path.write_text(json.dumps({"settings": {"repeat": 1}, "prompts": [
+                {"name": "codex", "provider": "codex", "model": "test-model",
+                 "prompt": "ping", "timeout_seconds": 42, "minimal": True,
+                 "checks": {"reply_contains": ["pong"]}}]}))
+            report = {"status": "completed", "run_id": "test", "wall_ms": 12,
+                      "model": "test-model", "task_validation": {"status": "passed"}}
+            with mock.patch.object(run_muse, "run_prompt", return_value=report) as runner:
+                self.assertEqual(run_muse.run_suite(path, dry_run=True), 0)
+                runner.assert_not_called()
+                self.assertEqual(run_muse.run_suite(path, resume=True), 0)
+                self.assertEqual(runner.call_args.kwargs["timeout"], 42)
+                self.assertEqual(runner.call_args.kwargs["provider"], "codex")
+                self.assertEqual(run_muse.run_suite(path, resume=True), 0)
+                self.assertEqual(runner.call_count, 1)
+
+
+class CodexReviewTest(unittest.TestCase):
+    def test_missing_model_rejected_before_side_effects(self):
+        with mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": ""}), \
+                mock.patch.object(run_muse, "new_run_dir", side_effect=AssertionError), \
+                mock.patch.object(run_muse, "run_codex", side_effect=AssertionError):
+            for model in (None, "", "   "):
+                with self.subTest(model=model), self.assertRaisesRegex(ValueError, "requires --model"):
+                    run_muse.run_prompt("hi", provider="codex", model=model)
+        with mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": " test-model "}):
+            self.assertEqual(run_muse.resolve_model("codex"), "test-model")
+
+    def test_cli_missing_model_starts_no_ui_or_comparison_leg(self):
+        for args in (["--provider", "codex", "hi"], ["--compare", "custom", "hi"]):
+            with self.subTest(args=args), \
+                    mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": "", "COMPARE_MODELS": "meta:test,codex"}), \
+                    mock.patch.object(sys, "argv", ["run-muse"] + args), \
+                    mock.patch.object(run_muse, "ensure_ui", side_effect=AssertionError), \
+                    mock.patch.object(run_muse, "run_prompt", side_effect=AssertionError), \
+                    mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                    mock.patch.object(sys, "stderr", io.StringIO()), \
+                    self.assertRaises(SystemExit) as error:
+                run_muse.main()
+            self.assertEqual(error.exception.code, 2)
+        with mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": "", "COMPARE_MODELS": "meta:test,codex"}), \
+                mock.patch.object(run_muse, "run_prompt", side_effect=AssertionError), \
+                self.assertRaisesRegex(ValueError, "requires --model"):
+            run_muse.run_compare("hi", "custom", True, None, 1)
+
+    @staticmethod
+    def suite(root, prompts, **settings):
+        path = root / "review-suite.json"
+        path.write_text(json.dumps({"settings": dict({"repeat": 1}, **settings),
+            "prompts": [dict({"name": str(i), "prompt": "ping", "provider": "codex",
+                              "model": "test-model"}, **p) for i, p in enumerate(prompts)]}))
+        return path
+
+    def test_missing_suite_model_rejected_in_dry_run_and_execution(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": ""}), \
+                mock.patch.object(run_muse.subprocess, "run", side_effect=AssertionError), \
+                mock.patch.object(run_muse, "run_prompt", side_effect=AssertionError), \
+                mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                mock.patch.object(sys, "stdout", io.StringIO()) as output:
+            path = self.suite(Path(td), [{"model": None}])
+            for dry_run in (True, False):
+                with self.assertRaisesRegex(ValueError, "requires --model"):
+                    run_muse.run_suite(path, dry_run=dry_run, resume=True)
+            self.assertEqual(output.getvalue(), "")
+            self.assertFalse(run_muse.suite_state_path(path).exists())
+            with mock.patch.object(sys, "argv", ["run-muse", "--suite", str(path), "--dry-run"]), \
+                    mock.patch.object(run_muse, "ensure_ui", side_effect=AssertionError), \
+                    mock.patch.object(sys, "stderr", io.StringIO()), \
+                    self.assertRaises(SystemExit) as error:
+                run_muse.main()
+            self.assertEqual(error.exception.code, 2)
+
+    def test_dry_run_warns_without_login_or_model_calls(self):
+        cases = [
+            ([{}, {}], 2, True, True),
+            ([{}, {"provider": "anthropic", "model": "claude-test"}], 2, True, True),
+            ([{}], 1, False, True),
+            ([{"skip": True, "model": None}], 2, False, False),
+        ]
+        for prompts, concurrency, parallel, budget in cases:
+            with self.subTest(prompts=prompts, concurrency=concurrency), \
+                    tempfile.TemporaryDirectory() as td, \
+                    mock.patch.dict(os.environ, {"BENCH_CODEX_MODEL": ""}), \
+                    mock.patch.object(run_muse.subprocess, "run", side_effect=AssertionError), \
+                    mock.patch.object(run_muse, "run_prompt", side_effect=AssertionError), \
+                    mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                    mock.patch.object(sys, "stdout", io.StringIO()) as output:
+                path = self.suite(Path(td), prompts, concurrency=concurrency, max_cost_usd=1)
+                self.assertEqual(run_muse.run_suite(path, dry_run=True, resume=True), 0)
+                text = output.getvalue()
+                self.assertIn("MAY BE PAID", text)
+                self.assertEqual("API-key logins spend in parallel" in text, parallel)
+                self.assertEqual("cannot cap unrecorded charges" in text, budget)
+                self.assertNotIn("codex/None", text)
+                self.assertFalse(run_muse.suite_state_path(path).exists())
+                if any(p.get("provider") == "anthropic" for p in prompts):
+                    self.assertIn(" · PAID", text)
+        self.assertNotIn("codex", run_muse.PAID_PROVIDERS)
+
+    def test_execution_warns_that_cost_budget_does_not_cover_codex(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(run_muse, "RUNS", Path(td) / "runs"), \
+                mock.patch.object(run_muse, "harness_version", return_value="codex test"), \
+                mock.patch.object(run_muse, "env_pricing", return_value={}), \
+                mock.patch.object(run_muse, "run_prompt", return_value={"status": "completed", "wall_ms": 1}), \
+                mock.patch.object(sys, "stdout", io.StringIO()) as output:
+            path = self.suite(Path(td), [{}], max_cost_usd=1)
+            self.assertEqual(run_muse.run_suite(path), 0)
+            self.assertIn("cannot cap unrecorded charges", output.getvalue())
+
+    def test_stderr_reason_beats_generic_missing_terminal_message(self):
+        for events, expected in (([], "Error: startup was denied"),
+                ([(0, json.dumps({"type": "turn.failed", "error": {"message": "structured failure"}}))],
+                 "structured failure")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as td, \
+                    mock.patch.object(run_muse.shutil, "which", return_value="/test/codex"), \
+                    mock.patch.object(run_muse, "codex_billing_mode", return_value="unknown"), \
+                    mock.patch.object(run_muse, "run_process", return_value={"lines": events,
+                        "wall_ms": 1, "exit_code": 1, "timed_out": False, "interrupted": False}):
+                (Path(td) / "stderr.log").write_text("A warning\nError: startup was denied\n")
+                result = run_muse.run_codex("ping", Path(td), "test-model", True, 42)
+                self.assertEqual(result["error_override"], expected)
+                self.assertNotIn("completed", result)
+        self.assertNotIn("reasoning_effort", run_muse.BASE_REPORT)
+
+    def test_chatgpt_login_whitespace_and_suffixes(self):
+        for text, expected in (("  Logged   in using ChatGPT  ", "subscription"),
+                ("Logged in using ChatGPT (account details)", "subscription"),
+                ("Logged in using ChatGPT - subscription", "subscription"),
+                ("Logged in using ChatGPT. Account details follow", "subscription"),
+                ("Logged in using ChatGPTevil", "unknown"),
+                ("  Logged in using an API key - synthetic  ", "api")):
+            with self.subTest(text=text), mock.patch.object(run_muse.subprocess, "run",
+                    return_value=mock.Mock(returncode=0, stdout=text, stderr="")):
+                self.assertEqual(run_muse.codex_billing_mode({}), expected)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

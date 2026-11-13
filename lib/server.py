@@ -27,7 +27,7 @@ HERE = Path(__file__).parent
 # The repo root: run data and the built page live there, not in lib/.
 ROOT = HERE.parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 72
+VERSION = 74
 INDEX = ROOT / "muse-runs" / "index.jsonl"
 WEB_INDEX = ROOT / "web" / "index.html"
 WEB_APP = ROOT / "web" / "app.js"
@@ -229,7 +229,7 @@ def _run_split(run, records=None):
         return {"model_ms": model_ms, "tool_ms": run.get("tool_ms"),
                 "approval_ms": run.get("approval_ms"),
                 "muse_ms": run.get("muse_ms")}
-    if not run.get("session_id"):
+    if run.get("provider") == "codex" or not run.get("session_id"):
         return empty
     if records is None:
         path = live_session_log(run["session_id"])
@@ -297,7 +297,8 @@ def load_runs():
     # Grouped rows should agree with the live stats for running runs.
     enriched = []
     for r in runs:
-        if r.get("status") == "running" and r.get("session_id"):
+        if r.get("status") == "running" and r.get("session_id") \
+                and r.get("provider") != "codex":
             live, _ = live_calls(r["session_id"])
             if live:
                 r = dict(r)
@@ -323,7 +324,8 @@ def session_row(r):
     return {
         "run_id": r.get("run_id"), "at": r.get("at"),
         "prompt": r.get("prompt"), "model": r.get("model"),
-        "wall_ms": r.get("wall_ms"), "calls": len(r.get("calls") or []),
+        "wall_ms": r.get("wall_ms"),
+        "calls": None if r.get("provider") == "codex" else len(r.get("calls") or []),
         "provider": r.get("provider"), "context_mode": r.get("context_mode"),
         "comparison_id": r.get("comparison_id"), "round": r.get("round"),
         "compare_mode": r.get("compare_mode"),
@@ -371,7 +373,8 @@ def read_logs(run_id=None):
     selected = pick_selected(runs, run_id)
     live_timeline = []
     claude_live = {"calls": [], "timeline": [], "live_state": None}
-    if selected.get("status") == "running" and selected.get("session_id"):
+    if selected.get("status") == "running" and selected.get("session_id") \
+            and selected.get("provider") != "codex":
         live, live_timeline = live_calls(selected["session_id"])
         if live:
             selected = dict(selected)
@@ -393,7 +396,7 @@ def read_logs(run_id=None):
     # The selected run's session log is read once here; the retry
     # merge, live state and time split below all use these records.
     selected_records = None
-    if selected.get("session_id"):
+    if selected.get("session_id") and selected.get("provider") != "codex":
         log_path = live_session_log(selected["session_id"])
         if log_path:
             selected_records = _log_records(log_path)
@@ -467,7 +470,7 @@ def read_logs(run_id=None):
         "sessions": sessions,
         "selected": selected.get("run_id"),
         "file": (f"{len(runs)} run(s), showing {selected.get('run_id')}"
-                 f" · {len(selected.get('calls') or [])} call(s)") if runs else None,
+                 f" · {'–' if selected.get('provider') == 'codex' else len(selected.get('calls') or [])} call(s)") if runs else None,
         "model": (events[0]["model"] if events else selected.get("model")),
         "prompt": selected.get("prompt"),
         "reply": selected.get("reply"),

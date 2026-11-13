@@ -15,7 +15,7 @@ export function summaryText(data) {
     lines.push(localTime(s.at) + "  " + (s.prompt || s.run_id));
     lines.push("  " + (s.provider || "?") + "/" + (s.model || "?") + " (" + (s.context_mode || "full") + " context)"
       + (s.comparison_id ? " · compare set " + s.comparison_id : "") + (s.status ? " · " + s.status : ""));
-    lines.push("  " + s.calls + " call(s) · wall " + fmtDur(s.wall_ms) + " · model " + fmtDur(s.model_ms)
+    lines.push("  " + fmt(s.calls) + " call(s) · wall " + fmtDur(s.wall_ms) + " · model " + fmtDur(s.model_ms)
       + " · overhead " + fmtDur(s.overhead_ms) + " · last in " + fmt(s.last_input_tokens)
       + " / out " + fmt(s.last_output_tokens) + " · cost " + runCostText(s));
   });
@@ -103,7 +103,7 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         <label htmlFor="sessionSelect">Session</label>
         <select id="sessionSelect" value={sessionValue} onChange={(e) => onSessionChange(e.target.value)}>
           {all.map((s) => (
-            <option key={s.run_id} value={s.run_id}>{localTime(s.at) + " · " + shortText(s.prompt || s.run_id, 36) + " · " + s.calls + " call(s)"}</option>
+            <option key={s.run_id} value={s.run_id}>{localTime(s.at) + " · " + shortText(s.prompt || s.run_id, 36) + " · " + fmt(s.calls) + " call(s)"}</option>
           ))}
         </select>
         <span className="pill model" title="Selected run's provider and model">{(data.provider ? data.provider + "/" : "") + (data.model || "–")}</span>

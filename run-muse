@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent / "lib"))
 import muse_log  # noqa: E402
 import pricing as list_pricing  # noqa: E402
 import index_lock  # noqa: E402
+import codex_stream  # noqa: E402
 from claude_stream import (  # noqa: E402,F401
     _input_with_cache, feed_live_event, new_live_tracker, parse_claude_stream,
     tracker_live_state)
@@ -78,7 +79,8 @@ UI_URL = f"http://127.0.0.1:{PORT}/"
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
 DEFAULT_CLAUDE_MODEL = os.environ.get("BENCH_CLAUDE_MODEL", "claude-sonnet-5-5")
 DEFAULT_PROVIDER = os.environ.get("MUSE_PROVIDER", "meta")
-STRIP_ENV = ("META_API_KEY", "MUSE_API_TOKEN", "MODEL_API_KEY", "ANTHROPIC_API_KEY")
+STRIP_ENV = ("META_API_KEY", "MUSE_API_TOKEN", "MODEL_API_KEY", "ANTHROPIC_API_KEY",
+             "OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")
 # The only Meta models the benchmark shows in the UI and
 # compares by default. Order matches the model picker.
 META_MODELS = ["muse-wonder-1.0", "muse-wonder-full-1.0",
@@ -101,9 +103,27 @@ def default_model(provider):
     # Not ANTHROPIC_MODEL: Meta's Claude Code setup tells users to
     # export that name for a Meta model, which must not silently
     # change this tool's Claude default.
+    if provider == "codex":
+        return os.environ.get("BENCH_CODEX_MODEL") or None
     if provider in ("anthropic", "claude-code"):
         return os.environ.get("BENCH_CLAUDE_MODEL", DEFAULT_CLAUDE_MODEL)
     return os.environ.get("MUSE_MODEL", DEFAULT_MODEL)
+
+
+def resolve_model(provider, model=None):
+    """Resolve defaults and reject an unspecified Codex model before work."""
+    model = model or default_model(provider)
+    if provider == "codex":
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("Codex requires --model or BENCH_CODEX_MODEL")
+        return model.strip()
+    return model
+
+
+def validate_suite_models(entries):
+    for entry in entries:
+        if not entry["skip"]:
+            resolve_model(entry["provider"], entry.get("model"))
 
 
 def endpoint_for(model):
@@ -138,8 +158,8 @@ def harness_version(provider):
         return None
     if provider in _harness_version_cache:
         return _harness_version_cache[provider]
-    cmd = ["claude", "--version"] if provider == "claude-code" \
-        else ["muse", "--version"]
+    cmd = [{"claude-code": "claude", "codex": "codex"}.get(provider, "muse"),
+           "--version"]
     version = None
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
@@ -155,7 +175,7 @@ def harness_version(provider):
 
 
 def is_muse(provider):
-    return provider not in ("anthropic", "claude-code")
+    return provider not in ("anthropic", "claude-code", "codex")
 
 
 def recorded_model(provider, model):
@@ -180,7 +200,7 @@ PAID_PROVIDERS = ("claude-code", "anthropic")
 
 
 def default_timeout(provider):
-    return 300 if provider in PAID_PROVIDERS else 1800
+    return 300 if provider in PAID_PROVIDERS or provider == "codex" else 1800
 
 
 def _pricing_pair(value, where):
@@ -963,12 +983,101 @@ def run_claude_code(prompt, run_dir, model, timeout, stop_event=None,
     }
 
 
+# Tested with codex-cli 0.167.0-alpha.4.1. Some alpha options are
+# established by local CLI help and capture, not the public reference.
+# These strip automatically loaded personal context, not filesystem access.
+CODEX_MINIMAL_CONFIG = (
+    'project_doc_max_bytes=0',
+    'developer_instructions=""',
+    'memories.use_memories=false',
+    'memories.generate_memories=false',
+    'features.memories=false',
+    'skills.include_instructions=false',
+    'features.skill_search=false',
+    'features.apps=false',
+    'features.hooks=false',
+    'features.plugins=false',
+    'features.remote_plugin=false',
+    'mcp_servers={}',
+    'web_search="disabled"',
+)
+
+
+def codex_billing_mode(env):
+    """Classify CLI login status without storing account or key text."""
+    try:
+        status = subprocess.run(["codex", "login", "status"],
+                                env=env, capture_output=True, text=True,
+                                timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+    if status.returncode != 0:
+        return "unknown"
+    lines = [" ".join(line.split())
+             for line in (status.stdout + "\n" + status.stderr).splitlines()]
+    if any(re.match(r"Logged in using ChatGPT\b", line)
+           for line in lines):
+        return "subscription"
+    if any(line == "Logged in using an API key"
+           or line.startswith("Logged in using an API key - ") for line in lines):
+        return "api"
+    return "unknown"
+
+
+def run_codex(prompt, run_dir, model, minimal, timeout, stop_event=None):
+    """Run one fresh Codex agent session. No API or session-log scraping."""
+    cmd = ["codex", "-a", "never", "exec", "--json", "--ephemeral",
+           "--sandbox", "workspace-write", "--skip-git-repo-check",
+           "--color", "never"]
+    if not model:
+        return _empty_result(" ".join(cmd),
+                             error="Codex requires --model or BENCH_CODEX_MODEL")
+    if not shutil.which("codex"):
+        return _empty_result(" ".join(cmd), error="codex CLI is not installed")
+    cmd += ["--model", model, "-c", 'model_provider="openai"']
+    if minimal:
+        cmd += ["--ignore-user-config", "--strict-config"]
+        for setting in CODEX_MINIMAL_CONFIG:
+            cmd += ["-c", setting]
+    cmd += ["-"]
+    workspace = run_dir / "workspace"
+    workspace.mkdir()
+    (run_dir / "prompt.md").write_text(prompt)
+    env = _clean_env()
+    # Use the existing CLI login. Never copy keys from .env or change login.
+    billing_mode = codex_billing_mode(env)
+    try:
+        proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
+                           timeout, input_text=prompt, stop_event=stop_event)
+    except OSError as error:
+        return _empty_result(" ".join(cmd), error=str(error),
+                             billing_mode=billing_mode)
+    parsed = codex_stream.parse_codex_stream(proc["lines"])
+    completed = parsed.pop("completed")
+    if not completed and not parsed["error_override"]:
+        err_path = run_dir / "stderr.log"
+        stderr = err_path.read_text(errors="replace").strip() if err_path.is_file() else ""
+        parsed["error_override"] = stderr.splitlines()[-1] if stderr else \
+            "Codex stream ended without turn.completed"
+    result = _empty_result(" ".join(cmd))
+    result.update(parsed)
+    result.update({"wall_ms": proc["wall_ms"],
+                   "exit_code": proc["exit_code"],
+                   "timed_out": proc["timed_out"],
+                   "interrupted": proc["interrupted"],
+                   "billing_mode": billing_mode})
+    if not completed and result["exit_code"] == 0:
+        result["exit_code"] = 1
+    return result
+
+
 BASE_REPORT = {
     "at": None, "finished_at": None,
     "run_id": None, "prompt": "", "model": None,
     "provider": None, "session_id": None, "context_mode": None,
     "comparison_id": None, "round": None, "compare_mode": None,
     "suite_id": None, "suite_prompt": None,
+    "billing_mode": None, "requested_model": None,
     "harness_version": None, "tool_ms": None, "approval_ms": None,
     "muse_ms": None, "needs_approval_tool": None, "status": None,
     "timeout_seconds": None, "command": None, "wall_ms": None,
@@ -1062,8 +1171,9 @@ def print_summary(report, r, run_dir):
                 cost_text += " (at your rates)"
             elif report.get("cost_source") == "list":
                 cost_text += " (at Meta list)"
+        call_text = "–" if report["provider"] == "codex" else str(len(r["calls"]))
         print(f"[{label}] wall {r['wall_ms']} ms · model {model_text} · "
-              f"in {in_text} · out {out_text} · {len(r['calls'])} call(s)"
+              f"in {in_text} · out {out_text} · {call_text} call(s)"
               f"{cost_text}{allow_text} · {status}")
     validation = report.get("task_validation") or {}
     if validation.get("status"):
@@ -1098,9 +1208,13 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
                compare_round=None, compare_mode=None,
                suite_id=None, suite_prompt=None,
                raced=False, stop_event=None, pricing=None, checks=None):
-    model = model or default_model(provider)
+    model = resolve_model(provider, model)
     if timeout is None:
         timeout = default_timeout(provider)
+    if provider == "codex":
+        with _PRINT_LOCK:
+            print("Codex run: may consume subscription usage or bill an API key. "
+                  "Cost is not recorded.", flush=True)
     if provider in PAID_PROVIDERS:
         with _PRINT_LOCK:
             print(paid_notice(model), flush=True)
@@ -1143,7 +1257,10 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
     leg_label = f"{provider}/{recorded_model(provider, model)}" \
         if raced else None
     try:
-        if provider == "anthropic":
+        if provider == "codex":
+            r = run_codex(prompt, run_dir, model, minimal, timeout,
+                          stop_event=stop_event)
+        elif provider == "anthropic":
             r = run_anthropic(prompt, run_dir, model, timeout)
         elif provider == "claude-code":
             r = run_claude_code(prompt, run_dir, model, timeout,
@@ -1204,7 +1321,10 @@ def run_prompt(prompt, provider=DEFAULT_PROVIDER, model=None,
             allowance_start, r.get("allowance_end"))
         if allowance_start or r.get("allowance_end") else None,
         "totals": r.get("totals"),
-        "metrics_unavailable": status == "completed" and not r["calls"],
+        "metrics_unavailable": status == "completed" and not r["calls"]
+                               and provider != "codex",
+        "billing_mode": r.get("billing_mode"),
+        "requested_model": model,
         "error": (f"waiting for approval: {r['needs_approval']}"
                   if r.get("needs_approval") else None)
                  or r.get("error_override")
@@ -1476,7 +1596,7 @@ def parse_compare_models(text):
             provider, model = entry.split(":", 1)
         else:
             provider, model = entry, default_model(entry)
-        out.append((provider.strip(), model.strip()))
+        out.append((provider.strip(), model.strip() if model else None))
     return out
 
 
@@ -1564,7 +1684,8 @@ def _run_round_raced(prompt, order, minimal, timeout, comparison_id,
 
 def run_compare(prompt, mode, minimal, timeout, repeat, race=False):
     comparison_id = uuid.uuid4().hex[:8]
-    models = compare_models_for(mode)
+    models = [(provider, resolve_model(provider, model))
+              for provider, model in compare_models_for(mode)]
     verb = "Racing" if race and len(models) > 1 else "Comparing"
     print(f"{verb} {len(models)} model(s), {repeat} round(s), "
           f"set {comparison_id}")
@@ -1854,6 +1975,8 @@ def _priced_text(entry, pricing):
     # Meta's list, then Claude Code's report. Subscription runs are
     # measured in plan usage, never USD.
     provider, model = entry["provider"], _entry_model(entry)
+    if provider == "codex":
+        return "cost not recorded (subscription or API login)"
     if provider == "echo":
         return "bills nothing"
     if provider not in PAID_PROVIDERS:
@@ -1894,6 +2017,7 @@ def reusable_result(entry, record):
 def print_suite_plan(path, settings, entries, pricing, cli_timeout,
                      repeat, resume, fresh=False):
     """The --dry-run listing. Prints only. Runs nothing."""
+    validate_suite_models(entries)
     print(f"Suite file: {path}")
     print(f"{len(entries)} prompt(s), {repeat} repeat(s) each, "
           f"concurrency {settings['concurrency']}")
@@ -1923,28 +2047,37 @@ def print_suite_plan(path, settings, entries, pricing, cli_timeout,
             print("Resume: no state file yet. A fresh suite id "
                   "will be recorded on the first real run")
     any_paid = False
+    any_codex = False
     any_unpriced = False
     for entry in entries:
         paid = entry["provider"] in PAID_PROVIDERS
         any_paid = any_paid or (paid and not entry["skip"])
+        codex = entry["provider"] == "codex"
+        any_codex = any_codex or (codex and not entry["skip"])
         priced = _priced_text(entry, pricing)
-        any_unpriced = any_unpriced or priced == "unpriced"
+        any_unpriced = any_unpriced or (not entry["skip"] and (codex or priced == "unpriced"))
         parts = [entry["name"],
-                 f"{entry['provider']}/{_entry_model(entry)}",
+                 f"{entry['provider']}/{_entry_model(entry) or '?'}",
                  f"timeout "
                  f"{effective_timeout(entry, settings, cli_timeout)} s",
                  priced]
-        if paid:
+        if codex:
+            parts.append("MAY BE PAID")
+        elif paid:
             parts.append("PAID")
         if entry["skip"]:
             parts.append("skip")
         print("- " + " · ".join(parts))
-    if any_paid and settings["concurrency"] > 1:
+    if any_codex and settings["concurrency"] > 1:
+        print("Entries can run at the same time at this concurrency. "
+              "Codex may use subscription or API billing. "
+              "API-key logins spend in parallel")
+    elif any_paid and settings["concurrency"] > 1:
         print("Paid entries can run at the same time at this "
               "concurrency. They spend in parallel")
     if settings.get("max_cost_usd") is not None and any_unpriced:
         print("Some entries are unpriced. The cost budget counts "
-              "priced and reported runs only")
+              "priced and reported runs only. It cannot cap unrecorded charges")
     print("Dry run only. Nothing was run")
     return 0
 
@@ -1954,6 +2087,7 @@ def run_suite(path, timeout=None, repeat=None, dry_run=False,
     if manifest is None:
         manifest = load_manifest(path)
     settings, entries = manifest["settings"], manifest["entries"]
+    validate_suite_models(entries)
     pricing = dict(env_pricing())
     pricing.update(settings["pricing"])
     if repeat is None:
@@ -2011,10 +2145,11 @@ def run_suite(path, timeout=None, repeat=None, dry_run=False,
             print(f"Resuming. {already} already completed "
                   "and will not run again")
     if settings.get("max_cost_usd") is not None and any(
-            not e["skip"] and _priced_text(e, pricing) == "unpriced"
+            not e["skip"] and (e["provider"] == "codex"
+                              or _priced_text(e, pricing) == "unpriced")
             for e in entries):
         print("Warning: some entries are unpriced. The cost budget "
-              "counts priced and reported runs only")
+              "counts priced and reported runs only. It cannot cap unrecorded charges")
     state_lock = threading.Lock()
     budget = {"spent": spent, "reason": None}
     started = time.monotonic()
@@ -2260,7 +2395,7 @@ def main():
                         help="repeatable context: no reminders, no foreign context")
     parser.add_argument("--timeout", type=int, default=None,
                         help="per-run timeout in seconds (default 1800, "
-                             "300 for claude-code and anthropic)")
+                             "300 for claude-code, anthropic and codex)")
     parser.add_argument("--compare", default=None, choices=COMPARE_MODES,
                         help="compare mode: meta, claude, or custom "
                              "(COMPARE_MODELS)")
@@ -2320,6 +2455,12 @@ def main():
         parser.error("--repeat must be at least 1")
     try:
         env_pricing()
+        if args.suite is None and args.watch is None and not args.retro:
+            if mode is not None:
+                for provider, model in compare_models_for(mode):
+                    resolve_model(provider, model)
+            else:
+                args.model = resolve_model(args.provider, args.model)
     except ValueError as e:
         parser.error(str(e))
     if args.suite is not None:
@@ -2330,6 +2471,10 @@ def main():
         except ValueError as e:
             parser.error(str(e))
         apply_suite_model(manifest["entries"], args.provider, suite_model)
+        try:
+            validate_suite_models(manifest["entries"])
+        except ValueError as e:
+            parser.error(str(e))
         if args.dry_run:
             return run_suite(args.suite, args.timeout, args.repeat,
                              dry_run=True, resume=args.resume,

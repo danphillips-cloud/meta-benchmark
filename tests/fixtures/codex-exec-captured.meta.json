@@ -1,0 +1,10 @@
+{
+  "captured_at": "2026-11-12T12:26:56Z",
+  "cli_version": "codex-cli 0.167.0-alpha.4.1",
+  "model": "gpt-6.1-sol",
+  "prompt": "Reply with exactly: pong",
+  "context_mode": "minimal",
+  "timeout_seconds": 60,
+  "source_run_id": "20261112-072656-5ce1f7",
+  "sanitization": "Only the thread_id value was replaced. Event structure, item ID, reply and usage are unchanged."
+}

@@ -224,7 +224,9 @@ export default function Overview({ data, onSelect, onGoto }) {
   if (data.provider === "claude-code")
     notes.push("Claude Code does not report per-call time or per-call output tokens, so Model time per call, Slowest and last-call Output show –. Model total is the API time it reports for the whole run.");
   if (data.status === "running")
-    notes.push("Run in progress. Totals grow as calls land.");
+    notes.push(data.provider === "codex"
+      ? "Codex run in progress. Token totals and the reply appear when it finishes."
+      : "Run in progress. Totals grow as calls land.");
   if (DID_NOT_COMPLETE.includes(data.status || sel.status))
     notes.push((data.status || sel.status) === "needs_approval"
       ? "This run was stopped because it waited for approval. It stays in Runs, but it is excluded from all medians."
@@ -334,7 +336,7 @@ export default function Overview({ data, onSelect, onGoto }) {
       ) : null}
       <div className="stats" data-tour="split">
         <StatCard label="Wall time" icon="wall" value={wallP[0]} unit={wallP[1].trim()} title={wall == null ? "" : fmtMs(wall) + " ms"}
-          detail={(hasEvents || wall != null ? fmt(events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
+          detail={(hasEvents || wall != null ? fmt(data.provider === "codex" ? null : events.length) + (events.length === 1 ? " call" : " calls") + " · " + (data.status || sel.status || "unknown") : "–") + usualWall} />
         <StatCard label="Model time" icon="model" value={modelP[0]} unit={modelP[1].trim()} title={modelTotal == null ? "" : fmtMs(modelTotal) + " ms"}
           detail={data.model_note ? data.model_note : retryTotal > 0 && stalledTotal > 0
             ? fmtDur(stalledTotal) + " stalled before retry"
