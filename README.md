@@ -12,7 +12,7 @@ I built this for the [Meta AI Developer Hackathon](https://cerebralvalley.ai/e/m
 - **Replay and X-ray.** Watch a run back on its recorded clock, and see how the context grew call by call.
 - **Radar.** A fixed set of prompts tracked across Muse versions, so you see when an update makes things slower.
 
-Nothing is estimated. If a number wasn't recorded, the page shows a dash.
+Start with the [user guide](docs/user-guide.md) for an offline first run. Use the [glossary](docs/glossary.md) to look up a dashboard label or calculation. The [prompt gallery](docs/getting-started.md) has five tasks you can try, and the [Codex guide](docs/openai.md) covers OpenAI setup and three-way comparisons.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.jpg">
@@ -21,7 +21,7 @@ Nothing is estimated. If a number wasn't recorded, the page shows a dash.
 
 ## Requirements
 
-Python 3.9 or newer on macOS or Linux, and Muse Code. Windows works through WSL. Native Windows Python is not supported. Claude Code runs also need the `claude` CLI.
+Python 3.11 or newer on macOS or Linux, and Muse Code. Windows works through WSL. Native Windows Python is not supported. Claude Code and Codex runs need their respective CLIs. The direct API route needs only Python and a key.
 
 ## Getting started
 
@@ -33,7 +33,7 @@ cd meta-benchmark
 muse login    # first time only
 ```
 
-That is the whole install for everything below. These runs use a Muse subscription. No API key, no Node.
+The stopwatch examples use Muse subscription access. The default model, Wonder Full, requires a Power Usage or Maximum Usage plan. For another plan, choose an available model with `--model`. See [setup and first run](docs/user-guide.md#set-up).
 
 ### 2. Run one real test
 
@@ -52,7 +52,7 @@ The prompt is built to be checkable in one pass:
 - **Hard limits.** No external URLs or libraries. It runs from the filesystem.
 - **A self-check.** The agent runs `node --check` and reports the result.
 
-`--minimal` drops reminders and personal context, so a repeat of the same command measures the same work. It doesn't make the request much smaller. Muse's own context still rides along: call 1 of this run carried 29,455 input tokens.
+`--minimal` suppresses reminders and foreign personal context. Repeats still vary. It doesn't make the request much smaller. Muse's own context still rides along: call 1 of this run carried 29,455 input tokens.
 
 The terminal prints each model call as it finishes, then the reply with one summary line. This example is from Muse Code 1.4.14, recorded on 2026-11-01:
 
@@ -64,7 +64,7 @@ Your numbers will differ. The split is the point.
 
 ### 3. Read it on the page
 
-Open http://127.0.0.1:8765.
+Follow the local UI address printed in the terminal.
 
 Overview, above, gives the time split and a plain-words account of where the time went.
 
@@ -89,7 +89,7 @@ Overview, above, gives the time split and a plain-words account of where the tim
   <img src="docs/images/xray-light.jpg" alt="X-ray: request bytes per call split into system prompt, run context, and conversation, growing over 15 calls">
 </picture>
 
-Then check the work itself. The reply links the new folder. It sits in the run's own workspace, under `muse-runs/<run id>/workspace/stopwatch/`, so nothing in the repo changes. Open its `index.html`, press Space, then L a few times. The fastest lap should turn green and the slowest red.
+Then check the work itself. In this example the generated folder sits in the run's own workspace, under `muse-runs/<run id>/workspace/stopwatch/`, so nothing in the repo changes. Open its `index.html`, press Space, then L a few times. The fastest lap should turn green and the slowest red.
 
 ![The stopwatch built in the recorded run, with three laps](docs/images/stopwatch.jpg)
 
@@ -117,137 +117,45 @@ Then put the Meta models on the same work:
 COMPARE_META=meta:muse-wonder-1.0,meta:muse-spark-1.3 ./run-muse --minimal --compare meta --repeat 3 "$PROMPT"
 ```
 
-The Compare page reads medians over the rounds, so one slow call cannot carry the result.
+Compare shows medians across completed runs and a sample size for each metric. Times and output speed also show their observed ranges when available.
 
 The [getting started guide](docs/getting-started.md) has five longer one-shot app prompts, plus a frame for writing your own.
 
 ## Reading the numbers
 
-A dash means the number wasn't recorded, or the pieces of a split don't add up. Nothing is ever estimated.
+A dash means no usable measurement for that field. Read each number in its provider's context.
 
 ### Time
 
-- **Wall** measures elapsed time around the harness process, or around the HTTP request for direct API runs.
-- **Model** sums the call durations recorded by Muse. Claude Code doesn't report per-call time, so its per-call columns are blank and Model uses its API time.
-- **Tools** and **Approval wait** come from paired log timestamps. Activity that overlaps counts once. Tool time leaves out approval waits that closed. An approval that never closed leaves approval time and the Muse remainder unknown.
-- **Muse** is the remaining wall time when the split is consistent. An inconsistent split shows a dash. A negative remainder is never forced to zero.
-- **Output speed** is output tokens divided by Model time, in tokens per second. It includes network waiting and the wait for the first token, so it is the speed the harness saw.
-
-Every figure is what the harness measured, network waiting included. None of them isolates model thinking, and two harnesses can count different work.
+Wall measures elapsed time around the process or direct request. Model, Tools, Approval wait and Muse have different sources and can be missing independently. [Time measurements](docs/glossary.md#time-measurements)
 
 ### Tokens
 
-Input totals for direct API and Claude Code runs include fresh input, cache creation and cache reads. A missing part leaves the total unknown. Older direct API records without those parts show a dash on the page, because a comparable total can't be rebuilt. Their stored files keep the original counts.
+Input and output count the tokens recorded by the harness. Last-call and whole-run counts can differ substantially when later calls resend earlier context. [Calls and tokens](docs/glossary.md#calls-and-tokens)
 
 ### Cost
 
-**Cost** shows on Overview, Runs and Compare, always in the unit the run is billed in.
-
-Subscription runs show plan usage:
-
-- Your Muse plan has two usage limits, a short-term one and a weekly one. Muse's own `muse usage` calls the short-term one Window.
-- A run shows how much of each limit moved while it ran, as "+N% short-term · +N% weekly".
-- The start reading comes from `muse usage` before the run launches. The end reading comes from the run stream.
-- Overview shows the readings before and after in a small table, plus the clock time the short-term limit resets.
-- Other Muse use at the same time counts too, and the hover text says so.
-- Muse counts whole percents. A run that moved a limit by less than one point shows under 1%.
-- A limit reset mid-run, or a missing reading, shows a dash with the reason.
-
-Paid runs show USD:
-
-- Claude models keep the cost Claude Code reports.
-- `muse-wonder-1.0` runs on the `anthropic` and `claude-code` providers are priced from their recorded tokens at [Meta's published list](https://dev.meta.ai/docs/pricing-rate-limits), as fetched on 2026-10-31, and marked "at Meta list". Input, cached and output tokens all count. Any missing count shows a dash.
-- The figure Claude Code itself attaches to `muse-*` models comes from Anthropic's list. That is not a Meta price, so it stays hidden.
-- Set your own rates with `BENCH_PRICING` in `.env`, or `pricing` in a manifest, as USD per million tokens per model. Your rates win over the list, and the cost is marked "at your rates".
-- For direct API runs, set `cached_per_mtok` for cache reads and `cache_creation_per_mtok` for cache writes when those counts are positive. A missing rate leaves the cost at your rates unknown. If Meta's list has a price for the model, that still supplies one.
-- Suite cost budgets count list costs too.
-
-> **Note:** Meta publishes no per-token price for `muse-wonder-full-1.0`. Runs on it through the `anthropic` or `claude-code` providers show a dash for cost. Subscription runs on it still show plan usage. If you have your own rate for it, set it in `BENCH_PRICING`.
+Muse subscription runs show movement in plan limits when recorded. Paid routes can show a reported or computed USD cost. Codex cost stays unknown. [Cost and allowance](docs/glossary.md#cost-and-allowance)
 
 ### Compare and medians
 
-- Medians cover completed runs only. Failures stay visible and never feed a median.
-- Each metric shows its own observation count as n. A missing measurement is left out of that metric's median. Plan usage lists short-term and weekly counts separately.
-- Times and output speed also show their lowest and highest recorded value.
-- Task checks sit apart from completion. Completed means the process ended cleanly. It doesn't mean the task passed.
-- Fastest completed means the lowest median wall time among completed runs, whatever the task checks say. The badge needs 3 completed runs in every leg, and the fastest leg's slowest run must beat every other leg's fastest run. When that is not met, the page says why and marks no leg.
-- The default `--compare claude` runs both models through Claude Code. Compare the `meta` and `claude-code` providers instead and the result mixes model, harness, tools and context. The difference can't be pinned on the model alone.
-
-Repeats and medians describe the runs you recorded. They don't prove one model is faster in general, and they say nothing about the quality of the work.
+Medians use completed runs and count observations separately for each metric. Always read task checks alongside timing. [Compare repeated runs](docs/user-guide.md#repeat-and-compare) · [Usual and fastest](docs/glossary.md#usual-fastest-and-change)
 
 ### Imported turns
 
-`--watch` and `--retro` record interactive turns. A turn with no explicit outcome in the log shows unknown. `--retro` repairs a turn imported earlier once the log shows its outcome. Stored files are kept either way.
+Use `--watch` for an interactive Muse session or `--retro` to import earlier turns. A missing terminal outcome can leave a turn unknown. [Terminal workflows](docs/user-guide.md#use-the-terminal)
 
 ## The page
 
-The page refreshes every 2 seconds and follows a run in progress, so model calls show up as they finish.
-
-On your first visit a short walkthrough opens and points at each part of the page in turn. After that it lives behind Getting started in the sidebar.
-
-- **Overview** shows one run: wall time split into model, tools, approval wait and Muse, a plain-words "What happened" summary, a chart of each model call, and your usual time for the same prompt.
-- **Runs** logs every run. Sort and filter it, then click a row to open that run in Overview. Tick runs to compare 2 or 3 of them, or to delete any number at once. The checkbox in the header selects every run the filter shows.
-- **Compare** lines up 2 or 3 runs you ticked on Runs, metric by metric. A difference is green where the selected run did better and red where it did worse. Show prompts and replies puts the replies side by side. A compare set from `--compare` also gets a medians table, with the fastest leg marked when the runs support it.
-- **Timeline**, **Replay** and **X-ray** are shown in [step 3](#3-read-it-on-the-page).
-- **Radar** shows median wall time per prompt across Muse versions, and the change between the two newest versions with at least 3 completed runs each.
-- **Export** saves the selected run as CSV or JSON.
+Start in Overview to inspect one result. Use Runs to find attempts, Compare to line them up, Timeline and Replay to inspect recorded steps, X-ray to explore request sizes, and Radar to compare harness versions. The guide covers each view and what its exports include. [Read the dashboard](docs/user-guide.md#read-the-dashboard)
 
 ## Usage
 
-| Mode | Command |
-|---|---|
-| Single (default) | `./run-muse` |
-| Meta vs Meta | `./run-muse --compare meta` |
-| Meta vs Claude | `./run-muse --compare claude` |
-| Custom | `./run-muse --compare custom` |
-
-Single and Meta vs Meta use your Muse subscription. Meta vs Claude bills your API keys per token. So does Custom by default, because its default legs use Claude Code.
-
-Every paid run prints `Paid run: uses MODEL_API_KEY` (or `ANTHROPIC_API_KEY`) before it starts, and stops after 5 minutes. Claude Code runs print a line as each call lands.
-
-`--compare meta` runs four Meta models per round, set by `COMPARE_META`. `--repeat N` runs N rounds, alternating the order each round. `--race` runs the legs of a round at the same time. It needs `--compare`.
-
-`./run-muse --watch` times your own interactive Muse session, read-only. Run Muse normally in another terminal.
-
-`./run-muse --retro` imports finished turns from the Muse session logs already on disk. It also repairs turns imported earlier with no recorded outcome, when the log now shows one. A turn the log still can't classify stays unknown.
-
-In the prompt loop, `/mode meta`, `/mode claude` and `/mode single` switch mode, and the prompt shows it, for example `muse[meta]>`. `/help` lists commands. `Ctrl+C` stops a run and records it as `interrupted`. `/quit` exits.
+Run one quoted prompt or start `./run-muse` for the prompt loop. Use `--compare meta`, `claude` or `custom` to launch a set. The configured legs determine which accounts are used and whether calls incur API charges. [Commands and options](docs/user-guide.md#use-the-terminal) · [Presets and repeats](docs/user-guide.md#repeat-and-compare)
 
 ### Manifests
 
-Stage a whole benchmark in one JSON file, then run it in one go.
-
-```sh
-./run-muse --manifest bench.json --dry-run   # list what would run, run nothing
-./run-muse --manifest bench.json --resume    # run it, keep progress in bench.state.json
-```
-
-`--suite` is the older name for the same thing, and `golden-prompts.json` still works as before. The file holds a `prompts` list and an optional `settings` block.
-
-```json
-{
-  "settings": {
-    "concurrency": 1,
-    "repeat": 3,
-    "timeout_seconds": 1800,
-    "max_cost_usd": 10.0,
-    "max_runtime_seconds": 3600,
-    "pricing": {"input_per_mtok": 4.0, "output_per_mtok": 20.0}
-  },
-  "prompts": [
-    {"name": "sky", "prompt": "Why is the sky blue?", "minimal": true},
-    {"name": "big", "file": "prompts/big.md", "timeout_seconds": 3600, "skip": false}
-  ]
-}
-```
-
-Every prompt runs `repeat` times. The default is 3, and `--repeat` on the command line wins over the file.
-
-Each entry needs a unique `name` and either a `prompt` or a `file`, relative to the manifest. `provider`, `model`, `minimal`, `skip` and `timeout_seconds` are optional per entry. The `--timeout` flag beats a per entry timeout, which beats the settings timeout, which beats the provider default.
-
-Budgets stop new entries from starting. They never kill a run in flight, because a run's cost is only known when it ends. The next entry timeout also shrinks to fit the runtime budget left. `--dry-run` prints every entry, marks paid ones, and says what the budgets count. Read it before a big paid run.
-
-`--resume` writes progress to a state file beside the manifest. Stop partway, run the same command again, and completed entries are skipped under the same suite. Failed and timed out entries run again. Add `--fresh` to ignore saved progress. Without `--resume` no state file is written. The runner reads the manifest once at the start, so edit it only between runs.
+A manifest lists named tasks, settings and optional checks. Preview it with `./run-muse --manifest model-benchmark.json --dry-run`. [Write a manifest, set budgets and resume](docs/user-guide.md#run-a-suite-and-check-the-work)
 
 ## Model benchmark
 
@@ -268,50 +176,17 @@ Budgets stop new entries from starting. They never kill a run in flight, because
 | `essay` | Output speed on a long reply |
 | `primes-code` | Tool use: write code, run it, report the result |
 
-Each prompt runs 3 times, so one pass is 18 runs on your Muse plan. `--model` fills in every entry that names no model. An entry with its own `model` keeps it. With `--resume`, add `--fresh` when you switch model, or the entries the last model completed are skipped.
+Each prompt runs 3 times, so one pass is 18 runs on your Muse plan. `--model` fills in entries for the selected provider that name no model. An entry with its own `model` keeps it. With `--resume`, add `--fresh` when you switch model, or the entries the last model completed are skipped.
 
 On Runs, type part of a prompt in the filter, such as `clock shows`, and tick runs to compare them. A run that finishes with the wrong answer shows completed with failed checks, and the suite exits with code 1.
 
 ## Checking task results
 
-A manifest entry can carry checks on the result, next to the prompt:
-
-```json
-{
-  "name": "write-answer",
-  "prompt": "Create answer.txt containing 4. Reply with Answer: 4",
-  "minimal": true,
-  "checks": {
-    "reply_contains": ["Answer: 4"],
-    "files_exist": ["answer.txt"]
-  }
-}
-```
-
-Every check must pass.
-
-- `reply_contains` matches exact, case-sensitive text in the reply.
-- `files_exist` needs the file inside that run's workspace. It proves the file exists. It doesn't open it or run it.
-
-A check proves only what you wrote in it. It isn't a grade on the answer. A run with no checks, or one that didn't complete, shows not checked. Checks run after the timing stops, so they never count in a run's time. A suite exits with code 1 when a check fails. `--resume` runs an entry again if its checks failed or changed. Money spent on earlier attempts still counts toward the suite budget.
+A completed run can still fail its task checks. Inspect the reply, use configured checks for concrete requirements and try the generated work yourself. [Worked example and check rules](docs/user-guide.md#run-a-suite-and-check-the-work)
 
 ## Providers and keys
 
-| `--provider` | Runs |
-|---|---|
-| `meta` (default) | Muse Code |
-| `claude-code` | Claude Code headless, `--bare` |
-| `anthropic` | One raw Messages API call |
-| `echo` | No model. Echoes the prompt, free, for trying the page offline |
-
-For `claude-code` and `anthropic`, a `muse-*` model goes to Meta's API and anything else goes to Anthropic. Meta's API serves `muse-wonder-1.0`.
-
-Only Claude Code and raw API runs need keys. Put them in a `.env` file in the repo root. It's gitignored.
-
-```sh
-MODEL_API_KEY=your-meta-key
-ANTHROPIC_API_KEY=your-anthropic-key
-```
+The default `meta` route uses Muse Code. Use `echo` for an offline exercise, `claude-code` for a headless agent through an API key, `anthropic` for a direct Messages request or `codex` for the saved Codex CLI login. [Provider and billing table](docs/user-guide.md#choose-a-provider-and-model) · [Codex login](docs/openai.md#sign-in-and-run)
 
 ## Configuration
 
@@ -324,6 +199,7 @@ ANTHROPIC_API_KEY=your-anthropic-key
 | `COMPARE_META` | `meta:muse-wonder-1.0,meta:muse-wonder-full-1.0,meta:muse-spark-1.3,meta:muse-spark-1.2` | Pairs for `--compare meta` |
 | `COMPARE_CLAUDE` | `claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare claude` |
 | `COMPARE_MODELS` | `meta:muse-wonder-1.0,claude-code:muse-wonder-1.0,claude-code:claude-sonnet-5-5` | Pairs for `--compare custom` |
+| `BENCH_CODEX_MODEL` | unset | Codex model ID when no explicit model is supplied |
 | `BENCH_CLAUDE_MODEL` | `claude-sonnet-5-5` | Default model for `claude-code` and `anthropic` |
 | `BENCH_PRICING` | unset | Your rates as JSON, USD per million tokens per model, used to work out run cost |
 | `META_BASE_URL` | `https://api.meta.ai` | Meta API endpoint |
