@@ -18,6 +18,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+if sys.version_info < (3, 11):
+    sys.exit("meta-benchmark needs Python 3.11 or newer. You have "
+             + sys.version.split()[0] + ". Install a newer Python and try again.")
+
 sys.path.insert(0, str(Path(__file__).parent))
 import claude_stream  # noqa: E402
 import index_lock  # noqa: E402
@@ -27,7 +31,7 @@ HERE = Path(__file__).parent
 # The repo root: run data and the built page live there, not in lib/.
 ROOT = HERE.parent
 PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 74
+VERSION = 75
 INDEX = ROOT / "muse-runs" / "index.jsonl"
 WEB_INDEX = ROOT / "web" / "index.html"
 WEB_APP = ROOT / "web" / "app.js"

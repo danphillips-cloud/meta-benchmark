@@ -6,14 +6,14 @@ These prompts are free with a Muse subscription. They need no API keys. Each one
 
 ## Run your first one
 
-Start from the repo root.
+Start from the repo root after following the [setup instructions](user-guide.md#set-up).
 
 ```sh
 muse login
 ./run-muse --minimal "what is 2+2"
 ```
 
-That warm-up should take one model call. Open the results page at http://127.0.0.1:8765 and look at the time split. Then pick one of the app prompts below and run it as one command.
+Follow the printed UI address and inspect the [time split](glossary.md#time-measurements) and recorded call count. Then pick one of the app prompts below and run it as one command.
 
 To see the Meta models attempt the same build, add the compare flag. It runs four models per round, so one command is four full builds on your Muse plan.
 
@@ -115,7 +115,7 @@ Then run it with `./run-muse --minimal` and the full prompt in quotes.
 
 ## Judge the run, not the sales pitch
 
-Open the app before trusting the final reply. Try the main action on each screen. Refresh once to test saved state. Break one form on purpose. Shrink the browser to phone width.
+Use the [task-check guide](user-guide.md#run-a-suite-and-check-the-work) for repeatable file and reply checks. Open the app before trusting the final reply. Try the main action on each screen. Refresh once to test saved state. Break one form on purpose. Shrink the browser to phone width.
 
 Back on the results page, read the wall time split and the per-call chart. A fast run that skipped checks is a worse result than a slower run that shipped working files. The results page tells you where time went. The app tells you whether the time bought anything.
 

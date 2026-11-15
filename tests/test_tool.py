@@ -4597,5 +4597,74 @@ class CodexReviewTest(unittest.TestCase):
                 self.assertEqual(run_muse.codex_billing_mode({}), expected)
 
 
+class StdlibOnlyTests(unittest.TestCase):
+    """The tool and its tests import nothing outside the standard library."""
+
+    def test_every_import_is_stdlib_or_local(self):
+        import ast
+        local = {f.stem for f in (ROOT / "lib").glob("*.py")}
+        files = [ROOT / "run-muse", HERE / "test_tool.py"]
+        files += sorted((ROOT / "lib").glob("*.py"))
+        offenders = []
+        for path in files:
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                    names = [node.module]
+                else:
+                    continue
+                for name in names:
+                    top = name.split(".")[0]
+                    if top not in sys.stdlib_module_names and top not in local:
+                        offenders.append(f"{path.name}: {name}")
+        self.assertEqual(offenders, [])
+
+
+class PythonFloorTests(unittest.TestCase):
+    """The launcher and server stop early with a clear message on old Python."""
+
+    def _guard(self, path):
+        import ast
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if (isinstance(node, ast.If)
+                    and "version_info" in ast.unparse(node.test)):
+                return node
+        self.fail(f"{path.name} has no version guard")
+
+    def _run(self, path, version):
+        import ast
+        node = self._guard(path)
+        fake = type("FakeSys", (), {})()
+        fake.version_info = version
+        fake.version = ".".join(map(str, version)) + " (fake)"
+        fake.exit = sys.exit
+        code = compile(ast.Module([node], []), str(path), "exec")
+        exec(code, {"sys": fake})
+
+    def test_old_python_exits_with_message(self):
+        for path in (ROOT / "run-muse", ROOT / "lib" / "server.py"):
+            with self.subTest(file=path.name):
+                for old in ((3, 9, 6), (3, 10, 14)):
+                    with self.assertRaises(SystemExit) as cm:
+                        self._run(path, old)
+                    self.assertIn("3.11 or newer", str(cm.exception.code))
+                    self.assertIn(".".join(map(str, old)), str(cm.exception.code))
+
+    def test_supported_python_passes(self):
+        for path in (ROOT / "run-muse", ROOT / "lib" / "server.py"):
+            with self.subTest(file=path.name):
+                for ok in ((3, 11, 0), (3, 15, 2)):
+                    self._run(path, ok)
+
+    def test_guard_runs_before_project_imports(self):
+        for path in (ROOT / "run-muse", ROOT / "lib" / "server.py"):
+            src = path.read_text(encoding="utf-8")
+            self.assertLess(src.index("version_info < (3, 11)"),
+                            src.index("import muse_log"), path.name)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

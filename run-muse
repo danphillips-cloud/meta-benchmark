@@ -29,6 +29,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+if sys.version_info < (3, 11):
+    sys.exit("meta-benchmark needs Python 3.11 or newer. You have "
+             + sys.version.split()[0] + ". Install a newer Python and try again.")
+
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 import muse_log  # noqa: E402
 import pricing as list_pricing  # noqa: E402

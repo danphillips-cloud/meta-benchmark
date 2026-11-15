@@ -28,6 +28,8 @@ export BENCH_CODEX_MODEL="YOUR_OPENAI_MODEL_ID"
 
 The benchmark prints a usage notice and starts the run. It does not ask for confirmation. The default timeout is 300 seconds. Change it with `--timeout`. Interrupted and timed-out runs keep their events and partial files.
 
+For a first offline run or a comparison of provider costs, see the [user guide](user-guide.md#choose-a-provider-and-model).
+
 ## Put all three on one prompt
 
 ```sh
@@ -39,6 +41,8 @@ Three legs and three rounds start nine runs. Claude Code uses an API key in this
 
 Even rounds reverse the order. Compare shows medians over completed runs and keeps failed runs visible. Add `--race` to run the legs together. Concurrent runs share the machine, which can affect wall time.
 
+See [repeat and compare](user-guide.md#repeat-and-compare) for the difference between comparing individual runs and comparing a set.
+
 ## Read the results
 
 Codex records wall time, token totals when present, its reply, task checks and CLI version. The reply and totals appear when the run finishes. Raw events stay in `events.jsonl`.
@@ -49,7 +53,7 @@ The saved `billing_mode` is in both `report.json` and `index.jsonl`, but stays o
 
 ## Check a task across providers
 
-Save this as a manifest and replace `YOUR_OPENAI_MODEL_ID`:
+See [task checks](user-guide.md#run-a-suite-and-check-the-work) for a small offline example. Save this as a manifest and replace `YOUR_OPENAI_MODEL_ID`:
 
 ```json
 {
