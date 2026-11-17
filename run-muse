@@ -93,6 +93,8 @@ def _use_port():
         return 2
     UI_URL = f"http://127.0.0.1:{PORT}/"
     return 0
+
+
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
 DEFAULT_CLAUDE_MODEL = os.environ.get("BENCH_CLAUDE_MODEL", "claude-sonnet-5-5")
 DEFAULT_PROVIDER = os.environ.get("MUSE_PROVIDER", "meta")
