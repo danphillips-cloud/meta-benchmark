@@ -400,6 +400,26 @@ class PortHeldTest(unittest.TestCase):
         self.assertFalse(enabled)
         self.assertEqual(suffix, "")
 
+    def test_bad_port_gives_plain_message_not_traceback(self):
+        old_port, old_url = run_muse.PORT, run_muse.UI_URL
+        try:
+            with mock.patch.dict(os.environ, {"PORT": "abc"}), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(run_muse._use_port(), 2)
+                self.assertIn("PORT", out.getvalue())
+        finally:
+            run_muse.PORT, run_muse.UI_URL = old_port, old_url
+
+    def test_good_port_updates_url(self):
+        old_port, old_url = run_muse.PORT, run_muse.UI_URL
+        try:
+            with mock.patch.dict(os.environ, {"PORT": "9999"}):
+                self.assertEqual(run_muse._use_port(), 0)
+                self.assertEqual(run_muse.PORT, 9999)
+                self.assertEqual(run_muse.UI_URL, "http://127.0.0.1:9999/")
+        finally:
+            run_muse.PORT, run_muse.UI_URL = old_port, old_url
+
     def test_foreign_process_found_on_restart_opens_no_tab(self):
         # Our server answered with an old version, but the pid on the
         # port is not ours: no signal, no restart, no tab, no UI line.
@@ -4204,6 +4224,31 @@ class ReportingAccuracyTest(unittest.TestCase):
         self.assertEqual(run_muse.compute_cost("m", totals, [], run_muse.parse_pricing(rates)),
                          (None, None))
 
+    def test_unreported_cache_tokens_price_as_zero(self):
+        rates = {"input_per_mtok": 2, "output_per_mtok": 10,
+                 "cached_per_mtok": 0.2, "cache_creation_per_mtok": 3}
+        pricing = run_muse.parse_pricing(rates)
+        # The direct API path always sets the cache keys, as None when
+        # the API reports no cache usage. None counts as zero.
+        totals = {"input_tokens": 1010, "cached_tokens": None,
+                  "cache_creation_tokens": None, "output_tokens": 4}
+        cost, _ = run_muse.compute_cost("m", totals, [], pricing)
+        self.assertAlmostEqual(cost, (1010 * 2 + 4 * 10) / 1000000)
+        # Key absent entirely (agent path) also prices input and output.
+        plain = {"input_tokens": 1010, "output_tokens": 4}
+        cost, _ = run_muse.compute_cost("m", plain, [], pricing)
+        self.assertAlmostEqual(cost, (1010 * 2 + 4 * 10) / 1000000)
+        # A reported component prices at its own rate.
+        mixed = {"input_tokens": 1010, "cached_tokens": None,
+                 "cache_creation_tokens": 100, "output_tokens": 4}
+        cost, _ = run_muse.compute_cost("m", mixed, [], pricing)
+        self.assertAlmostEqual(cost, (910 * 2 + 4 * 10 + 100 * 3) / 1000000)
+        # A missing rate for an unreported component stays unknown.
+        del rates["cached_per_mtok"]
+        self.assertEqual(run_muse.compute_cost("m", mixed, [],
+                                               run_muse.parse_pricing(rates)),
+                         (None, None))
+
     def test_invalid_task_checks_are_rejected(self):
         for value in ({}, {"shell": ["echo hi"]}, {"files_exist": ["../a"]},
                       {"files_exist": ["/a"]}, {"reply_contains": []}):
@@ -4474,6 +4519,20 @@ class CodexTest(unittest.TestCase):
                 self.assertEqual(runner.call_args.kwargs["provider"], "codex")
                 self.assertEqual(run_muse.run_suite(path, resume=True), 0)
                 self.assertEqual(runner.call_count, 1)
+
+
+class MuseExecTest(unittest.TestCase):
+    def test_missing_muse_binary_returns_error_result(self):
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(run_muse, "run_process",
+                                  side_effect=OSError("missing binary")) as runner:
+            result = run_muse.run_muse_exec(
+                "hi", Path(td), "meta", "test-model", True, 30)
+            runner.assert_called_once()
+            self.assertEqual(result["exit_code"], 1)
+            self.assertEqual(result["calls"], [])
+            self.assertIn("muse", result["command"])
+            self.assertIn("missing binary", result["error_override"])
 
 
 class CodexReviewTest(unittest.TestCase):

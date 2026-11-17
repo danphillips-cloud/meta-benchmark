@@ -15,13 +15,13 @@ const temp = await mkdtemp(join(src, "../.view-tests-"));
 after(() => rm(temp, { recursive: true, force: true }));
 const output = join(temp, "views.mjs");
 await build({
-  stdin: { contents: `export { default as Runs, summaryText } from "./views/Runs.jsx";
+  stdin: { contents: `export { default as Runs, summaryText, clampPageIndex } from "./views/Runs.jsx";
     export { default as Timeline } from "./views/Timeline.jsx";
     export { default as Overview } from "./views/Overview.jsx";`, resolveDir: src },
   outfile: output, bundle: true, platform: "node", format: "esm", jsx: "automatic",
   external: ["react", "react/*", "react-dom/*", "react-router"],
 });
-const { Runs, summaryText, Timeline, Overview } = await import(pathToFileURL(output));
+const { Runs, summaryText, clampPageIndex, Timeline, Overview } = await import(pathToFileURL(output));
 const session = { run_id: "codex-test", provider: "codex", model: "test-model",
   prompt: "ping", status: "completed", context_mode: "minimal", calls: null,
   wall_ms: 42, model_ms: null, overhead_ms: null, cost_usd: null,
@@ -45,6 +45,22 @@ test("finished Codex Timeline explains absent per-call telemetry", () => {
   const html = render(Timeline, data);
   assert.match(html, /Codex does not report per-call model timing/);
   assert.doesNotMatch(html, /No model calls yet/);
+});
+
+test("page index clamps into range", () => {
+  assert.equal(clampPageIndex(0, 0), 0);
+  assert.equal(clampPageIndex(0, 1), 0);
+  assert.equal(clampPageIndex(1, 3), 1);
+  assert.equal(clampPageIndex(5, 2), 1);
+  assert.equal(clampPageIndex(3, 3), 2);
+});
+
+test("Delete session is disabled with nothing selected", () => {
+  const empty = render(Runs, { ...data, selected: "", sessions: [] });
+  assert.match(empty, /No sessions yet/);
+  assert.match(empty, /<button[^>]*disabled[^>]*>Delete session</);
+  const withSel = render(Runs, data);
+  assert.doesNotMatch(withSel, /<button[^>]*disabled[^>]*>Delete session</);
 });
 
 test("running Codex Overview does not promise live totals", () => {
