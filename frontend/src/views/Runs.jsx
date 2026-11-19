@@ -7,6 +7,10 @@ import {
 import { CopyButton, StatusPill, pickableProps } from "../components/widgets.jsx";
 import { FilterBar } from "../components/filters.jsx";
 
+export function clampPageIndex(index, pageCount) {
+  return Math.min(index, Math.max(pageCount - 1, 0));
+}
+
 export function summaryText(data) {
   const sessions = [...(data.sessions || [])].reverse();
   if (!sessions.length) return "No sessions yet.";
@@ -94,7 +98,8 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
   const filtered = filterSessions(all, state);
   const sorted = [...filtered].sort((a, b) => compareSessions(a, b, state.sort, state.dir));
   const pageCount = Math.ceil(sorted.length / RUNS_PAGE_SIZE);
-  const page = sorted.slice(pageIndex * RUNS_PAGE_SIZE, (pageIndex + 1) * RUNS_PAGE_SIZE);
+  const safeIndex = clampPageIndex(pageIndex, pageCount);
+  const page = sorted.slice(safeIndex * RUNS_PAGE_SIZE, (safeIndex + 1) * RUNS_PAGE_SIZE);
   const text = summaryText(data);
   return (
     <section data-view-panel="runs">
@@ -108,7 +113,8 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         </select>
         <span className="pill model" title="Selected run's provider and model">{(data.provider ? data.provider + "/" : "") + (data.model || "–")}</span>
         <span className="spacer"></span>
-        <button className="btn danger" type="button" onClick={onDelete}>Delete session</button>
+        <button className="btn danger" type="button" onClick={onDelete} disabled={!data.selected}
+          title={data.selected ? "Delete session " + data.selected : "No session selected"}>Delete session</button>
       </div>
       <FilterBar state={state} providers={providers} models={models} onChange={update} extra={(
         <>
@@ -163,8 +169,8 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
             </tr>
           </thead>
           <tbody>
-            {!filtered.length
-              ? <tr><td colSpan={HEADERS.length + 1} className="empty">{all.length ? "No sessions match the filter." : "No sessions yet."}</td></tr>
+            {!page.length
+              ? <tr><td colSpan={HEADERS.length + 1} className="empty">{!filtered.length ? (all.length ? "No sessions match the filter." : "No sessions yet.") : "No sessions on this page."}</td></tr>
               : page.map((s) => {
                 const dim = DID_NOT_COMPLETE.includes(s.status);
                 return (
@@ -187,9 +193,9 @@ export default function Runs({ data, sessionValue, onSessionChange, onSelect, on
         </table>
       </div>
       <div className="pagerRow">
-        <button className="btn" type="button" disabled={pageIndex <= 0} onClick={() => setPageIndex(pageIndex - 1)}>← Prev</button>
-        <span className="empty">{"Page " + Math.min(pageIndex + 1, Math.max(pageCount, 1)) + " of " + Math.max(pageCount, 1) + " · " + filtered.length + " run(s)"}</span>
-        <button className="btn" type="button" disabled={pageIndex + 1 >= pageCount} onClick={() => setPageIndex(pageIndex + 1)}>Next →</button>
+        <button className="btn" type="button" disabled={safeIndex <= 0} onClick={() => setPageIndex(safeIndex - 1)}>← Prev</button>
+        <span className="empty">{"Page " + Math.min(safeIndex + 1, Math.max(pageCount, 1)) + " of " + Math.max(pageCount, 1) + " · " + filtered.length + " run(s)"}</span>
+        <button className="btn" type="button" disabled={safeIndex + 1 >= pageCount} onClick={() => setPageIndex(safeIndex + 1)}>Next →</button>
       </div>
       <details>
         <summary>Sessions summary (text)</summary>

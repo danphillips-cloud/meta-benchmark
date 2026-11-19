@@ -35,7 +35,7 @@ The **provider** flag selects how the benchmark runs the prompt. The **model** i
 
 | Provider | Setup and billing | Work and measurements |
 |---|---|---|
-| `echo` | Installed Muse CLI. No model charge. | Echoes the prompt in a fresh workspace. Useful for learning the recorder. |
+| `echo` | Nothing to install. No model charge. | Echoes the prompt in a fresh workspace. Useful for learning the recorder. |
 | `meta` | Muse CLI with subscription sign-in for the workflows here. The runner reads plan allowance when available. | Coding agent in a workspace. Its session log can supply call times, tokens, tools, approvals and request sizes. |
 | `claude-code` | Install the `claude` CLI. The runner supplies an API key for the chosen endpoint. A Claude subscription login alone does not satisfy this check. | Runs Claude Code noninteractively in bare mode with Bash, Edit and Read allowed. Reports can include total API time, usage and cost. Per-call model time and per-call output are unavailable. [Claude Code authentication](https://code.claude.com/docs/en/authentication) · [Programmatic execution](https://code.claude.com/docs/en/headless) |
 | `anthropic` | API key for the chosen endpoint. No agent CLI needed. | Sends one Messages API request. It can return text or code in a reply. There is no agent workspace or tool loop to create and run that code. Model duration here is the elapsed HTTP request. [Messages API](https://platform.claude.com/docs/en/api/messages/create) |

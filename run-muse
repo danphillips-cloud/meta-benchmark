@@ -78,8 +78,23 @@ _PRINT_LOCK = threading.Lock()
 
 
 _index_file_lock = index_lock.index_file_lock
-PORT = int(os.environ.get("PORT", "8765"))
+PORT = 8765
 UI_URL = f"http://127.0.0.1:{PORT}/"
+
+
+def _use_port():
+    """Port from PORT, or 8765. Plain message and exit code on bad input."""
+    global PORT, UI_URL
+    raw = os.environ.get("PORT", "8765")
+    try:
+        PORT = int(raw)
+    except ValueError:
+        print(f'PORT must be a whole number, got "{raw}"')
+        return 2
+    UI_URL = f"http://127.0.0.1:{PORT}/"
+    return 0
+
+
 DEFAULT_MODEL = os.environ.get("MUSE_MODEL", "muse-wonder-full-1.0")
 DEFAULT_CLAUDE_MODEL = os.environ.get("BENCH_CLAUDE_MODEL", "claude-sonnet-5-5")
 DEFAULT_PROVIDER = os.environ.get("MUSE_PROVIDER", "meta")
@@ -290,10 +305,16 @@ def compute_cost(model, totals, calls, pricing):
     if totals and "cache_creation_tokens" in totals:
         # Direct API usage includes all input in the displayed total. Price
         # each recorded component at the user's rate for that component.
+        # An unreported component (None) counts as zero, but only when
+        # the matching rate exists. A missing rate stays unknown.
         for count_key, rate_key in (("cached_tokens", "cached_per_mtok"),
                                     ("cache_creation_tokens", "cache_creation_per_mtok")):
             count = totals.get(count_key)
-            if count is None or (count and rate_key not in pair):
+            if count is None:
+                if rate_key not in pair:
+                    return None, None
+                continue
+            if count and rate_key not in pair:
                 return None, None
             if count:
                 in_tok -= count
@@ -785,8 +806,11 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
     seen = {"calls": 0, "live": None}
     watch = (lambda: _live_watch(session_id, seen, label=leg_label)) \
         if provider != "echo" else None
-    proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
-                       timeout, watch=watch, stop_event=stop_event)
+    try:
+        proc = run_process(cmd, workspace, env, run_dir / "events.jsonl",
+                           timeout, watch=watch, stop_event=stop_event)
+    except OSError as error:
+        return _empty_result(" ".join(cmd), error=str(error))
     if sys.stdout.isatty() and not leg_label:
         print(flush=True)
     wall_ms = proc["wall_ms"]
@@ -2391,6 +2415,9 @@ def main():
     # A launcher started in the background of a non-interactive shell
     # inherits SIGINT as ignored, so kill -INT would never land.
     signal.signal(signal.SIGINT, signal.default_int_handler)
+    port_status = _use_port()
+    if port_status:
+        return port_status
     parser = argparse.ArgumentParser(prog="run-muse")
     parser.add_argument("prompt", nargs="*", help="prompt text")
     parser.add_argument("--provider", default=DEFAULT_PROVIDER)
