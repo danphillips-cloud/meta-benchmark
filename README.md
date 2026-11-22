@@ -207,7 +207,7 @@ The default `meta` route uses Muse Code. Use `echo` for an offline exercise, `cl
 | `MUSE_SESSIONS_DIR` | `~/.local/share/muse/sessions` | Where Muse writes session logs |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for `anthropic` runs |
 | `PORT` | `8765` | Results page port. If another app holds it, the launcher says so and runs carry on without the page |
-| `RUN_MUSE_NO_UI` | unset | `1` skips the web page |
+| `RUN_MUSE_NO_UI` | unset | Any value skips the web page. Use `1` |
 
 Run data stays in `muse-runs/`, which is gitignored. The page is served on `127.0.0.1` only.
 

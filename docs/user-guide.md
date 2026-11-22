@@ -14,7 +14,7 @@ cd meta-benchmark
 python3 --version
 ```
 
-Install the Muse Code CLI for the first exercise, then use `command -v muse` to check that your shell can find it. Echo works offline through that CLI. For a real Muse subscription run, use `muse login` and sign in to your subscription. The benchmark defaults to Wonder Full, which Meta includes on its Power Usage and Maximum Usage plans. Choose an available model explicitly if your plan differs. [Meta setup](https://dev.meta.ai/docs/overview) · [Wonder availability](https://dev.meta.ai/docs/muse-wonder)
+Install the Muse Code CLI for the first exercise, then use `command -v muse` to check that your shell can find it. Echo repeats your prompt without calling a model. If Muse asks you to sign in, run `muse login`. For a Muse subscription run, sign in with the account that holds your subscription. The benchmark defaults to Wonder Full, which Meta includes on its Power Usage and Maximum Usage plans. Choose an available model explicitly if your plan differs. [Meta setup](https://dev.meta.ai/docs/overview) · [Wonder availability](https://dev.meta.ai/docs/muse-wonder)
 
 ## Record and inspect your first run
 
@@ -35,7 +35,7 @@ The **provider** flag selects how the benchmark runs the prompt. The **model** i
 
 | Provider | Setup and billing | Work and measurements |
 |---|---|---|
-| `echo` | Nothing to install. No model charge. | Echoes the prompt in a fresh workspace. Useful for learning the recorder. |
+| `echo` | Muse Code CLI. The CLI may ask you to sign in. No model charge. | Repeats the prompt without calling a model. Records a sample run in a fresh workspace so you can check that the recorder works. |
 | `meta` | Muse CLI with subscription sign-in for the workflows here. The runner reads plan allowance when available. | Coding agent in a workspace. Its session log can supply call times, tokens, tools, approvals and request sizes. |
 | `claude-code` | Install the `claude` CLI. The runner supplies an API key for the chosen endpoint. A Claude subscription login alone does not satisfy this check. | Runs Claude Code noninteractively in bare mode with Bash, Edit and Read allowed. Reports can include total API time, usage and cost. Per-call model time and per-call output are unavailable. [Claude Code authentication](https://code.claude.com/docs/en/authentication) · [Programmatic execution](https://code.claude.com/docs/en/headless) |
 | `anthropic` | API key for the chosen endpoint. No agent CLI needed. | Sends one Messages API request. It can return text or code in a reply. There is no agent workspace or tool loop to create and run that code. Model duration here is the elapsed HTTP request. [Messages API](https://platform.claude.com/docs/en/api/messages/create) |
@@ -103,7 +103,7 @@ The preview shows planned work without starting it. The second command runs echo
 
 For file-producing tasks, add `"files_exist": ["answer.txt"]` inside `checks`. Paths are relative to the run's workspace. All configured checks must pass. Reply matching is case-sensitive and allows a substring anywhere. A file containing the wrong answer can pass an existence check. Read the file or exercise the requested behaviour before treating the task as solved. Checks run after the timed work. [Task results](glossary.md#execution-and-task-status)
 
-- Each entry needs a unique `name` and a `prompt` or a `file` relative to the manifest. Entries can choose `provider`, `model`, `minimal`, `skip`, checks and timeout. CLI `--model` fills missing models only on entries matching the CLI provider. Specify context per entry.
+- Each entry needs a unique `name` and a `prompt` or a `file` relative to the manifest. Entries can choose `provider`, `model`, `minimal`, `skip`, checks and `timeout_seconds`. CLI `--model` fills missing models only on entries matching the CLI provider. Specify context per entry.
 - `--suite` is an alias for `--manifest`. With no filename it uses [golden-prompts.json](../golden-prompts.json). The [model benchmark](../model-benchmark.json) has six checked tasks with three repeats each. Preview either with `--dry-run`. These suites use models when executed.
 - CLI `--repeat` overrides the settings value. The suite default is three. For timeouts the first available value wins in this order: CLI, entry, suite setting, provider default. `settings.concurrency` controls how many entries may run together.
 - `--resume` reuses completed attempts by entry name and round if required checks still match and passed. Changing the prompt or model under the same name can reuse earlier results. Add `--fresh --resume` to start a new suite and replace the saved progress. Without resume, no state file is written.
