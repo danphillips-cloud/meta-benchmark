@@ -16,7 +16,7 @@ Start with the [user guide](docs/user-guide.md) for an offline first run. Use th
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.jpg">
-  <img src="docs/images/overview-light.jpg" alt="The Overview page for one recorded run: time split cards, plan usage, and a ranked explanation of where the time went">
+  <img src="docs/images/overview-light.jpg" alt="The Overview page for one recorded run: time split cards, input tokens, and a ranked explanation of where the time went">
 </picture>
 
 ## Requirements
@@ -52,15 +52,15 @@ The prompt is built to be checkable in one pass:
 - **Hard limits.** No external URLs or libraries. It runs from the filesystem.
 - **A self-check.** The agent runs `node --check` and reports the result.
 
-`--minimal` suppresses reminders and foreign personal context. Repeats still vary. It doesn't make the request much smaller. Muse's own context still rides along: call 1 of this run carried 29,455 input tokens.
+`--minimal` suppresses reminders and foreign personal context. Repeats still vary. It doesn't make the request much smaller. Muse's own context still rides along: call 1 of this run carried 35,642 input tokens.
 
-The terminal prints each model call as it finishes, then the reply with one summary line. This example is from Muse Code 1.4.14, recorded on 2026-11-01:
+The terminal prints each model call as it finishes, then the reply with one summary line. This example is from Muse Code 1.4.25, recorded on 2026-11-23:
 
 ```text
-[meta/muse-wonder-full-1.0] wall 93969 ms · model 88464 ms · in 544500 · out 6258 · 15 call(s) · Muse plan: used under 1% of short-term limit (0→0%), under 1% of weekly limit (58→58%) · completed
+[meta/muse-wonder-full-1.0] wall 43840 ms · model 40103 ms · in 149443 · out 3094 · 4 call(s) · completed
 ```
 
-Your numbers will differ. The split is the point.
+That login used an API key, so the line has no plan usage. On a subscription login it also shows how far the run moved your plan limits. Your numbers will differ. The split is the point.
 
 ### 3. Read it on the page
 
@@ -79,14 +79,14 @@ Overview, above, gives the time split and a plain-words account of where the tim
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/replay-dark.jpg">
-  <img src="docs/images/replay-light.jpg" alt="Replay paused mid-run: model call 8 in flight, 7 of 15 calls landed">
+  <img src="docs/images/replay-light.jpg" alt="Replay paused mid-run: model call 3 in flight, 2 of 4 calls landed">
 </picture>
 
-**X-ray** shows what Muse sent on each call. Here the prompt was 650 bytes of an 85,386 byte first request.
+**X-ray** shows what Muse sent on each call. Here the prompt was 650 bytes of a 108,467 byte first request.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/xray-dark.jpg">
-  <img src="docs/images/xray-light.jpg" alt="X-ray: request bytes per call split into system prompt, run context, and conversation, growing over 15 calls">
+  <img src="docs/images/xray-light.jpg" alt="X-ray: request bytes per call split into system prompt, run context, conversation and tool results, growing over 4 calls">
 </picture>
 
 Then check the work itself. In this example the generated folder sits in the run's own workspace, under `muse-runs/<run id>/workspace/stopwatch/`, so nothing in the repo changes. Open its `index.html`, press Space, then L a few times. The fastest lap should turn green and the slowest red.
@@ -97,7 +97,7 @@ Completed means the process ended cleanly. It doesn't mean the stopwatch works, 
 
 ### 4. Run it again
 
-One run is an anecdote. Two recorded runs of this exact prompt, eight minutes apart, used the same model and the same Muse version. The first run took 6 calls and 60.9 s. The second took 15 calls and 94.0 s, 54% longer for the same work. Neither number is the answer. The pattern across repeats is.
+One run is an anecdote. Two recorded runs of this exact prompt on `muse-wonder-full-1.0` took 15 calls and 94.0 s (Muse Code 1.4.14), then 4 calls and 43.8 s (Muse Code 1.4.25). The Muse versions differ, so this is not a clean comparison. It does show how far the same work can swing. Neither number is the answer. The pattern across repeats is.
 
 ```sh
 ./run-muse --minimal "$PROMPT"
@@ -136,6 +136,13 @@ Input and output count the tokens recorded by the harness. Last-call and whole-r
 ### Cost
 
 Muse subscription runs show movement in plan limits when recorded. Paid routes can show a reported or computed USD cost. Codex cost stays unknown. [Cost and allowance](docs/glossary.md#cost-and-allowance)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-api-dark.jpg">
+  <img src="docs/images/overview-api-light.jpg" alt="Overview for a Claude Code run on Meta's API: the Cost card reads $0.1603 at Meta list, and Tools, Approval wait and Muse show dashes">
+</picture>
+
+On an API route the Cost card shows dollars, as above. The dashes are expected. Claude Code does not report tool, approval or per-call model time.
 
 ### Compare and medians
 
