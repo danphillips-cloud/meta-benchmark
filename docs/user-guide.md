@@ -6,7 +6,7 @@ Use this tool to answer questions like “How long did this task take?” and �
 
 ## Set up
 
-Use a terminal on macOS or Linux, or a Linux shell in WSL on Windows. You need Git to clone the project and Python 3.11 or newer. The Python that ships with macOS is older, so install a newer one. The dashboard is already built. Running it requires neither Node nor Python package installation.
+Use a terminal on macOS or Linux, or a Linux shell in WSL on Windows. You need Git to clone the project and Python 3.11 through 3.15. An older Python stops with a message. The Python that ships with macOS is older, so install a newer one. The dashboard is already built. Running it requires neither Node nor Python package installation.
 
 ```sh
 git clone https://github.com/danphillips-cloud/meta-benchmark.git
@@ -53,7 +53,7 @@ For the `anthropic` and `claude-code` routes, a model ID beginning with `muse-` 
 | Enter prompts one at a time | `./run-muse` starts a prompt loop. Use `/help`, `/mode` to see the current mode, or `/mode single`, `meta`, `claude` or `custom` (for example, `/mode meta`). Each submitted prompt launches new work. `/quit` exits. |
 | Change context or time limit | `--minimal` changes context on supported agent routes. `--timeout 60` sets a per-run limit in seconds. Defaults are 1,800 seconds for Muse/echo and 300 for Claude Code, direct API and Codex. |
 | Stop an agent run | Press Ctrl+C. Inspect the terminal status and partial workspace. A single prompt returns exit code 0 for completed, 130 for interrupted and 1 for other unsuccessful outcomes. |
-| Record without the page | `RUN_MUSE_NO_UI=1 ./run-muse --provider echo "hello"`. For a separate local page choose an unused port with `PORT`, for example `PORT=9876 ./run-muse --provider echo "hello"`. |
+| Record without the page | `RUN_MUSE_NO_UI=1 ./run-muse --provider echo "hello"`. For a separate local page choose an unused port with `PORT`, for example `PORT=9876 ./run-muse --provider echo "hello"`. A `PORT` that is not a whole number stops the launcher with a message and exit code 2. |
 | Record an interactive Muse turn | Start a regular Muse session in another terminal. Run `./run-muse --watch` for the newest log or `./run-muse --watch SESSION_ID`. This reads the session and writes benchmark records. Ctrl+C stops watching. |
 | Import existing interactive turns | `./run-muse --retro` scans Muse logs, skips already represented turns and can repair previously unknown outcomes. Watch tracks seen turns within its current invocation. Reattaching a watcher can record a turn again. |
 | Inspect all flags | `./run-muse --help`. Watch and retro take no prompt or comparison. Suite mode takes a manifest and cannot be combined with a prompt, watch, retro or compare. |
