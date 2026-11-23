@@ -21,7 +21,7 @@ Start with the [user guide](docs/user-guide.md) for an offline first run. Use th
 
 ## Requirements
 
-Python 3.11 or newer on macOS or Linux, and Muse Code. Windows works through WSL. Native Windows Python is not supported. Claude Code and Codex runs need their respective CLIs. The direct API route needs only Python and a key.
+Python 3.11 through 3.15 on macOS or Linux, and Muse Code. CI tests 3.11 and 3.15. An older Python stops with a message. Windows works through WSL. Native Windows Python is not supported. Claude Code and Codex runs need their respective CLIs. The direct API route needs only Python and a key.
 
 ## Getting started
 
@@ -213,7 +213,7 @@ The default `meta` route uses Muse Code. Use `echo` for an offline exercise, `cl
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | Anthropic API endpoint |
 | `MUSE_SESSIONS_DIR` | `~/.local/share/muse/sessions` | Where Muse writes session logs |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Output cap for `anthropic` runs |
-| `PORT` | `8765` | Results page port. If another app holds it, the launcher says so and runs carry on without the page |
+| `PORT` | `8765` | Results page port. If another app holds it, the launcher says so and runs carry on without the page. A value that is not a whole number stops the launcher with a message and exit code 2 |
 | `RUN_MUSE_NO_UI` | unset | Any value skips the web page. Use `1` |
 
 Run data stays in `muse-runs/`, which is gitignored. The page is served on `127.0.0.1` only.

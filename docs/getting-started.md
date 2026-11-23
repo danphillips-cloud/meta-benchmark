@@ -2,7 +2,7 @@
 
 A one-shot prompt describes a complete small app in a single instruction. I use them as benchmark runs because they do real work. The model has to plan the files, write code, use tools, and check the result. The Overview page then shows where the time went.
 
-These prompts are free with a Muse subscription. They need no API keys. Each one is scoped to a new folder inside its run workspace under `muse-runs/`. No tracked repo files should change.
+These prompts run on your Muse login and need no separate API keys. The default model, Wonder Full, needs a Power Usage or Maximum Usage plan. On another plan, add `--model` with a model you can use. A subscription login spends plan allowance. A Muse login that uses an API key bills that key. Each one is scoped to a new folder inside its run workspace under `muse-runs/`. No tracked repo files should change.
 
 ## Run your first one
 
@@ -15,7 +15,7 @@ muse login
 
 Follow the printed UI address and inspect the [time split](glossary.md#time-measurements) and recorded call count. Then pick one of the app prompts below and run it as one command.
 
-To see the Meta models attempt the same build, add the compare flag. It runs four models per round, so one command is four full builds on your Muse plan.
+To see the Meta models attempt the same build, add the compare flag. It runs four models per round, including Wonder Full, so one command is four full builds on your Muse login.
 
 ```sh
 ./run-muse --minimal --compare meta "PASTE ONE PROMPT HERE"

@@ -101,7 +101,7 @@ Dry-run labels Codex entries `MAY BE PAID` without querying login. Its concurren
 
 Each run starts a fresh, ephemeral session in `muse-runs/<run id>/workspace/`. It pins the OpenAI provider and uses the workspace-write sandbox without approval prompts. Execpolicy rules stay in place.
 
-Full mode uses normal Codex context discovery. The workspace is inside this benchmark's Git root, so this repo's `AGENTS.md` is expected to load alongside global guidance. Use `--minimal` for the stripped-context comparison. It ignores user config and applies these 13 overrides:
+Full mode uses normal Codex context discovery. The workspace is inside this benchmark's Git root, so Codex loads any `AGENTS.md` in your checkout alongside global guidance. A fresh clone has none, because this project's own `AGENTS.md` is not in the repository. Use `--minimal` for the stripped-context comparison. It ignores user config and applies these 13 overrides:
 
 ```toml
 project_doc_max_bytes = 0
