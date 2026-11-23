@@ -103,7 +103,7 @@ One run is an anecdote. Two recorded runs of this exact prompt on `muse-wonder-f
 ./run-muse --minimal "$PROMPT"
 ```
 
-Run it three more times, in the same terminal so `$PROMPT` is still set. From the fourth run on, Overview measures each new run against your usual for this prompt: the median of your earlier runs with the same model and context. The Wall and Model cards gain a "usual" figure, and Why was this slow opens with how far off it the run landed. One recorded example reads "Wall 9.4 s against a usual 7.0 s for this prompt (median of 6 earlier runs, +34%)". On Runs, type `stopwatch` in the filter to line up every attempt.
+Run it three more times, in the same terminal so `$PROMPT` is still set. From the fourth run on, Overview measures each new run against your usual for this prompt: the median of your earlier runs with the same prompt, provider, model and context. The Wall and Model cards gain a "usual" figure. Four runs of `What is 2+2?` on `muse-wonder-full-1.0` took 7.5, 6.3, 5.9 and 7.8 s. On the fourth, the Wall card read 7.8 s with a usual of 6.3 s. When a run lands at least 25% and 2 s slower than usual, Why was this slow opens with how far off it is. This one was 23% over, so it stayed quiet. On Runs, type `stopwatch` in the filter to line up every attempt.
 
 Then put the Meta models on the same work:
 
