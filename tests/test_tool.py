@@ -445,6 +445,26 @@ class PortHeldTest(unittest.TestCase):
         self.assertEqual(killed, [])
         self.assertFalse(enabled)
 
+    def test_page_already_running_still_opens_a_tab(self):
+        # A server left up by an earlier run answers with the current
+        # version. The page still opens, so every run shows the page.
+        opened, started = [], []
+        logs = {"version": run_muse.ui_version()}
+        try:
+            with mock.patch.dict(os.environ):
+                os.environ.pop("RUN_MUSE_NO_UI", None)
+                with mock.patch.object(run_muse, "fetch_ui_logs", lambda: logs), \
+                        mock.patch.object(run_muse, "start_ui",
+                                          lambda: started.append(1)), \
+                        mock.patch.object(run_muse.sys, "platform", "darwin"), \
+                        mock.patch.object(run_muse.subprocess, "run",
+                                          lambda *a, **k: opened.append(a[0])):
+                    run_muse.ensure_ui()
+        finally:
+            run_muse._ui_blocked = False
+        self.assertEqual(started, [])
+        self.assertEqual(opened, [["open", run_muse.UI_URL]])
+
 
 class StaleRunningTest(unittest.TestCase):
     def test_old_running_without_report_is_not_running(self):
@@ -1161,6 +1181,28 @@ class ClaudeLiveTest(unittest.TestCase):
         self.assertIn("tool running: Bash", text)
         self.assertEqual(len(seen["tracker"]["calls"]), 2)
 
+    def test_tty_watch_clears_live_line_before_call_lines(self):
+        # On a tty the live state is a carriage-return line. A landed
+        # call must erase it first, or the call text glues onto the
+        # state text. The ended state prints nothing at all.
+        import contextlib
+
+        class Tty(io.StringIO):
+            def isatty(self):
+                return True
+
+        lines = [json.dumps(e) for e in self._multi_block_events()]
+        stamped = [(i * 1000, line + "\n")
+                   for i, line in enumerate(lines)]
+        seen = self._seen()
+        out = Tty()
+        with contextlib.redirect_stdout(out):
+            run_muse._claude_live_watch(stamped, seen)
+        text = out.getvalue()
+        self.assertNotIn("   call", text)
+        self.assertIn("\rcall 1 · arrived", text)
+        self.assertNotIn("ended", text)
+
     def test_server_read_logs_shows_running_claude_run(self):
         lines = self._fixture_lines()
         with tempfile.TemporaryDirectory() as td:
@@ -1397,6 +1439,13 @@ class TerminalOutputTest(unittest.TestCase):
         short = self._summary_out(self._report(), self._result(reply="short"))
         self.assertIn("short", short)
         self.assertNotIn("full reply", short)
+
+    def test_long_reply_is_cut_at_a_word_boundary(self):
+        reply = "word " * 130 + "tail"
+        out = self._summary_out(self._report(), self._result(reply=reply))
+        self.assertIn("word " * 99 + "word", out)
+        self.assertNotIn("word " * 100 + "w", out)
+        self.assertIn("… (full reply: muse-runs/r-x/report.json)", out)
 
     def test_ui_line_skipped_when_no_ui_is_set(self):
         hidden = self._summary_out(self._report(), self._result(),

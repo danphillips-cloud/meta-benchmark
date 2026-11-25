@@ -542,9 +542,10 @@ def ensure_ui():
         print("Updating the log UI to the current version…")
         restart_ui()
         opened = True
-    # Only open a tab when we actually started or updated the server.
-    # If the page is already up, the user already has it in a tab.
-    opened = opened and ui_enabled()
+    # Open the page on every run, whether or not the server was already
+    # up. A page left running from an earlier run never opens a tab
+    # itself, which looked like the page was broken.
+    opened = ui_enabled()
     if opened and sys.platform == "darwin":
         subprocess.run(["open", UI_URL], capture_output=True)
     elif opened and sys.platform.startswith("linux") and shutil.which("xdg-open"):
@@ -674,6 +675,17 @@ def format_live_line(state):
     return state.get("state") or "idle"
 
 
+def _clear_live_line(seen):
+    """Erase the carriage-return live line currently on screen.
+
+    The caller holds _PRINT_LOCK, or the run is over and nothing
+    else is printing. Without this, the next whole line lands on
+    the same physical line as the live state text.
+    """
+    print("\r" + " " * (len(seen.get("live") or "") + 3) + "\r",
+          end="", flush=True)
+
+
 def _live_watch(session_id, seen, label=None):
     """Poll closure for run_process: print finished calls and the
     live state, and stop the run if an approval prompt appears.
@@ -707,6 +719,8 @@ def _live_watch(session_id, seen, label=None):
     while seen["calls"] < len(calls):
         seen["calls"] += 1
         with _PRINT_LOCK:
+            if not label and sys.stdout.isatty() and seen.get("live"):
+                _clear_live_line(seen)
             print(prefix + format_call_line(
                 seen["calls"], calls[seen["calls"] - 1]), flush=True)
     state = muse_log.live_state(records)
@@ -720,12 +734,16 @@ def _live_watch(session_id, seen, label=None):
         return seen["verdict"]
     text = format_live_line(state)
     if text != seen.get("live"):
-        seen["live"] = text
         with _PRINT_LOCK:
-            if label or not sys.stdout.isatty():
+            if text == "ended":
+                # The summary follows. Leave no residue line behind.
+                if not label and sys.stdout.isatty() and seen.get("live"):
+                    _clear_live_line(seen)
+            elif label or not sys.stdout.isatty():
                 print(prefix + text, flush=True)
             else:
                 print("\r" + text + "   ", end="", flush=True)
+        seen["live"] = text
     return None
 
 
@@ -772,17 +790,23 @@ def _claude_live_watch(stamped, seen, label=None):
         call = feed_live_event(tracker, e)
         if call is not None:
             with _PRINT_LOCK:
+                if not label and sys.stdout.isatty() and seen.get("live"):
+                    _clear_live_line(seen)
                 print(prefix + format_claude_call_line(
                     len(tracker["calls"]), gap_ms,
                     call["input_tokens"]), flush=True)
         text_out = format_live_line(tracker_live_state(tracker))
         if text_out != seen.get("live"):
-            seen["live"] = text_out
             with _PRINT_LOCK:
-                if label or not sys.stdout.isatty():
+                if text_out == "ended":
+                    if not label and sys.stdout.isatty() \
+                            and seen.get("live"):
+                        _clear_live_line(seen)
+                elif label or not sys.stdout.isatty():
                     print(prefix + text_out, flush=True)
                 else:
                     print("\r" + text_out + "   ", end="", flush=True)
+            seen["live"] = text_out
     return None
 
 
@@ -811,8 +835,9 @@ def run_muse_exec(prompt, run_dir, provider, model, minimal, timeout,
                            timeout, watch=watch, stop_event=stop_event)
     except OSError as error:
         return _empty_result(" ".join(cmd), error=str(error))
-    if sys.stdout.isatty() and not leg_label:
-        print(flush=True)
+    if sys.stdout.isatty() and not leg_label \
+            and seen.get("live") not in (None, "ended"):
+        _clear_live_line(seen)
     wall_ms = proc["wall_ms"]
     exit_code = proc["exit_code"]
     timed_out = proc["timed_out"]
@@ -988,8 +1013,8 @@ def run_claude_code(prompt, run_dir, model, timeout, stop_event=None,
         return _empty_result(" ".join(cmd), error=str(e))
     watch()
     if sys.stdout.isatty() and not leg_label \
-            and seen.get("live") is not None:
-        print(flush=True)
+            and seen.get("live") not in (None, "ended"):
+        _clear_live_line(seen)
     parsed = parse_claude_stream(proc["lines"])
     exit_code = proc["exit_code"]
     error = None
@@ -1207,7 +1232,12 @@ def print_summary(report, r, run_dir):
     if validation.get("status"):
         print("Task checks: " + validation["status"].replace("_", " "))
     if r["reply"]:
-        print(r["reply"][:500])
+        shown = r["reply"][:500]
+        if len(r["reply"]) > 500 and not r["reply"][500].isspace() \
+                and " " in shown:
+            # Cut at a word boundary, never mid-word.
+            shown = shown.rsplit(" ", 1)[0]
+        print(shown)
         if len(r["reply"]) > 500:
             print(f"… (full reply: muse-runs/{report['run_id']}/report.json)")
     if status == "needs_approval":

@@ -33,8 +33,7 @@ For a first offline run or a comparison of provider costs, see the [user guide](
 ## Put all three on one prompt
 
 ```sh
-PROMPT="Write primes.py in the current folder. Print the count of prime numbers below 100000. Run it and report the count."
-COMPARE_MODELS="meta:muse-wonder-full-1.0,codex:$BENCH_CODEX_MODEL,claude-code:claude-sonnet-5-5" ./run-muse --minimal --compare custom --repeat 3 "$PROMPT"
+COMPARE_MODELS="meta:muse-wonder-full-1.0,codex:$BENCH_CODEX_MODEL,claude-code:claude-sonnet-5-5" ./run-muse --minimal --compare custom --repeat 3 "Write primes.py in the current folder. Print the count of prime numbers below 100000. Run it and report the count."
 ```
 
 Three legs and three rounds start nine runs. Claude Code uses an API key in this benchmark. Codex uses its saved login, which may be a subscription or an API key.

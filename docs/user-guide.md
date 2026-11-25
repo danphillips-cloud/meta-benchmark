@@ -62,12 +62,11 @@ An imported turn closes when the next prompt begins or the session ends. Its clo
 
 ## Repeat and compare
 
-Save one prompt in a shell variable so each attempt gets the same wording. Run the single command again for independent attempts. For a grouped comparison, the following example uses two Meta models on a Muse subscription:
+Use the same wording for each attempt. Run the single command again for independent attempts. For a grouped comparison, the following example uses two Meta models on a Muse subscription:
 
 ```sh
-PROMPT="Explain in one sentence why the sky looks blue."
-./run-muse --minimal --model muse-wonder-1.0 "$PROMPT"
-COMPARE_META=meta:muse-wonder-1.0,meta:muse-spark-1.3 ./run-muse --minimal --compare meta --repeat 3 "$PROMPT"
+./run-muse --minimal --model muse-wonder-1.0 "Explain in one sentence why the sky looks blue."
+COMPARE_META=meta:muse-wonder-1.0,meta:muse-spark-1.3 ./run-muse --minimal --compare meta --repeat 3 "Explain in one sentence why the sky looks blue."
 ```
 
 Each provider/model pair is a **leg**. One **round** runs each leg once. Two legs times three rounds launches six runs. Compare defaults to one round. Even rounds reverse the order. Add `--race` only with `--compare` to run each round's legs together. They then share the machine and may draw on the same usage window. [Comparison terms](glossary.md#comparison-set-leg-and-round)
