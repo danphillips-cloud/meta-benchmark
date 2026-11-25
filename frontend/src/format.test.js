@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   comparisonHref, samePromptRuns, rangeText, outputSpeed, fmtSpeed, deltaTone, canCompare, selectionHint, toggleAllIds, DID_NOT_COMPLETE, STATUSES, META_MODELS, breadcrumb, needsScroll, recentRuns, runLabel, activeFilterChips, allowanceBig, allowanceDetail, allowanceHoverText, allowanceInfoLines, allowanceRows, buildRunsQuery, chartData, compareSessions, costNote, costReason, costUnit, explainLines, fastestOf, wallStats, filterOptions, filterSessions, fmt, fmtAllowance, fmtCost, fmtResetClock, fmtSec, hasSharedFilters, inDateRange, infoPanelNext, infoPanelOpen, isLongPrompt, planDeltaText, planUsageTotalText, promptPreview, runCostText, sharedFilterCount, shouldCloseFilterPanelOnEscape, shouldCloseTourOnEscape, syncedFilterPanelOpen, visibleCost,
-  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, median, metricSummary, taskCheckText, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
+  brushCentered, brushKey, brushPan, brushResize, brushResizeAt, brushWindow, chartKeyIndex, clampBrush, gripPositions, latestOnly, tipPosition, diagnoseRun, fmtTickSec, labelIndexes, linearTicks, liveStateText, dataSignature, median, metricSummary, taskCheckText, overviewScope, parseReplayStart, parseRunsQuery, parseSharedFilters, perCallSeries, raceProgress, radarMatrix, radarReport, replayAt, replayLabel, replayPair, replaySeries, reproPack, runCard, runMode, selectedRunFacts, showBrush, toolTotals, usualBaseline, walkthroughSeen, walkthroughSteps, markWalkthroughSeen, nextRunsSort, xrayFirstLanes, xrayHeadline, xrayLaneName, xrayLines, xraySeries,
 } from "./format.js";
 
 const S = (over) => ({
@@ -823,6 +823,13 @@ test("explainLines + perCallSeries: retry shown only on the retried call", () =>
     [[1, 5000], [0, null]]);
   assert.equal(liveStateText({ state: "retrying connection", tool: null, attempt: "2/10" }),
     "Retrying connection (attempt 2/10)");
+});
+
+test("dataSignature: a running run changes signature as time and live state move", () => {
+  const base = { selected: "r1", status: "running", sessions: [], events: [], timeline: [], reply: "", wall_ms: null, elapsed_ms: 1000, live_state: { state: "model call running", tool: null } };
+  assert.equal(dataSignature(base), dataSignature({ ...base }));
+  assert.notEqual(dataSignature(base), dataSignature({ ...base, elapsed_ms: 3000 }));
+  assert.notEqual(dataSignature(base), dataSignature({ ...base, live_state: { state: "tool running", tool: "Bash" } }));
 });
 
 test("liveStateText: banner wording for every live state", () => {

@@ -25,23 +25,30 @@ Python 3.11 through 3.15 on macOS or Linux, and Muse Code. CI tests 3.11 and 3.1
 
 ## Getting started
 
-### 1. Clone and sign in
+### 1. Clone
 
 ```sh
 git clone https://github.com/danphillips-cloud/meta-benchmark.git
 cd meta-benchmark
-muse login    # first time only
 ```
 
 The stopwatch examples use Muse subscription access. The default model, Wonder Full, requires a Power Usage or Maximum Usage plan. For another plan, choose an available model with `--model`. See [setup and first run](docs/user-guide.md#set-up).
 
 ### 2. Run one real test
 
-Start with a one-shot prompt. One-shot means everything the agent needs sits in a single prompt, with no follow-up. This one builds a working stopwatch. The first line saves the prompt in a shell variable, so later steps can reuse it.
+Start with a one-shot prompt. One-shot means everything the agent needs sits in a single prompt, with no follow-up. This one builds a working stopwatch.
 
 ```sh
-PROMPT="Build a stopwatch page in a new folder named stopwatch. Create exactly index.html, style.css, and app.js. Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. List laps newest first, with the fastest lap in green and the slowest in red. Use a dark theme with one cyan accent. Use no external URLs, fonts, images, libraries, or build step. It must work by opening index.html from the filesystem. Run node --check app.js if node is available, and fix any failure. Final reply under 100 words with the controls and the check result."
-./run-muse --minimal "$PROMPT"
+./run-muse --minimal "Build a stopwatch page in a new folder named stopwatch. \
+Create exactly index.html, style.css, and app.js. \
+Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. \
+Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. \
+List laps newest first, with the fastest lap in green and the slowest in red. \
+Use a dark theme with one cyan accent. \
+Use no external URLs, fonts, images, libraries, or build step. \
+It must work by opening index.html from the filesystem. \
+Run node --check app.js if node is available, and fix any failure. \
+Final reply under 100 words with the controls and the check result."
 ```
 
 The prompt is built to be checkable in one pass:
@@ -64,7 +71,7 @@ That login used an API key, so the line has no plan usage. On a subscription log
 
 ### 3. Read it on the page
 
-Follow the local UI address printed in the terminal.
+The page opens in your browser. If it doesn't, open the `UI:` address printed at the end of the run. It is `http://127.0.0.1:8765/` unless you set `PORT`.
 
 Overview, above, gives the time split and a plain-words account of where the time went.
 
@@ -99,22 +106,36 @@ Completed means the process ended cleanly. It doesn't mean the stopwatch works, 
 
 One run is an anecdote. Two recorded runs of this exact prompt on `muse-wonder-full-1.0` took 15 calls and 94.0 s (Muse Code 1.4.14), then 4 calls and 43.8 s (Muse Code 1.4.25). The Muse versions differ, so this is not a clean comparison. It does show how far the same work can swing. Neither number is the answer. The pattern across repeats is.
 
-```sh
-./run-muse --minimal "$PROMPT"
-```
-
-Run it three more times, in the same terminal so `$PROMPT` is still set. From the fourth run on, Overview measures each new run against your usual for this prompt: the median of your earlier runs with the same prompt, provider, model and context. The Wall and Model cards gain a "usual" figure. Four runs of `What is 2+2?` on `muse-wonder-full-1.0` took 7.5, 6.3, 5.9 and 7.8 s. On the fourth, the Wall card read 7.8 s with a usual of 6.3 s. When a run lands at least 25% and 2 s slower than usual, Why was this slow opens with how far off it is. This one was 23% over, so it stayed quiet. On Runs, type `stopwatch` in the filter to line up every attempt.
+Run the same command from step 2 three more times. From the fourth run on, Overview measures each new run against your usual for this prompt: the median of your earlier runs with the same prompt, provider, model and context. The Wall and Model cards gain a "usual" figure. Four runs of `What is 2+2?` on `muse-wonder-full-1.0` took 7.5, 6.3, 5.9 and 7.8 s. On the fourth, the Wall card read 7.8 s with a usual of 6.3 s. When a run lands at least 25% and 2 s slower than usual, Why was this slow opens with how far off it is. This one was 23% over, so it stayed quiet. On Runs, type `stopwatch` in the filter to line up every attempt.
 
 Then put the Meta models on the same work:
 
 ```sh
-./run-muse --minimal --compare meta --repeat 3 "$PROMPT"
+./run-muse --minimal --compare meta --repeat 3 "Build a stopwatch page in a new folder named stopwatch. \
+Create exactly index.html, style.css, and app.js. \
+Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. \
+Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. \
+List laps newest first, with the fastest lap in green and the slowest in red. \
+Use a dark theme with one cyan accent. \
+Use no external URLs, fonts, images, libraries, or build step. \
+It must work by opening index.html from the filesystem. \
+Run node --check app.js if node is available, and fix any failure. \
+Final reply under 100 words with the controls and the check result."
 ```
 
 `--compare meta` runs four Meta models per round: `muse-wonder-1.0`, `muse-wonder-full-1.0`, `muse-spark-1.3` and `muse-spark-1.2`. With `--repeat 3` that is 12 full runs of the prompt on your Muse plan. To compare fewer, name the legs yourself:
 
 ```sh
-COMPARE_META=meta:muse-wonder-1.0,meta:muse-spark-1.3 ./run-muse --minimal --compare meta --repeat 3 "$PROMPT"
+COMPARE_META=meta:muse-wonder-1.0,meta:muse-spark-1.3 ./run-muse --minimal --compare meta --repeat 3 "Build a stopwatch page in a new folder named stopwatch. \
+Create exactly index.html, style.css, and app.js. \
+Show a large glowing ring that sweeps once per second around a big mm:ss.cc readout. \
+Add Start, Stop, Lap and Reset buttons, with Space for start and stop and L for lap. \
+List laps newest first, with the fastest lap in green and the slowest in red. \
+Use a dark theme with one cyan accent. \
+Use no external URLs, fonts, images, libraries, or build step. \
+It must work by opening index.html from the filesystem. \
+Run node --check app.js if node is available, and fix any failure. \
+Final reply under 100 words with the controls and the check result."
 ```
 
 Compare shows medians across completed runs and a sample size for each metric. Times and output speed also show their observed ranges when available.

@@ -1808,9 +1808,13 @@ export function diagnoseRun({ wall_ms, model_ms, provider, events, split, timeli
 }
 
 export function dataSignature(d) {
+  // elapsed_ms and live_state are part of the signature on purpose.
+  // Without them a poll during one long call looks unchanged, so the
+  // elapsed clock and the live banner freeze until a call completes.
   return JSON.stringify([d.selected, d.status,
     (d.sessions || []).map((s) => [s.run_id, s.status, s.wall_ms, s.calls]),
-    (d.events || []).length, (d.timeline || []).length, d.reply || "", d.wall_ms]);
+    (d.events || []).length, (d.timeline || []).length, d.reply || "", d.wall_ms,
+    d.elapsed_ms ?? null, d.live_state || null]);
 }
 
 // --- Shareable run cards and repro packs -----------------------------
