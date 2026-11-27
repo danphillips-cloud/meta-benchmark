@@ -420,6 +420,42 @@ class PortHeldTest(unittest.TestCase):
         finally:
             run_muse.PORT, run_muse.UI_URL = old_port, old_url
 
+    def test_server_bad_port_gives_plain_message_not_traceback(self):
+        old_port = server.PORT
+        try:
+            with mock.patch.dict(os.environ, {"PORT": "abc"}), \
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                self.assertEqual(server._use_port(), 2)
+                self.assertIn("PORT must be a whole number",
+                              out.getvalue())
+            self.assertEqual(server.PORT, old_port)
+        finally:
+            server.PORT = old_port
+
+    def test_server_good_port_is_used(self):
+        import socket
+        old_port = server.PORT
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            free_port = probe.getsockname()[1]
+        try:
+            with mock.patch.dict(os.environ, {"PORT": str(free_port)}):
+                self.assertEqual(server._use_port(), 0)
+                self.assertEqual(server.PORT, free_port)
+        finally:
+            server.PORT = old_port
+
+    def test_server_main_exits_plainly_on_bad_port(self):
+        import subprocess
+        env = {k: v for k, v in os.environ.items()}
+        env["PORT"] = "abc"
+        proc = subprocess.run(
+            [sys.executable, str(ROOT / "lib" / "server.py")],
+            capture_output=True, text=True, env=env, timeout=10)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("PORT must be a whole number", proc.stdout)
+        self.assertNotIn("Traceback", proc.stderr)
+
     def test_foreign_process_found_on_restart_opens_no_tab(self):
         # Our server answered with an old version, but the pid on the
         # port is not ours: no signal, no restart, no tab, no UI line.

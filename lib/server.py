@@ -30,8 +30,8 @@ import muse_log  # noqa: E402
 HERE = Path(__file__).parent
 # The repo root: run data and the built page live there, not in lib/.
 ROOT = HERE.parent
-PORT = int(os.environ.get("PORT", "8765"))
-VERSION = 77
+PORT = 8765
+VERSION = 78
 INDEX = ROOT / "muse-runs" / "index.jsonl"
 WEB_INDEX = ROOT / "web" / "index.html"
 WEB_APP = ROOT / "web" / "app.js"
@@ -43,6 +43,20 @@ MAX_BODY = 64 * 1024
 # Parsed logs are large, so few. Paths are tiny, so many.
 RECORDS_CACHE_SIZE = 8
 PATH_CACHE_SIZE = 256
+
+
+def _use_port():
+    """Port from PORT, or 8765. Plain message and exit code on bad input."""
+    global PORT
+    raw = os.environ.get("PORT", "8765")
+    try:
+        PORT = int(raw)
+    except ValueError:
+        print(f'PORT must be a whole number, got "{raw}"')
+        return 2
+    return 0
+
+
 _SESSION_LOG_CACHE = {}
 _LOG_RECORDS_CACHE = {}
 
@@ -615,4 +629,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    _code = _use_port()
+    if _code:
+        sys.exit(_code)
     HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
