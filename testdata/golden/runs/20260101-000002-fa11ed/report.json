@@ -1,0 +1,73 @@
+{
+  "allowance_delta": null,
+  "allowance_end": null,
+  "allowance_start": null,
+  "api_ms": 900,
+  "approval_ms": null,
+  "at": "2026-01-01T00:00:00+00:00",
+  "billing_mode": null,
+  "calls": [
+    {
+      "cached_tokens": 0,
+      "duration_ms": null,
+      "input_tokens": 10,
+      "model": "muse-wonder-1.0",
+      "output_tokens": 0,
+      "reasoning_tokens": null
+    }
+  ],
+  "command": "fixture command",
+  "compare_mode": null,
+  "comparison_id": null,
+  "context_mode": "bare",
+  "cost_source": "list",
+  "cost_usd": 0.0123,
+  "error": "API Error: fixture failure",
+  "exit_code": 1,
+  "finished_at": "2026-01-01T00:00:05+00:00",
+  "harness_version": "fixture-harness-1",
+  "metrics_unavailable": false,
+  "model": "fixture-model",
+  "muse_ms": null,
+  "needs_approval_tool": null,
+  "num_turns": 1,
+  "pricing": {
+    "cached_per_mtok": 0.2,
+    "fetched": "2026-01-01",
+    "input_per_mtok": 4.0,
+    "model": "muse-wonder-1.0",
+    "output_per_mtok": 20.0,
+    "source": "fixture pricing"
+  },
+  "prompt": "fixture prompt",
+  "provider": "claude-code",
+  "raced": false,
+  "reply": "fixture reply",
+  "requested_model": "fixture-model",
+  "round": null,
+  "run_id": "20260101-000002-fa11ed",
+  "session_id": "session-20260101-000002-fa11ed",
+  "status": "failed",
+  "suite_id": null,
+  "suite_prompt": null,
+  "task_validation": null,
+  "timeline": [
+    {
+      "at": "2026-01-01T00:00:00+00:00",
+      "duration_ms": 4,
+      "operation": "result",
+      "wire_ms": null
+    }
+  ],
+  "timeout_seconds": 300,
+  "tool_ms": null,
+  "totals": {
+    "cache_creation_tokens": 0,
+    "cached_tokens": 0,
+    "input_tokens": 10,
+    "output_tokens": 0
+  },
+  "ttft_ms": null,
+  "turn_index": null,
+  "wall_ms": 1416
+}

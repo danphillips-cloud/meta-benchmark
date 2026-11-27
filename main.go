@@ -271,7 +271,12 @@ func clone(m runMap) runMap {
 const modelOverlapNote = "A model call started before this turn, so model time can't be set against wall"
 
 func modelOverlaps(r runMap) bool {
+	// A count in real reports (lib/muse_log.py counts early calls).
+	// Python tests truthiness, so any nonzero count counts.
 	if b, ok := r["calls_started_before_turn"].(bool); ok && b {
+		return true
+	}
+	if n, ok := num(r["calls_started_before_turn"]); ok && n != 0 {
 		return true
 	}
 	if p := getStr(r, "provider"); p != "muse-retro" && p != "muse-watch" {
