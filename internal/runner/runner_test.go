@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"meta-benchmark/internal/muselog"
 	"meta-benchmark/internal/pricing"
 	"meta-benchmark/internal/report"
 )
@@ -21,10 +20,10 @@ func fakeResult(overrides Result) Result {
 	base := Result{
 		SessionID: &sid, WallMS: 1200, ExitCode: 0, Reply: "pong",
 		Command: &cmd,
-		Calls: []muselog.Call{{
+		Calls: []report.Call{{
 			DurationMS: f64p(1000), InputTokens: i64(100),
 			OutputTokens: i64(5), CachedTokens: i64(40)}},
-		Timeline: []muselog.TimelineRow{{At: "2026-01-01T00:00:00+00:00", Operation: "step"}},
+		Timeline: []report.TimelineRow{{Operation: "step"}},
 	}
 	if overrides.Reply != "" {
 		base.Reply = overrides.Reply
@@ -58,11 +57,24 @@ func newFakeRunner(t *testing.T, result Result) (*Runner, *bytes.Buffer) {
 	r.Out = out
 	r.ErrOut = &bytes.Buffer{}
 	r.MuseExec = func(ctx context.Context, prompt, runDir, provider, model string,
-		minimal bool, timeoutSeconds int, sessionID string, w io.Writer) Result {
+		minimal bool, timeoutSeconds int, sessionID, legLabel string, w io.Writer) Result {
+		return result
+	}
+	r.ClaudeExec = func(ctx context.Context, prompt, runDir, model string,
+		timeoutSeconds int, legLabel string, w io.Writer) Result {
+		return result
+	}
+	r.AnthropicExec = func(ctx context.Context, prompt, runDir, model string,
+		timeoutSeconds int) Result {
+		return result
+	}
+	r.CodexExec = func(ctx context.Context, prompt, runDir, model string,
+		minimal bool, timeoutSeconds int, w io.Writer) Result {
 		return result
 	}
 	none := func() *pricing.Allowance { return nil }
 	r.AllowanceStartFn = none
+	r.HarnessVersionFn = func(string) *string { return nil }
 	return r, out
 }
 
@@ -139,7 +151,7 @@ func TestRunPromptRecordsRunningThenFinal(t *testing.T) {
 }
 
 func TestRunPromptEchoRecordsEchoModel(t *testing.T) {
-	result := fakeResult(Result{Calls: []muselog.Call{}})
+	result := fakeResult(Result{Calls: []report.Call{}})
 	r, out := newFakeRunner(t, result)
 	rep, err := r.RunPrompt(context.Background(), "hi", Options{Provider: "echo"})
 	if err != nil {
@@ -187,23 +199,32 @@ func TestRunPromptStatuses(t *testing.T) {
 	}
 }
 
-func TestRunPromptRefusesUnportedProviders(t *testing.T) {
-	r, _ := newFakeRunner(t, fakeResult(Result{}))
-	for _, provider := range []string{"anthropic", "claude-code", "codex"} {
-		if _, err := r.RunPrompt(context.Background(), "hi",
-			Options{Provider: provider, Model: "m"}); err == nil ||
-			!strings.Contains(err.Error(), "not ported yet") {
-			t.Errorf("%s: err = %v", provider, err)
+func TestRunPromptDispatchesEveryProvider(t *testing.T) {
+	for _, provider := range []string{"anthropic", "claude-code", "codex", "meta", "echo"} {
+		r, out := newFakeRunner(t, fakeResult(Result{}))
+		rep, err := r.RunPrompt(context.Background(), "hi",
+			Options{Provider: provider, Model: "m"})
+		if err != nil {
+			t.Fatalf("%s: %v", provider, err)
 		}
-	}
-	// Nothing was recorded for a refused provider.
-	if _, err := os.Stat(filepath.Join(r.DataDir, "index.jsonl")); !os.IsNotExist(err) {
-		t.Error("refused providers must record nothing")
+		if rep.Provider == nil || *rep.Provider != provider {
+			t.Errorf("%s recorded provider = %v", provider, rep.Provider)
+		}
+		switch provider {
+		case "codex":
+			if !strings.Contains(out.String(), "Codex run: may consume") {
+				t.Errorf("codex notice missing: %q", out.String())
+			}
+		case "anthropic", "claude-code":
+			if !strings.Contains(out.String(), "Paid run: uses") {
+				t.Errorf("%s paid notice missing: %q", provider, out.String())
+			}
+		}
 	}
 }
 
 func TestSummaryDashesWhenUnrecorded(t *testing.T) {
-	result := fakeResult(Result{Calls: []muselog.Call{{InputTokens: i64(10)}}})
+	result := fakeResult(Result{Calls: []report.Call{{InputTokens: i64(10)}}})
 	r, out := newFakeRunner(t, result)
 	if _, err := r.RunPrompt(context.Background(), "hi", Options{Provider: "meta"}); err != nil {
 		t.Fatal(err)

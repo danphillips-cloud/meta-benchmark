@@ -81,6 +81,7 @@ type Call struct {
 	CachedTokens        *int64   `json:"cached_tokens"`
 	ReasoningTokens     *int64   `json:"reasoning_tokens"`
 	CacheCreationTokens *int64   `json:"cache_creation_tokens,omitempty"`
+	FreshInputTokens    *int64   `json:"fresh_input_tokens,omitempty"`
 	Retries             *int     `json:"retries"`
 	StalledMS           *float64 `json:"stalled_ms"`
 	StopReason          *string  `json:"stop_reason,omitempty"`

@@ -1,7 +1,6 @@
 // Command meta-benchmark is the Go launcher. It mirrors
-// ./run-muse for the ported slice (step 4: single prompt and
-// the prompt loop on Muse providers). Unported flags refuse
-// plainly and point at ./run-muse until step 5.
+// ./run-muse across providers, compare, watch, retro, and
+// suites (steps 4 and 5 of the Go rewrite).
 package main
 
 import (
@@ -24,22 +23,24 @@ import (
 func main() { os.Exit(run(os.Args[1:])) }
 
 type cliArgs struct {
-	promptWords []string
-	provider    string
-	model       string
-	hasModel    bool
-	minimal     bool
-	timeout     *int
-	compare     string
-	hasCompare  bool
-	repeat      *int
-	race        bool
-	watch       bool
-	retro       bool
-	suite       bool
-	dryRun      bool
-	resume      bool
-	fresh       bool
+	promptWords  []string
+	provider     string
+	model        string
+	hasModel     bool
+	minimal      bool
+	timeout      *int
+	compare      string
+	hasCompare   bool
+	repeat       *int
+	race         bool
+	watch        bool
+	watchSession string
+	retro        bool
+	suite        bool
+	suitePath    string
+	dryRun       bool
+	resume       bool
+	fresh        bool
 }
 
 func cliError(format string, args ...any) (string, int) {
@@ -127,15 +128,19 @@ func parseArgs(argv []string) (cliArgs, string, int) {
 		case "--watch":
 			args.watch = true
 			if hasEq {
-				// Session value accepted and ignored. The mode
-				// itself is not ported yet.
+				args.watchSession = eqValue
 			} else if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
 				i++
+				args.watchSession = argv[i]
 			}
 		case "--suite", "--manifest":
 			args.suite = true
-			if !hasEq && i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
+			args.suitePath = runner.SuiteDefaultName
+			if hasEq {
+				args.suitePath = eqValue
+			} else if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "--") {
 				i++
+				args.suitePath = argv[i]
 			}
 		case "--help", "-h":
 			return args, "usage: meta-benchmark [--provider P] [--model M] [--minimal] [--timeout N] [prompt ...]\nWith no prompt, opens the prompt loop. Unported modes point at ./run-muse.", 0
@@ -149,8 +154,12 @@ func parseArgs(argv []string) (cliArgs, string, int) {
 	return args, "", -1
 }
 
-func notPorted(what string) (string, int) {
-	return fmt.Sprintf("%s is not ported yet. Use ./run-muse for it.", what), 2
+func readOSReleaseForCLI() string {
+	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func run(argv []string) int {
@@ -221,45 +230,54 @@ func run(argv []string) int {
 		fmt.Fprintln(os.Stderr, msg)
 		return code
 	}
-	for _, unported := range []struct {
-		on   bool
-		name string
-	}{
-		{args.hasCompare, "--compare"}, {args.watch, "--watch"},
-		{args.retro, "--retro"}, {args.suite, "--suite"},
-	} {
-		if unported.on {
-			msg, code := notPorted(unported.name)
-			fmt.Fprintln(os.Stderr, msg)
-			return code
-		}
-	}
 	provider := args.provider
 	if provider == "" {
 		provider = runner.DefaultProvider()
 	}
-	switch provider {
-	case "anthropic", "claude-code", "codex":
-		msg, code := notPorted("provider " + provider)
-		fmt.Fprintln(os.Stderr, msg)
-		return code
-	}
 
 	dataDir := runner.ResolveDataDir()
 	runner.LoadDefaultDotenv(dataDir)
+	if warning := runner.DataDirWarning(dataDir,
+		runner.IsWSL(os.Getenv, readOSReleaseForCLI())); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
+	}
 	if _, err := runner.EnvPricing(); err != nil {
 		msg, code := cliError("%s", err)
 		fmt.Fprintln(os.Stderr, msg)
 		return code
 	}
+	suiteModel := args.model
 	model := args.model
-	resolved, err := runner.ResolveModel(provider, model)
-	if err != nil {
-		msg, code := cliError("%s", err)
-		fmt.Fprintln(os.Stderr, msg)
-		return code
+	if !args.hasModel {
+		if def, ok := runner.DefaultModel(provider); ok {
+			model = def
+		}
 	}
-	model = resolved
+	if !args.suite && !args.watch && !args.retro {
+		if args.hasCompare {
+			models, err := runner.CompareModelsFor(args.compare)
+			if err != nil {
+				msg, code := cliError("%s", err)
+				fmt.Fprintln(os.Stderr, msg)
+				return code
+			}
+			for _, leg := range models {
+				if _, err := runner.ResolveModel(leg.Provider, leg.Model); err != nil {
+					msg, code := cliError("%s", err)
+					fmt.Fprintln(os.Stderr, msg)
+					return code
+				}
+			}
+		} else {
+			resolved, err := runner.ResolveModel(provider, model)
+			if err != nil {
+				msg, code := cliError("%s", err)
+				fmt.Fprintln(os.Stderr, msg)
+				return code
+			}
+			model = resolved
+		}
+	}
 
 	exe, _ := os.Executable()
 	if exe == "" {
@@ -267,19 +285,84 @@ func run(argv []string) int {
 	}
 	ui := &runner.UI{Port: port, DataDir: dataDir, ExecPath: exe,
 		Out: os.Stdout, ErrOut: os.Stderr}
-	ui.Ensure()
-
 	r := runner.New(dataDir)
-	r.UIURL = ui.URL()
-	r.UIEnabled = ui.Enabled()
 
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
+	if args.suite {
+		manifest, err := runner.LoadManifest(args.suitePath)
+		if err != nil {
+			msg, code := cliError("%s", err)
+			fmt.Fprintln(os.Stderr, msg)
+			return code
+		}
+		if args.resume && !args.fresh {
+			if _, err := runner.LoadState(args.suitePath); err != nil {
+				msg, code := cliError("%s", err)
+				fmt.Fprintln(os.Stderr, msg)
+				return code
+			}
+		}
+		runner.ApplySuiteModel(manifest.Entries, provider, suiteModel)
+		if err := runner.ValidateSuiteModels(manifest.Entries); err != nil {
+			msg, code := cliError("%s", err)
+			fmt.Fprintln(os.Stderr, msg)
+			return code
+		}
+		if args.dryRun {
+			code, runErr := r.RunSuite(context.Background(), args.suitePath,
+				args.timeout, args.repeat, true, args.resume, args.fresh, manifest)
+			if runErr != nil {
+				fmt.Fprintln(os.Stderr, runErr)
+				return 1
+			}
+			return code
+		}
+		ui.Ensure()
+		r.UIURL = ui.URL()
+		r.UIEnabled = ui.Enabled()
+		ctx, cancel := runContext(sigCh)
+		code, runErr := r.RunSuite(ctx, args.suitePath, args.timeout,
+			args.repeat, false, args.resume, args.fresh, manifest)
+		cancel()
+		if runErr != nil {
+			fmt.Fprintln(os.Stderr, runErr)
+			return 1
+		}
+		return code
+	}
+
+	ui.Ensure()
+	r.UIURL = ui.URL()
+	r.UIEnabled = ui.Enabled()
+
+	if args.watch {
+		ctx, cancel := runContext(sigCh)
+		r.RunWatch(ctx, args.watchSession)
+		cancel()
+		return 0
+	}
+	if args.retro {
+		r.RunRetro()
+		return 0
+	}
+
 	prompt := strings.TrimSpace(strings.Join(args.promptWords, " "))
 	opts := runner.Options{Provider: provider, Model: model,
 		Minimal: args.minimal, Timeout: args.timeout}
+	if prompt != "" && args.hasCompare {
+		ctx, cancel := runContext(sigCh)
+		code, runErr := r.RunCompare(ctx, prompt, args.compare, args.minimal,
+			args.timeout, repeat, args.race)
+		cancel()
+		if runErr != nil {
+			fmt.Fprintln(os.Stderr, runErr)
+			return 1
+		}
+		return code
+	}
 	if prompt != "" {
 		ctx, cancel := runContext(sigCh)
 		rep, runErr := r.RunPrompt(ctx, prompt, opts)
@@ -299,12 +382,24 @@ func run(argv []string) int {
 	if args.minimal {
 		contextLabel = "minimal"
 	}
-	fmt.Printf("Model: %s/%s (%s context). Type a prompt, /quit to exit.%s\n",
-		provider, model, contextLabel, r.UISuffix())
-	reader := bufio.NewReader(os.Stdin)
 	mode := "single"
+	if args.hasCompare {
+		mode = args.compare
+	}
+	if mode == "single" {
+		fmt.Printf("Model: %s/%s (%s context). Type a prompt, /quit to exit.%s\n",
+			provider, model, contextLabel, r.UISuffix())
+	} else {
+		fmt.Printf("%s. Type a prompt, /mode to switch, /quit to exit.%s\n",
+			runner.DescribeMode(mode), r.UISuffix())
+	}
+	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("muse> ")
+		promptStr := "muse> "
+		if mode != "single" {
+			promptStr = "muse[" + mode + "]> "
+		}
+		fmt.Print(promptStr)
 		line, interrupted := readLine(reader, sigCh)
 		if interrupted {
 			fmt.Println()
@@ -322,13 +417,14 @@ func run(argv []string) int {
 		case "message":
 			fmt.Println(result.Text)
 		case "prompt":
-			if mode != "single" {
-				msg, _ := notPorted("compare modes in the prompt loop")
-				fmt.Fprintln(os.Stderr, msg)
-				continue
-			}
 			ctx, cancel := runContext(sigCh)
-			_, runErr := r.RunPrompt(ctx, result.Text, opts)
+			var runErr error
+			if mode == "single" {
+				_, runErr = r.RunPrompt(ctx, result.Text, opts)
+			} else {
+				_, runErr = r.RunCompare(ctx, result.Text, mode,
+					args.minimal, args.timeout, repeat, args.race)
+			}
 			cancel()
 			if runErr != nil {
 				fmt.Fprintln(os.Stderr, runErr)
