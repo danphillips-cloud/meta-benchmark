@@ -11,24 +11,10 @@ import (
 	"testing"
 )
 
-// Golden fixtures freeze the Python contracts (plan step 1). The
-// expected /api/logs payload was produced by Python read_logs(),
-// not by Go. Regenerate with testdata/golden/make_golden.py only
-// after a deliberate Python change, then review the diff.
-
-// decodeGeneric parses JSON preserving number spellings, so an
-// int in the golden cannot quietly match a float from Go. Used
-// for /api/logs, where Go passes index numbers through verbatim.
-func decodeGeneric(t *testing.T, data []byte) any {
-	t.Helper()
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		t.Fatal(err)
-	}
-	return v
-}
+// Golden fixtures freeze the Python contracts (plan step 1).
+// Regenerate with testdata/golden/make_golden.py only after a
+// deliberate Python change, then review the diff. The /api/logs
+// golden test lives in internal/server since step 3.
 
 // decodePlain parses numbers as float64. Used for the Report
 // round trip, where a struct float legitimately spells Python's
@@ -93,22 +79,6 @@ func equalJSON(a, b any) bool {
 		return true
 	}
 	return reflect.DeepEqual(a, b)
-}
-
-func TestGoldenAPILogs(t *testing.T) {
-	h := &handler{dataDir: filepath.Join("testdata", "golden", "runs")}
-	got, err := json.Marshal(h.readLogs(""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := readGolden(t, filepath.Join("testdata", "golden", "api_logs.json"))
-	gotV := decodeGeneric(t, got)
-	wantV := decodeGeneric(t, want)
-	if !reflect.DeepEqual(gotV, wantV) {
-		gotPretty, _ := json.MarshalIndent(gotV, "", "  ")
-		wantPretty, _ := json.MarshalIndent(wantV, "", "  ")
-		t.Fatalf("/api/logs differs from the Python golden\nGo:\n%s\nPython golden:\n%s", gotPretty, wantPretty)
-	}
 }
 
 func TestGoldenReportRoundTrip(t *testing.T) {
