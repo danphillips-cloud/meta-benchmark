@@ -222,6 +222,21 @@ type Rates struct {
 	CacheCreationPerMTok *float64
 }
 
+func pricingNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	}
+	return 0, false
+}
+
 func pricingPair(value any, where string) (Rates, error) {
 	m, ok := value.(map[string]any)
 	if !ok {
@@ -242,7 +257,7 @@ func pricingPair(value any, where string) (Rates, error) {
 		if (f.key == "cached_per_mtok" || f.key == "cache_creation_per_mtok") && !present {
 			continue
 		}
-		rate, isNum := raw.(float64)
+		rate, isNum := pricingNumber(raw)
 		if _, isBool := raw.(bool); isBool || !present || !isNum || rate < 0 {
 			return Rates{}, fmt.Errorf(
 				"pricing in %s needs a number at or above zero for '%s'", where, f.key)

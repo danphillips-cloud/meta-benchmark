@@ -46,11 +46,25 @@ type Options struct {
 	Raced        bool
 	Pricing      map[string]Rates
 	Checks       *Checks
+	// LegLabel prefixes live lines for raced compare legs.
+	LegLabel string
 }
 
 // MuseExecFunc runs one Muse prompt. Injectable for tests.
 type MuseExecFunc func(ctx context.Context, prompt, runDir, provider, model string,
-	minimal bool, timeoutSeconds int, sessionID string, out io.Writer) Result
+	minimal bool, timeoutSeconds int, sessionID, legLabel string, out io.Writer) Result
+
+// ClaudeExecFunc runs one Claude Code prompt.
+type ClaudeExecFunc func(ctx context.Context, prompt, runDir, model string,
+	timeoutSeconds int, legLabel string, out io.Writer) Result
+
+// AnthropicExecFunc runs one direct API prompt.
+type AnthropicExecFunc func(ctx context.Context, prompt, runDir, model string,
+	timeoutSeconds int) Result
+
+// CodexExecFunc runs one Codex prompt.
+type CodexExecFunc func(ctx context.Context, prompt, runDir, model string,
+	minimal bool, timeoutSeconds int, out io.Writer) Result
 
 // Runner records runs under DataDir.
 type Runner struct {
@@ -61,6 +75,9 @@ type Runner struct {
 	UIEnabled bool
 
 	MuseExec         MuseExecFunc
+	ClaudeExec       ClaudeExecFunc
+	AnthropicExec    AnthropicExecFunc
+	CodexExec        CodexExecFunc
 	HarnessVersionFn func(provider string) *string
 	AllowanceStartFn func() *pricing.Allowance
 	Now              func() time.Time
@@ -70,7 +87,9 @@ type Runner struct {
 func New(dataDir string) *Runner {
 	return &Runner{
 		DataDir: dataDir, Out: os.Stdout, ErrOut: os.Stderr,
-		MuseExec: RunMuseExec, HarnessVersionFn: HarnessVersion,
+		MuseExec: RunMuseExec, ClaudeExec: RunClaudeCode,
+		AnthropicExec: RunAnthropic, CodexExec: RunCodex,
+		HarnessVersionFn: HarnessVersion,
 		AllowanceStartFn: func() *pricing.Allowance { return CaptureAllowanceStart(nil) },
 		Now:              time.Now,
 	}
@@ -259,38 +278,6 @@ func ValidateTask(checks *Checks, reply, runDir, status string) *report.TaskVali
 	return &report.TaskValidation{Status: statusOut, Checks: outcomes}
 }
 
-func toReportCalls(calls []muselog.Call) []report.Call {
-	out := make([]report.Call, 0, len(calls))
-	for _, c := range calls {
-		retries := c.Retries
-		out = append(out, report.Call{
-			Model: c.Model, DurationMS: c.DurationMS, InputTokens: c.InputTokens,
-			OutputTokens: c.OutputTokens, CachedTokens: c.CachedTokens,
-			ReasoningTokens: c.ReasoningTokens, Retries: &retries, StalledMS: floatPtr(c.StalledMS),
-		})
-	}
-	return out
-}
-
-func floatPtr(v *int64) *float64 {
-	if v == nil {
-		return nil
-	}
-	f := float64(*v)
-	return &f
-}
-
-func toReportTimeline(rows []muselog.TimelineRow) []report.TimelineRow {
-	out := make([]report.TimelineRow, 0, len(rows))
-	for _, row := range rows {
-		at := row.At
-		out = append(out, report.TimelineRow{
-			At: &at, Operation: row.Operation,
-			DurationMS: floatPtr(row.DurationMS), WireMS: row.WireMS})
-	}
-	return out
-}
-
 func toReportAllowance(a *pricing.Allowance) *report.Allowance {
 	if a == nil {
 		return nil
@@ -419,7 +406,7 @@ func (r *Runner) PrintSummary(rep report.Report, result Result, runDir string) {
 		if modelMS != nil {
 			modelText = pyNum(*modelMS) + " ms"
 		}
-		summed := func(get func(muselog.Call) *int64) *int64 {
+		summed := func(get func(report.Call) *int64) *int64 {
 			if len(result.Calls) == 0 {
 				return nil
 			}
@@ -437,8 +424,8 @@ func (r *Runner) PrintSummary(rep report.Report, result Result, runDir string) {
 		if result.Totals != nil {
 			inTok, outTok = result.Totals.Input, result.Totals.Output
 		} else {
-			inTok = summed(func(c muselog.Call) *int64 { return c.InputTokens })
-			outTok = summed(func(c muselog.Call) *int64 { return c.OutputTokens })
+			inTok = summed(func(c report.Call) *int64 { return c.InputTokens })
+			outTok = summed(func(c report.Call) *int64 { return c.OutputTokens })
 		}
 		inText, outText := "–", "–"
 		if inTok != nil {
@@ -515,16 +502,11 @@ func intVal(p *int) int {
 }
 
 // RunPrompt runs one prompt and records it, mirroring
-// run-muse run_prompt for the Muse paths. Providers that land
-// in step 5 are refused before any work happens.
+// run-muse run_prompt for every provider.
 func (r *Runner) RunPrompt(ctx context.Context, prompt string, opts Options) (report.Report, error) {
 	provider := opts.Provider
 	if provider == "" {
 		provider = DefaultProvider()
-	}
-	switch provider {
-	case "anthropic", "claude-code", "codex":
-		return report.Report{}, fmt.Errorf("provider %s is not ported yet. Use ./run-muse for it", provider)
 	}
 	model, err := ResolveModel(provider, opts.Model)
 	if err != nil {
@@ -533,6 +515,20 @@ func (r *Runner) RunPrompt(ctx context.Context, prompt string, opts Options) (re
 	timeout := DefaultTimeout(provider)
 	if opts.Timeout != nil {
 		timeout = *opts.Timeout
+	}
+	out := r.Out
+	if out == nil {
+		out = os.Stdout
+	}
+	if provider == "codex" {
+		printMu.Lock()
+		fmt.Fprintln(out, "Codex run: may consume subscription usage or bill an API key. Cost is not recorded.")
+		printMu.Unlock()
+	}
+	if isPaid(provider) {
+		printMu.Lock()
+		fmt.Fprintln(out, PaidNotice(model))
+		printMu.Unlock()
 	}
 	runID, runDir, err := r.newRunDir()
 	if err != nil {
@@ -577,8 +573,22 @@ func (r *Runner) RunPrompt(ctx context.Context, prompt string, opts Options) (re
 	if liveSessionID != nil {
 		sessionArg = *liveSessionID
 	}
-	result := r.MuseExec(ctx, prompt, runDir, provider, model, opts.Minimal,
-		timeout, sessionArg, r.Out)
+	legLabel := opts.LegLabel
+	if opts.Raced {
+		legLabel = provider + "/" + recorded
+	}
+	var result Result
+	switch provider {
+	case "codex":
+		result = r.CodexExec(ctx, prompt, runDir, model, opts.Minimal, timeout, r.Out)
+	case "anthropic":
+		result = r.AnthropicExec(ctx, prompt, runDir, model, timeout)
+	case "claude-code":
+		result = r.ClaudeExec(ctx, prompt, runDir, model, timeout, legLabel, r.Out)
+	default:
+		result = r.MuseExec(ctx, prompt, runDir, provider, model, opts.Minimal,
+			timeout, sessionArg, legLabel, r.Out)
+	}
 	select {
 	case <-ctx.Done():
 		if !result.Interrupted && ctx.Err() != nil {
@@ -664,8 +674,8 @@ func (r *Runner) RunPrompt(ctx context.Context, prompt string, opts Options) (re
 	rep.WallMS = &wall
 	rep.ExitCode = &result.ExitCode
 	rep.Reply = result.Reply
-	rep.Calls = toReportCalls(result.Calls)
-	rep.Timeline = toReportTimeline(result.Timeline)
+	rep.Calls = result.Calls
+	rep.Timeline = result.Timeline
 	rep.APIMS = result.APIMS
 	rep.TTFTMS = result.TTFTMS
 	rep.NumTurns = intPtrFrom(result.NumTurns)
@@ -679,8 +689,9 @@ func (r *Runner) RunPrompt(ctx context.Context, prompt string, opts Options) (re
 	if result.Totals != nil {
 		rep.Totals = &report.Totals{
 			InputTokens: result.Totals.Input, OutputTokens: result.Totals.Output,
-			CachedTokens: result.Totals.Cached, CacheCreationTokens: result.TotalsCacheCreation,
-			CacheCreationPresent: result.HasCacheCreation}
+			CachedTokens: result.Totals.Cached, ReasoningTokens: result.Totals.Reasoning,
+			CacheCreationTokens:  result.Totals.CacheCreation,
+			CacheCreationPresent: result.Totals.HasCacheCreation}
 	}
 	rep.MetricsUnavailable = status == "completed" && len(result.Calls) == 0 && provider != "codex"
 	rep.BillingMode = result.BillingMode
@@ -752,8 +763,14 @@ func (r *Runner) applyCost(rep *report.Report, result Result, provider string, u
 			callTokens = append(callTokens, pricing.Tokens{
 				Input: c.InputTokens, Cached: c.CachedTokens, Output: c.OutputTokens})
 		}
-		computed = ComputeCost(strVal(rep.Model), result.Totals,
-			result.TotalsCacheCreation, result.HasCacheCreation, callTokens, rates)
+		var totalsCacheCreation *int64
+		hasCacheCreation := false
+		if result.Totals != nil {
+			totalsCacheCreation = result.Totals.CacheCreation
+			hasCacheCreation = result.Totals.HasCacheCreation
+		}
+		computed = ComputeCost(strVal(rep.Model), result.Totals.pricingTokens(),
+			totalsCacheCreation, hasCacheCreation, callTokens, rates)
 	}
 	if computed != nil {
 		rep.CostUSD = &computed.CostUSD
@@ -763,10 +780,7 @@ func (r *Runner) applyCost(rep *report.Report, result Result, provider string, u
 		return
 	}
 	if listOK {
-		var totalsArg *pricing.Tokens
-		if result.Totals != nil {
-			totalsArg = result.Totals
-		}
+		totalsArg := result.Totals.pricingTokens()
 		var callTokens []pricing.Tokens
 		if totalsArg == nil {
 			for _, c := range result.Calls {

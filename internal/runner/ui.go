@@ -266,6 +266,23 @@ func readOSRelease() string {
 	return string(data)
 }
 
+// DataDirWarning warns once when the data dir sits under a
+// Windows mount inside WSL. It returns "" otherwise. Warn
+// only: it never blocks a run.
+func DataDirWarning(dataDir string, isWSL bool) string {
+	if !isWSL {
+		return ""
+	}
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		abs = dataDir
+	}
+	if strings.HasPrefix(abs, "/mnt/") {
+		return "Note: muse-runs is under /mnt/. For best results clone under your Linux home directory or set META_BENCHMARK_HOME there."
+	}
+	return ""
+}
+
 // IsWSL detects WSL from the standard markers.
 func IsWSL(getenv func(string) string, osrelease string) bool {
 	if getenv("WSL_DISTRO_NAME") != "" || getenv("WSL_INTEROP") != "" {

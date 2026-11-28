@@ -1,7 +1,7 @@
 package runner
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"math"
@@ -59,6 +59,50 @@ func (s *lineSink) snapshot() []StampedLine {
 	return append([]StampedLine(nil), s.lines...)
 }
 
+// lineWriter is the child stdout target. Writing through a
+// writer instead of reading a manual pipe matters: Cmd.Wait
+// closes a StdoutPipe on exit and can drop buffered output,
+// including a final result line. With a writer, Wait drains
+// every byte before it returns.
+type lineWriter struct {
+	mu      sync.Mutex
+	sink    *lineSink
+	file    *os.File
+	started time.Time
+	buf     []byte
+}
+
+func (w *lineWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, err := w.file.Write(p); err != nil {
+		return 0, err
+	}
+	_ = w.file.Sync()
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := string(w.buf[:i+1])
+		w.buf = w.buf[i+1:]
+		w.sink.append(StampedLine{
+			ArrivalMS: pyRoundMS(time.Since(w.started)), Line: line})
+	}
+	return len(p), nil
+}
+
+func (w *lineWriter) flushRemainder() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.buf) > 0 {
+		w.sink.append(StampedLine{
+			ArrivalMS: pyRoundMS(time.Since(w.started)), Line: string(w.buf)})
+		w.buf = nil
+	}
+}
+
 func pyRoundMS(d time.Duration) int64 {
 	return int64(math.RoundToEven(float64(d) / float64(time.Millisecond)))
 }
@@ -91,10 +135,8 @@ func RunProcess(ctx context.Context, argv []string, cwd string, env []string,
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stderr = errFile
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return ProcResult{}, err
-	}
+	writer := &lineWriter{sink: sink, file: outFile, started: started}
+	cmd.Stdout = writer
 	var stdin io.WriteCloser
 	if inputText != nil {
 		stdin, err = cmd.StdinPipe()
@@ -106,23 +148,6 @@ func RunProcess(ctx context.Context, argv []string, cwd string, env []string,
 		return ProcResult{}, err
 	}
 
-	readDone := make(chan struct{})
-	go func() {
-		defer close(readDone)
-		reader := bufio.NewReader(stdout)
-		for {
-			line, readErr := reader.ReadString('\n')
-			if line != "" {
-				sink.append(StampedLine{
-					ArrivalMS: pyRoundMS(time.Since(started)), Line: line})
-				_, _ = outFile.WriteString(line)
-				_ = outFile.Sync()
-			}
-			if readErr != nil {
-				return
-			}
-		}
-	}()
 	if inputText != nil {
 		go func() {
 			_, _ = io.WriteString(stdin, *inputText)
@@ -181,10 +206,7 @@ loop:
 	}
 	result.WallMS = pyRoundMS(time.Since(started))
 	result.ExitCode = exitCode
-	select {
-	case <-readDone:
-	case <-time.After(5 * time.Second):
-	}
+	writer.flushRemainder()
 	result.Lines = sink.snapshot()
 	return result, nil
 }

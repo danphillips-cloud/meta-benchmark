@@ -14,38 +14,58 @@ import (
 
 	"meta-benchmark/internal/muselog"
 	"meta-benchmark/internal/pricing"
+	"meta-benchmark/internal/report"
 )
+
+// Totals holds aggregate token counts from a provider.
+type Totals struct {
+	Input            *int64
+	Cached           *int64
+	Output           *int64
+	Reasoning        *int64
+	CacheCreation    *int64
+	HasCacheCreation bool
+}
+
+func (t *Totals) pricingTokens() *pricing.Tokens {
+	if t == nil {
+		return nil
+	}
+	return &pricing.Tokens{Input: t.Input, Cached: t.Cached, Output: t.Output}
+}
 
 // Result holds the report fields one provider run produced,
 // mirroring the result dicts in run-muse.
 type Result struct {
-	SessionID           *string
-	WallMS              int64
-	ExitCode            int
-	TimedOut            bool
-	Interrupted         bool
-	Reply               string
-	Calls               []muselog.Call
-	Timeline            []muselog.TimelineRow
-	Command             *string
-	UsageModel          *string
-	ErrorOverride       *string
-	NeedsApproval       *string
-	AllowanceEnd        *pricing.Allowance
-	APIMS               *float64
-	TTFTMS              *float64
-	NumTurns            *int64
-	CostUSD             *float64
-	Totals              *pricing.Tokens
-	TotalsCacheCreation *int64
-	HasCacheCreation    bool
-	BillingMode         *string
-	ReasoningEffort     *string
+	SessionID       *string
+	WallMS          int64
+	ExitCode        int
+	TimedOut        bool
+	Interrupted     bool
+	Reply           string
+	Calls           []report.Call
+	Timeline        []report.TimelineRow
+	Command         *string
+	UsageModel      *string
+	ErrorOverride   *string
+	NeedsApproval   *string
+	AllowanceEnd    *pricing.Allowance
+	APIMS           *float64
+	TTFTMS          *float64
+	NumTurns        *int64
+	CostUSD         *float64
+	Totals          *Totals
+	BillingMode     *string
+	ReasoningEffort *string
 }
 
 func emptyResult(command string) Result {
-	cmd := command
-	return Result{WallMS: 0, ExitCode: 1, Command: &cmd, Calls: []muselog.Call{}}
+	var cmdPtr *string
+	if command != "" {
+		cmd := command
+		cmdPtr = &cmd
+	}
+	return Result{WallMS: 0, ExitCode: 1, Command: cmdPtr, Calls: []report.Call{}}
 }
 
 // FormatCallLine renders one landed Muse call for the terminal.
@@ -187,7 +207,7 @@ func clearLiveLine(out io.Writer, live string) {
 // RunMuseExec runs one prompt through Muse and returns
 // report fields. provider "echo" echoes with no model call.
 func RunMuseExec(ctx context.Context, prompt, runDir, provider, model string,
-	minimal bool, timeoutSeconds int, sessionID string, out io.Writer) Result {
+	minimal bool, timeoutSeconds int, sessionID, legLabel string, out io.Writer) Result {
 	if sessionID == "" {
 		sessionID = newUUID()
 	}
@@ -205,10 +225,16 @@ func RunMuseExec(ctx context.Context, prompt, runDir, provider, model string,
 		argv = append(argv, "--disable-reminders", "--no-foreign-personal-context")
 	}
 	command := strings.Join(argv, " ")
+	if guard := guardProviderBinary("muse"); guard != "" {
+		result := emptyResult(command)
+		result.ErrorOverride = &guard
+		result.SessionID = &sessionID
+		return result
+	}
 	seen := &liveSeen{}
 	var watch WatchFunc
 	if provider != "echo" {
-		watch = func() *Verdict { return liveWatch(sessionID, seen, "", out) }
+		watch = func() *Verdict { return liveWatch(sessionID, seen, legLabel, out) }
 	}
 	proc, err := RunProcess(ctx, argv, workspace, CleanEnv(),
 		filepath.Join(runDir, "events.jsonl"), timeoutSeconds, nil, watch, nil)
@@ -219,7 +245,7 @@ func RunMuseExec(ctx context.Context, prompt, runDir, provider, model string,
 		result.SessionID = &sessionID
 		return result
 	}
-	if isTTY(out) && seen.live != "" && seen.live != "ended" {
+	if isTTY(out) && legLabel == "" && seen.live != "" && seen.live != "ended" {
 		clearLiveLine(out, seen.live)
 	}
 	reply := ""
@@ -273,9 +299,43 @@ func RunMuseExec(ctx context.Context, prompt, runDir, provider, model string,
 	return Result{
 		SessionID: &sid, WallMS: proc.WallMS, ExitCode: proc.ExitCode,
 		TimedOut: proc.TimedOut, Interrupted: proc.Interrupted,
-		Reply: reply, Calls: calls,
-		Timeline: muselog.BuildTimeline(sessionID, float64(proc.WallMS)),
+		Reply: reply, Calls: ToReportCalls(calls),
+		Timeline: ToReportTimeline(muselog.BuildTimeline(sessionID, float64(proc.WallMS))),
 		Command:  &command, UsageModel: usageModel,
 		NeedsApproval: proc.NeedsApproval, AllowanceEnd: allowanceEnd,
 	}
+}
+
+// ToReportCalls converts harvested calls to report shape.
+func ToReportCalls(calls []muselog.Call) []report.Call {
+	out := make([]report.Call, 0, len(calls))
+	for _, c := range calls {
+		retries := c.Retries
+		out = append(out, report.Call{
+			Model: c.Model, DurationMS: c.DurationMS, InputTokens: c.InputTokens,
+			OutputTokens: c.OutputTokens, CachedTokens: c.CachedTokens,
+			ReasoningTokens: c.ReasoningTokens, Retries: &retries,
+			StalledMS: int64ToFloat(c.StalledMS)})
+	}
+	return out
+}
+
+// ToReportTimeline converts muselog timeline rows to report shape.
+func ToReportTimeline(rows []muselog.TimelineRow) []report.TimelineRow {
+	out := make([]report.TimelineRow, 0, len(rows))
+	for _, row := range rows {
+		at := row.At
+		out = append(out, report.TimelineRow{
+			At: &at, Operation: row.Operation,
+			DurationMS: int64ToFloat(row.DurationMS), WireMS: row.WireMS})
+	}
+	return out
+}
+
+func int64ToFloat(v *int64) *float64 {
+	if v == nil {
+		return nil
+	}
+	f := float64(*v)
+	return &f
 }
