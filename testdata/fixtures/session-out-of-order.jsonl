@@ -1,0 +1,9 @@
+{"sequence": 9, "recorded_at": 1700000014400000, "payload_type": "runtime.session", "payload": {"event": {"kind": "model_completed", "duration_ms": 3000, "usage": {"input_tokens": 110, "output_tokens": 11, "cached_tokens": 0, "reasoning_tokens": 1}}}}
+{"sequence": 8, "recorded_at": 1700000011400000, "payload_type": "runtime.session", "payload": {"event": {"kind": "status", "message": "opening meta model stream attempt 1/10", "details": {"phase": "opening_stream"}}}}
+{"sequence": 7, "recorded_at": 1700000011300000, "payload_type": "runtime.session", "payload": {"event": {"kind": "model_request_configured"}}}
+{"sequence": 6, "recorded_at": 1700000011200000, "payload_type": "runtime.session", "payload": {"event": {"kind": "model_completed", "duration_ms": 11000, "usage": {"input_tokens": 100, "output_tokens": 10, "cached_tokens": 0, "reasoning_tokens": 1}}}}
+{"sequence": 5, "recorded_at": 1700000006200000, "payload_type": "runtime.session", "payload": {"event": {"kind": "status", "message": "opening meta model stream attempt 2/10", "details": {"phase": "opening_stream"}}}}
+{"sequence": 4, "recorded_at": 1700000005200000, "payload_type": "runtime.session", "payload": {"event": {"kind": "status", "message": "retrying meta model stream in 1000ms (attempt 2/10)", "details": {"phase": "retry_scheduled"}}}}
+{"sequence": 3, "recorded_at": 1700000000200000, "payload_type": "runtime.session", "payload": {"event": {"kind": "status", "message": "opening meta model stream attempt 1/10", "details": {"phase": "opening_stream"}}}}
+{"sequence": 2, "recorded_at": 1700000000100000, "payload_type": "runtime.session", "payload": {"event": {"kind": "model_request_configured"}}}
+{"sequence": 1, "recorded_at": 1700000000000000, "payload_type": "runtime.session.metadata", "payload": {"kind": "metadata", "record": {"model_id": "fake-model-1", "provider_id": "fake-provider", "build": {"semver": "0.0.0-test", "sha": "fake"}}}}
