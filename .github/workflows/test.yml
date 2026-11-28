@@ -20,6 +20,20 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python3 tests/test_tool.py
 
+  go:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        # Linux coverage is also the WSL build. There is no separate WSL job.
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
   frontend:
     runs-on: ubuntu-24.04
     steps:
