@@ -58,18 +58,24 @@ func LoadDefaultDotenv(dataDir string) {
 
 // ResolveDataDir returns the muse-runs directory.
 // META_BENCHMARK_HOME, when set, is the parent that holds it.
+// The result is absolute: run dirs pass workspace paths to
+// child processes whose cwd is the workspace itself, so a
+// relative path would resolve one level too deep there. The
+// Python runner never sees this because its ROOT is absolute.
 func ResolveDataDir() string {
+	dir := "muse-runs"
 	if home := os.Getenv("META_BENCHMARK_HOME"); home != "" {
-		nested := filepath.Join(home, "muse-runs")
-		if _, err := os.Stat(filepath.Join(nested, "index.jsonl")); err == nil {
-			return nested
+		dir = filepath.Join(home, "muse-runs")
+		if _, err := os.Stat(filepath.Join(dir, "index.jsonl")); err == nil {
+			// Nested layout confirmed.
+		} else if _, err := os.Stat(filepath.Join(home, "index.jsonl")); err == nil {
+			dir = home
 		}
-		if _, err := os.Stat(filepath.Join(home, "index.jsonl")); err == nil {
-			return home
-		}
-		return nested
 	}
-	return "muse-runs"
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
 }
 
 var stripEnv = []string{

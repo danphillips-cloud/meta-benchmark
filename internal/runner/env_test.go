@@ -188,6 +188,37 @@ func TestHandleCommandModes(t *testing.T) {
 	}
 }
 
+// Regression for the Step 6 WSL checklist finding: a relative
+// data dir made muse exec resolve the workspace one level too
+// deep and fail. Resolution is absolute now.
+func TestResolveDataDirIsAbsolute(t *testing.T) {
+	os.Unsetenv("META_BENCHMARK_HOME")
+	work := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(previous)
+	got := ResolveDataDir()
+	if !filepath.IsAbs(got) {
+		t.Fatalf("data dir = %q, want absolute", got)
+	}
+	resolvedWork, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != "muse-runs" || filepath.Dir(got) != resolvedWork {
+		t.Fatalf("data dir = %q under %q", got, resolvedWork)
+	}
+	t.Setenv("META_BENCHMARK_HOME", "relative-home")
+	if got := ResolveDataDir(); !filepath.IsAbs(got) {
+		t.Fatalf("home data dir = %q, want absolute", got)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

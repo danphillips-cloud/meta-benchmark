@@ -83,8 +83,13 @@ type Runner struct {
 	Now              func() time.Time
 }
 
-// New returns a Runner writing to stdout and stderr.
+// New returns a Runner writing to stdout and stderr. The
+// data dir is made absolute so child processes receive
+// workspace paths that resolve from any cwd.
 func New(dataDir string) *Runner {
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs
+	}
 	return &Runner{
 		DataDir: dataDir, Out: os.Stdout, ErrOut: os.Stderr,
 		MuseExec: RunMuseExec, ClaudeExec: RunClaudeCode,
