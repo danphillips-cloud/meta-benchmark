@@ -7,32 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"syscall"
-)
 
-// indexFileLock takes the cross-process lock for index writers.
-// It flocks the same lock file as lib/index_lock.py
-// (index.jsonl.lock beside the index), so a Go delete and a
-// Python runner append still exclude each other while both
-// versions exist. The lock file is never deleted. The OS
-// releases the lock when its holder exits.
-func indexFileLock(indexPath string, fn func() error) error {
-	dir := filepath.Dir(indexPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	lockPath := indexPath + ".lock"
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o666)
-	if err != nil {
-		return err
-	}
-	defer lockFile.Close()
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
-	return fn()
-}
+	"meta-benchmark/internal/indexlock"
+)
 
 var runIDPattern = regexp.MustCompile(`^[0-9A-Za-z-]+$`)
 
@@ -89,7 +66,7 @@ func (s *Server) DeleteRun(runID string) (bool, string) {
 	}
 	indexPath := s.indexPath()
 	var refused string
-	lockErr := indexFileLock(indexPath, func() error {
+	lockErr := indexlock.Lock(indexPath, func() error {
 		var latest runMap
 		var kept []string
 		data, readErr := os.ReadFile(indexPath)
