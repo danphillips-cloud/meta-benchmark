@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"bytes"
@@ -82,8 +82,8 @@ func equalJSON(a, b any) bool {
 }
 
 func TestGoldenReportRoundTrip(t *testing.T) {
-	paths := []string{filepath.Join("testdata", "golden", "report.json")}
-	more, err := filepath.Glob(filepath.Join("testdata", "golden", "runs", "*", "report.json"))
+	paths := []string{filepath.Join("..", "..", "testdata", "golden", "report.json")}
+	more, err := filepath.Glob(filepath.Join("..", "..", "testdata", "golden", "runs", "*", "report.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestGoldenReportRoundTrip(t *testing.T) {
 // zero stays a zero. Neither may turn into the other.
 func TestReportNullVersusZero(t *testing.T) {
 	var report Report
-	if err := json.Unmarshal(readGolden(t, filepath.Join("testdata", "golden", "report.json")), &report); err != nil {
+	if err := json.Unmarshal(readGolden(t, filepath.Join("..", "..", "testdata", "golden", "report.json")), &report); err != nil {
 		t.Fatal(err)
 	}
 	if report.ComparisonID != nil || report.CostUSD != nil || report.Pricing != nil || report.Totals != nil || report.TurnIndex != nil {
@@ -146,7 +146,7 @@ func TestReportNullVersusZero(t *testing.T) {
 // key. The struct must keep them apart.
 func TestCacheCreationPresence(t *testing.T) {
 	var legacy Report
-	path := filepath.Join("testdata", "golden", "runs", "20260101-000007-an7h00", "report.json")
+	path := filepath.Join("..", "..", "testdata", "golden", "runs", "20260101-000007-an7h00", "report.json")
 	if err := json.Unmarshal(readGolden(t, path), &legacy); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestCacheCreationPresence(t *testing.T) {
 		t.Error("second call: key present as null, want present with nil tokens")
 	}
 	var failed Report
-	path = filepath.Join("testdata", "golden", "runs", "20260101-000002-fa11ed", "report.json")
+	path = filepath.Join("..", "..", "testdata", "golden", "runs", "20260101-000002-fa11ed", "report.json")
 	if err := json.Unmarshal(readGolden(t, path), &failed); err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +173,8 @@ func TestCacheCreationPresence(t *testing.T) {
 // testdata/fixtures mirrors tests/fixtures byte for byte. When a
 // Python fixture changes, this fails until the copy is refreshed.
 func TestFixturesMirrorPython(t *testing.T) {
-	pythonDir := filepath.Join("tests", "fixtures")
-	goDir := filepath.Join("testdata", "fixtures")
+	pythonDir := filepath.Join("..", "..", "tests", "fixtures")
+	goDir := filepath.Join("..", "..", "testdata", "fixtures")
 	entries, err := os.ReadDir(pythonDir)
 	if err != nil {
 		t.Fatal(err)

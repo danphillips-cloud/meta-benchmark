@@ -1,4 +1,6 @@
-package main
+// Package report defines the run report contract shared by
+// the runner (writer) and any reader that needs typed access.
+package report
 
 import "encoding/json"
 
